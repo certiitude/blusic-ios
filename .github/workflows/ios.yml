@@ -1,0 +1,56 @@
+name: Build and test Blusic iOS
+run-name: Blusic IPA ${{ inputs.request_id || github.run_number }}
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Identifiant de la demande Windows (laisser vide pour un lancement manuel)
+        type: string
+        required: false
+  push:
+    branches: [main, master]
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode version
+        run: xcodebuild -version
+      - name: Build for physical iPhone (unsigned)
+        run: >-
+          xcodebuild build -project Blusic.xcodeproj -scheme Blusic -configuration Release
+          -destination 'generic/platform=iOS' -derivedDataPath build/Device
+          ARCHS=arm64 CODE_SIGNING_ALLOWED=NO
+      - name: Package and verify real iPhone IPA
+        run: >-
+          python3 tools/package_ipa.py
+          --app build/Device/Build/Products/Release-iphoneos/Blusic.app
+          --output build/Blusic-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Blusic-iPhone-unsigned-needs-signing
+          path: build/Blusic-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
+      - name: Select compatible iPhone simulator
+        run: python3 tools/select_simulator.py >> "$GITHUB_ENV"
+      - name: Boot iPhone simulator
+        run: xcrun simctl bootstatus "$SIMULATOR_ID" -b
+      - name: Unit tests on iPhone simulator
+        run: >-
+          xcodebuild test -project Blusic.xcodeproj -scheme Blusic
+          -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
+          -derivedDataPath build/DerivedData -resultBundlePath build/BlusicTests.xcresult
+          -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Blusic-test-results
+          path: build/BlusicTests.xcresult
+          retention-days: 7
