@@ -1,5 +1,6 @@
 import XCTest
 import AVFoundation
+import SwiftUI
 @testable import Blusic
 
 final class BlusicTests: XCTestCase {
@@ -197,9 +198,28 @@ final class BlusicTests: XCTestCase {
     @MainActor
     func testLiveInvidiousAACDecodesAndNativePlaybackAdvances() async throws {
         let service = try InvidiousService(automaticFallback: true)
-        let found = try await service.search("Niska Salé")
-        let track = try XCTUnwrap(found.first { $0.location == "KVpeHSX2ZEY" } ?? found.first)
-        let loaded = try await service.audio(for: track)
+        let found = try await MusicCatalogService().search("Niska Salé")
+        let track = try XCTUnwrap(found.tracks.first { $0.title.lowercased() == "salé" && $0.artist.lowercased().contains("niska") })
+        XCTAssertEqual(track.musicCatalog, "youtube-music")
+        XCTAssertEqual(track.album, "Commando")
+        XCTAssertFalse(track.title.localizedCaseInsensitiveContains("clip"))
+        let store = LibraryStore(inMemory: true)
+        store.settings.volume = 0.1
+        let player = AudioPlayer(library: store)
+        defer { player.forget(track.id) }
+        let began = Date()
+        player.play(track, in: [track])
+        for _ in 0..<150 {
+            if !player.isLoading { break }
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        XCTAssertNil(player.error, player.error ?? "")
+        XCTAssertTrue(player.isPlaying, "Cold loading must finish within the public loading deadline")
+        XCTAssertTrue(player.isStreaming, "Cold playback must start progressively, not wait for a complete cached file")
+        let startup = Date().timeIntervalSince(began)
+        XCTAssertLessThan(startup, 12, "Cold first playback should not wait for a complete song download")
+        XCTAssertNotNil(player.firstAudioLatency)
+        let loaded = try await service.audio(for: track) // Must now use the validated local cache.
         let file = try AVAudioFile(forReading: loaded.fileURL)
         let duration = Double(file.length) / file.processingFormat.sampleRate
         XCTAssertGreaterThan(duration, 60, "Expected a complete track, not a short preview")
@@ -211,32 +231,130 @@ final class BlusicTests: XCTestCase {
         let peak = (0..<Int(buffer.frameLength)).map { abs(samples[$0]) }.max() ?? 0
         XCTAssertGreaterThan(peak, 0.0001, "Decoded audio must contain a non-silent signal")
 
-        let store = LibraryStore(inMemory: true)
-        store.settings.volume = 0.1
-        let player = AudioPlayer(library: store)
-        defer { player.forget(track.id) }
-        player.play(track, in: [track])
-        for _ in 0..<240 {
-            if !player.isLoading { break }
-            try await Task.sleep(for: .milliseconds(250))
-        }
-        XCTAssertNil(player.error)
-        XCTAssertTrue(player.isPlaying)
         let start = player.position
         try await Task.sleep(for: .seconds(2))
         XCTAssertGreaterThan(player.position, start + 0.5)
+        player.prepareNativeEffects()
+        for _ in 0..<50 {
+            if !player.isStreaming { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertFalse(player.isStreaming, "The prepared audio must support the full effects engine")
+        XCTAssertTrue(player.isPlaying)
         player.seek(to: 30)
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertGreaterThanOrEqual(player.position, 29)
         player.pause()
         XCTAssertFalse(player.isPlaying)
-        print("LIVE INVIDIOUS PASS: id=\(track.location), instance=\(loaded.instance.host ?? ""), AAC bitrate=\(loaded.bitrate), decoded duration=\(duration), peak=\(peak), native seek/pause verified")
+        print("LIVE MUSIC PASS: title=\(track.title), artist=\(track.artist), album=\(track.album), id=\(track.location), cold progressive startup=\(startup)s, first-audio clock=\(player.firstAudioLatency ?? -1)s, AAC bitrate=\(loaded.bitrate), decoded duration=\(duration), peak=\(peak), native effects handover/seek/pause verified")
+    }
+
+    func testMusicCatalogRejectsVideoResultsAndKeepsSongMetadata() throws {
+        let page = try MusicCatalogService.parse(musicFixture())
+        XCTAssertEqual(page.tracks.count, 1)
+        let song = try XCTUnwrap(page.tracks.first)
+        XCTAssertEqual(song.title, "Salé")
+        XCTAssertEqual(song.artist, "Niska")
+        XCTAssertEqual(song.album, "Commando")
+        XCTAssertEqual(song.duration, 171)
+        XCTAssertEqual(song.musicCatalog, "youtube-music")
+        XCTAssertEqual(song.artworkURL?.absoluteString, "https://example.org/album.jpg")
+        XCTAssertEqual(page.continuation, "NEXT_SONG_PAGE")
+    }
+
+    func testMusicCatalogDoesNotAcceptUnclassifiedGenericVideo() throws {
+        let data = Data(#"{"contents":{"musicResponsiveListItemRenderer":{"playlistItemData":{"videoId":"abcdefghijk"},"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Vlog"}]}}}]}}}"#.utf8)
+        XCTAssertTrue(try MusicCatalogService.parse(data).tracks.isEmpty)
+    }
+
+    func testMusicCatalogPostsSongsFilterToYouTubeMusic() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        let fixture = try musicFixture()
+        InvidiousStubProtocol.handler = { request in
+            XCTAssertEqual(request.httpMethod, "POST")
+            XCTAssertEqual(request.url?.host, "music.youtube.com")
+            XCTAssertEqual(request.url?.path, "/youtubei/v1/search")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            XCTAssertEqual(request.value(forHTTPHeaderField: "X-YouTube-Client-Name"), "67")
+            return (200, fixture)
+        }
+        let page = try await MusicCatalogService(session: session).search("Niska")
+        XCTAssertEqual(page.tracks.first?.artist, "Niska")
+    }
+
+    @MainActor
+    func testLoadingDeadlineEndsSpinnerAndReportsFailure() async throws {
+        let counter = LoadCallCounter()
+        let player = AudioPlayer(library: LibraryStore(inMemory: true), loadingTimeout: 0.2, onlineLoader: HangingAudioLoader(counter: counter))
+        let track = Track(title: "Network fixture", artist: "Test", source: .invidious, location: "abcdefghijk")
+        defer { player.forget(track.id) }
+        player.play(track)
+        try await Task.sleep(for: .milliseconds(500))
+        XCTAssertFalse(player.isLoading)
+        XCTAssertFalse(player.isPlaying)
+        XCTAssertNotNil(player.error)
+        XCTAssertNil(player.loadingProgress)
+        let calls = await counter.count
+        XCTAssertEqual(calls, 1)
+    }
+
+    @MainActor
+    func testPressingPlayWhileLoadingCancelsInsteadOfRestarting() async throws {
+        let counter = LoadCallCounter()
+        let player = AudioPlayer(library: LibraryStore(inMemory: true), onlineLoader: HangingAudioLoader(counter: counter))
+        let track = Track(title: "Network fixture", artist: "Test", source: .invidious, location: "abcdefghijk")
+        defer { player.forget(track.id) }
+        player.play(track)
+        try await Task.sleep(for: .milliseconds(50))
+        player.toggle()
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertFalse(player.isLoading)
+        XCTAssertNil(player.error)
+        let calls = await counter.count
+        XCTAssertEqual(calls, 1)
+    }
+
+    private func musicFixture() throws -> Data {
+        func row(id: String, videoType: String) -> [String: Any] {
+            ["musicResponsiveListItemRenderer": [
+                "playlistItemData": ["videoId": id],
+                "flexColumns": [
+                    ["musicResponsiveListItemFlexColumnRenderer": ["text": ["runs": [["text": "Salé", "navigationEndpoint": ["watchEndpoint": ["videoId": id, "watchEndpointMusicSupportedConfigs": ["watchEndpointMusicConfig": ["musicVideoType": videoType]]]]]]]]],
+                    ["musicResponsiveListItemFlexColumnRenderer": ["text": ["runs": [
+                        ["text": "Niska", "navigationEndpoint": ["browseEndpoint": ["browseId": "UC_fixture_artist"]]],
+                        ["text": " • "], ["text": "Commando", "navigationEndpoint": ["browseEndpoint": ["browseId": "MPRE_fixture_album"]]],
+                        ["text": " • "], ["text": "2:51"]
+                    ]]]]
+                ],
+                "thumbnail": ["musicThumbnailRenderer": ["thumbnail": ["thumbnails": [["url": "https://example.org/album.jpg", "width": 544]]]]]
+            ]]
+        }
+        let data: [String: Any] = ["contents": ["musicShelfRenderer": [
+            "contents": [row(id: "abcdefghijk", videoType: "MUSIC_VIDEO_TYPE_ATV"), row(id: "bbbbbbbbbbb", videoType: "MUSIC_VIDEO_TYPE_OMV")],
+            "continuations": [["nextContinuationData": ["continuation": "NEXT_SONG_PAGE"]]]
+        ]]]
+        return try JSONSerialization.data(withJSONObject: data)
     }
 
     private func stubSession() -> URLSession {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [InvidiousStubProtocol.self]
         return URLSession(configuration: config)
+    }
+}
+
+private actor LoadCallCounter {
+    var count = 0
+    func increment() { count += 1 }
+}
+
+private struct HangingAudioLoader: OnlineAudioLoading {
+    var counter: LoadCallCounter
+    func load(_ track: Track, settings: AppSettings, progress: @escaping @Sendable (AudioLoadUpdate) -> Void) async throws -> InvidiousAudio {
+        await counter.increment()
+        try await Task.sleep(for: .seconds(60))
+        throw URLError(.timedOut)
     }
 }
 

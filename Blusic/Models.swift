@@ -1,11 +1,11 @@
 import Foundation
 import SwiftUI
 
-enum AudioSource: String, Codable, CaseIterable {
+enum AudioSource: String, Codable, CaseIterable, Sendable {
     case bundled, local, remote, youtube, invidious, unresolved
 }
 
-struct Track: Identifiable, Codable, Equatable, Hashable {
+struct Track: Identifiable, Codable, Equatable, Hashable, Sendable {
     var id: UUID = UUID()
     var title: String
     var artist: String
@@ -21,6 +21,7 @@ struct Track: Identifiable, Codable, Equatable, Hashable {
     var isExplicit: Bool = false
     /// Discovery origin only. Expiring audio URLs are never saved in the library.
     var originInstance: URL?
+    var musicCatalog: String?
 
     var isNative: Bool { [.bundled, .local, .remote, .invidious].contains(source) }
     var isYouTubeContent: Bool { source == .youtube || source == .invidious }
@@ -32,7 +33,7 @@ struct Track: Identifiable, Codable, Equatable, Hashable {
         case .local: return "Sur cet iPhone"
         case .remote: return "Source HTTPS"
         case .youtube: return "YouTube"
-        case .invidious: return "Invidious · YouTube"
+        case .invidious: return musicCatalog == "youtube-music" ? "YouTube Music · Invidious" : "Invidious · YouTube"
         case .unresolved: return "Source à associer"
         }
     }
@@ -60,7 +61,7 @@ enum RepeatMode: String, Codable, CaseIterable {
     mutating func cycle() { self = Self.allCases[(Self.allCases.firstIndex(of: self)! + 1) % 3] }
 }
 
-struct AppSettings: Codable, Equatable {
+struct AppSettings: Codable, Equatable, Sendable {
     var accent = "blue"
     var appearance = "dark"
     var haptics = true

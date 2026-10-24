@@ -2,6 +2,25 @@
 
 **Ta musique, simplement.** Application iPhone native en SwiftUI, pensée autour d’une interface sombre, de pochettes immersives et d’un lecteur en verre translucide. Identité adaptée de l’icône Blusic fournie ; ergonomie mobile inspirée des captures et d’Apple Music.
 
+## Site vitrine Windows et iOS
+
+Le dossier **[`website/`](website/README.md)** contient le site Blusic prêt pour Vercel : design Liquid Glass sombre, logo animé au démarrage, animations au défilement, aperçu Windows, illustration iPhone, démo audio et téléchargements Windows/IPA iOS. Dans Vercel : **Root Directory `website`**, **Framework Other**, aucune commande de build, sortie **`.`**.
+
+## Version 1.2 — recherche musicale, chargement borné, interface compacte
+
+- La recherche interroge maintenant **les chansons de YouTube Music** (`WEB_REMIX`, filtre chansons, résultats `MUSIC_VIDEO_TYPE_ATV`) : vrais titres, artistes, albums et pochettes. Les clips `OMV`, podcasts et résultats vidéo non identifiés comme chansons sont écartés. Aucun repli silencieux sur la recherche générale de vidéos.
+- **Invidious résout l’audio** des identifiants retournés par YouTube Music. Il n’est plus la source de recherche du catalogue principal.
+- **Lecture progressive AVPlayer** : le morceau commence sans attendre le fichier complet. Le relais est essayé avant l’accès direct ; un autre accès est essayé si la mise en tampon échoue. Les premières adresses audio sont anticipées pendant la consultation des résultats. Délais bornés, bouton Annuler et arrêt d’un démarrage qui dépasse **35 secondes**.
+- Le lecteur affiche le **temps de démarrage mesuré**, dès que l’horloge audio avance. Cela ne constitue pas une garantie de démarrage instantané sur tous les réseaux.
+- La vitesse et le volume fonctionnent pendant la lecture progressive. L’égaliseur et la tonalité indépendants passent par le moteur complet : le bouton **Préparer les effets audio** charge le fichier en parallèle, puis reprend la même position dans AVAudioEngine. Si la préparation échoue, la musique progressive continue. Une préparation est aussi demandée si des effets sont déjà activés.
+- Toucher le bouton lecture pendant le chargement **annule** au lieu de recommencer indéfiniment la même requête.
+- Un cache validé peut être rejoué directement : son index est réutilisé pendant 24 h (10 min pour les faibles débits). Après expiration, une résolution en ligne est à nouveau nécessaire. Les données audio restent dans le cache purgeable par iOS, pas dans une bibliothèque hors ligne permanente.
+- Accueil recentré sur les captures initiales : **fond noir, Accès rapide, rangées de pochettes carrées et titres compacts**. Suppression du grand bandeau éditorial et des slogans. Le classement local n’apparaît que si l’historique réel le permet.
+- Images dimensionnées dans un conteneur borné ; lecteur et onglets réservés dans une zone distincte du contenu défilant, pour éviter les débordements et superpositions.
+- Captures natives grand iPhone et iPhone SE ajoutées au workflow. Elles utilisent les vrais écrans et le catalogue en réseau ; le mini-lecteur et le lecteur de prévisualisation utilisent une démo locale pour vérifier la mise en page.
+
+YouTube Music est interrogé par son endpoint web public non officiel, sans connexion à un compte Google. Cela ne synchronise ni les achats ni la bibliothèque personnelle d’un compte et ne garantit pas la disponibilité de chaque titre. L’audio reste AAC compressé.
+
 ## Version 1.1 — Invidious
 
 - **Recherche → Catalogue** : recherche du catalogue YouTube public, sans clé Google.
@@ -43,7 +62,7 @@ python tools/github_ipa.py build --repo TON-COMPTE/blusic-ios
 
 L’utilitaire suit la compilation et télécharge **`dist/github/<execution>/Blusic-unsigned.ipa`**. Avec le dépôt Git configuré, **`Compiler IPA.cmd`** lance cette procédure par double-clic.
 
-**Une compilation distante a réussi** : [résultat et IPA récupérée](docs/COMPILATION-RESULTAT.md). Les **10 tests iPhone Simulator passent**. L’IPA obtenue est non signée et doit encore être signée pour ton appareil, par exemple avec AltStore Classic sous Windows. Ce dépôt ne contient ni certificat, ni profil Apple, ni compte de signature.
+**La compilation distante de la version 1.1.0 a réussi** : [résultat et IPA récupérée](docs/COMPILATION-RESULTAT.md). Les **20 tests iPhone Simulator passent**, dont le test réseau réel de lecture native Invidious. L’IPA obtenue est non signée et doit encore être signée pour ton appareil, par exemple avec AltStore Classic sous Windows. Ce dépôt ne contient ni certificat, ni profil Apple, ni compte de signature.
 
 **Catalogue :** Invidious est intégré dans la version 1.1, mais n’offre pas une couverture universelle de toutes les plateformes. Voir [la recherche d’API et leurs limites](docs/API-MUSICALES.md).
 
@@ -99,9 +118,9 @@ L’utilitaire suit la compilation et télécharge **`dist/github/<execution>/Bl
 
 Invidious est un service communautaire non officiel qui interroge les contenus publics YouTube. Blusic utilise :
 
-1. **L’API Invidious** pour la recherche, les playlists et la résolution des flux. Aucun compte ni clé API Google requis.
+1. **Le catalogue public YouTube Music** pour la recherche de chansons, puis **l’API Invidious** pour les playlists et la résolution des flux. Aucun compte ni clé API Google requis.
 2. **Le moteur AVAudioEngine** pour les flux AAC/M4A. Les pistes ne stockent que leur identifiant vidéo et leur instance d’origine ; les URL signées temporaires sont résolues à la lecture.
-3. Un essai du relais média de la même instance après un échec d’accès direct, puis jusqu’à deux instances de secours annonçant une API active dans l’annuaire du projet, si le secours est activé.
+3. Le relais média de l’instance en premier, un essai direct en secours et des instances de secours annonçant une API active si nécessaire, avec une échéance totale de chargement de 35 s.
 4. **Le lecteur vidéo officiel YouTube** en secours sur demande depuis le menu d’un titre. Il est visible et conserve les publicités éventuelles de YouTube.
 
 Dans **Réglages → Invidious**, indique une autre adresse HTTPS si nécessaire. Le bouton de test vérifie l’API de l’adresse saisie sans masquer son erreur derrière un serveur de secours. L’instance reçoit les recherches et les identifiants vidéo ; les flux directs peuvent contacter Google. Les détails sont expliqués dans l’écran de confidentialité.
@@ -119,7 +138,7 @@ python tools/check_project.py
 
 Le script contrôle : syntaxe des fichiers Swift par arbre syntaxique, cohérence des références Xcode et phases de compilation, plists, scheme partagé, ressources des asset catalogs, icône opaque 1024 px, durée/format/niveau/non-saturation des quatre fichiers WAV.
 
-**Ces contrôles statiques ne constituent pas un test iPhone.** En complément, la compilation **Xcode 26.3** et les **10 XCTest** ont réussi sur GitHub Actions : voir [le rapport](docs/COMPILATION-RESULTAT.md). Le rendu réel, le lecteur YouTube, AirPlay et le maintien audio écran verrouillé restent à vérifier manuellement sur appareil. Voir [`docs/RECETTE-IPHONE.md`](docs/RECETTE-IPHONE.md).
+**Ces contrôles statiques ne constituent pas un test iPhone.** En complément, la compilation **Xcode 26.3** et les **20 XCTest** ont réussi sur GitHub Actions, dont le test réseau Invidious : voir [le rapport](docs/COMPILATION-RESULTAT.md). Le rendu réel, le lecteur vidéo officiel, AirPlay et le maintien audio écran verrouillé restent à vérifier manuellement sur appareil. Voir [`docs/RECETTE-IPHONE.md`](docs/RECETTE-IPHONE.md).
 
 ### À lancer sur Mac
 
@@ -130,7 +149,7 @@ xcodebuild -project Blusic.xcodeproj -scheme Blusic \
   -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
 ```
 
-Dans Xcode : **Product → Test**. La suite contient désormais **20 tests**, dont les imports, la compatibilité des sauvegardes, la pagination Invidious, les erreurs HTTP et l’annulation. **Un test en réseau réel** cherche un titre, récupère son AAC, vérifie une durée de morceau complet et un signal PCM non silencieux, démarre le moteur natif puis vérifie l’avancement, le seek et la pause sur simulateur. Ce test nécessite une instance fonctionnelle et ne se transforme pas en réussite quand le réseau échoue.
+Dans Xcode : **Product → Test**. La suite contient désormais **25 tests**, dont les imports, la compatibilité des sauvegardes, la pagination Invidious, les erreurs HTTP, le filtrage des chansons YouTube Music, l’annulation et le dépassement du délai global. **Un test en réseau réel** cherche une chanson YouTube Music, démarre la lecture progressive à froid (sans fichier audio complet en cache), mesure le premier avancement avec un seuil de 12 s, vérifie l’audio complet et un signal PCM non silencieux, puis teste le passage au moteur d’effets, le seek et la pause sur simulateur. Ce test nécessite une instance fonctionnelle et ne se transforme pas en réussite quand le réseau échoue. Le temps réellement observé figure dans les logs ; ce seuil de test ne signifie pas une promesse de démarrage instantané sur un iPhone physique.
 
 Contrôle léger depuis Windows, sans télécharger un morceau complet : `python tools/probe_invidious.py`. Il vérifie la recherche, les métadonnées et 8 Ko du flux direct/relayé ; ce n’est pas un test d’écoute iPhone.
 

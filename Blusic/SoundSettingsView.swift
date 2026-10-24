@@ -14,6 +14,16 @@ struct SoundSettingsView: View {
     ]
     var body: some View {
         Form {
+            if player.isStreaming {
+                Section {
+                    Text("La musique démarre en lecture progressive. La vitesse est déjà réglable ; l’égaliseur et la tonalité utilisent le moteur complet une fois l’audio préparé.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Button { player.prepareNativeEffects() } label: {
+                        HStack { Text(player.preparingEffects ? "Préparation des effets…" : "Préparer les effets audio"); if player.preparingEffects { Spacer(); ProgressView() } }
+                    }.disabled(player.preparingEffects)
+                    if let message = player.effectsMessage { Text(message).font(.caption).foregroundStyle(.secondary) }
+                }
+            }
             Section {
                 VStack(alignment: .leading, spacing: 12) {
                     HStack { Label("Vitesse", systemImage: "speedometer"); Spacer(); Text(String(format: "%.2f×", library.settings.playbackRate)).monospacedDigit().foregroundStyle(library.settings.color) }

@@ -4,16 +4,23 @@ struct SearchView: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var player: AudioPlayer
     @FocusState private var focused: Bool
-    @State private var query = ""
+    @State private var query = {
+        #if DEBUG
+        if let argument = ProcessInfo.processInfo.arguments.first(where: { $0.hasPrefix("--blusic-query=") }) {
+            return String(argument.dropFirst("--blusic-query=".count))
+        }
+        #endif
+        return ""
+    }()
     @State private var scope = "Catalogue"
     @State private var results: [Track] = []
     @State private var loading = false
     @State private var error: String?
-    @State private var page = 1
-    @State private var hasMore = false
+    @State private var continuation: String?
     @State private var loadingMore = false
     @State private var retry = 0
     @State private var pageTask: Task<Void, Never>?
+    @State private var prefetchTask: Task<Void, Never>?
     private var searchKey: String { "\(scope)|\(query)|\(library.settings.invidiousAddress)|\(library.settings.usesInvidiousFallback)|\(retry)" }
     private var localResults: [Track] {
         library.tracks.filter { "\($0.title) \($0.subtitle) \($0.album)".localizedStandardContains(query) }
@@ -23,13 +30,13 @@ struct SearchView: View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 23) {
                 VStack(alignment: .leading, spacing: 7) {
-                    Text("SUIS TA CURIOSITÉ").font(.system(size: 10, weight: .bold)).tracking(2.5).foregroundStyle(library.settings.color)
-                    Text("Recherche").font(.system(size: 34, weight: .bold, design: .rounded)).tracking(-1.2)
-                }.padding(.top, 18)
+                    Text("Recherche").font(.system(size: 27, weight: .bold)).tracking(-0.8)
+                }.padding(.top, 14)
                 HStack(spacing: 10) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Titres, artistes, albums…", text: $query).focused($focused)
+                    TextField("Un titre ou un artiste…", text: $query).focused($focused)
                         .submitLabel(.search).autocorrectionDisabled()
+                        .onSubmit { focused = false }
                     if !query.isEmpty { Button { query = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary) }.accessibilityLabel("Effacer la recherche") }
                 }.padding(16).surface(radius: 17)
                 Picker("Rechercher dans", selection: $scope) {
@@ -41,20 +48,19 @@ struct SearchView: View {
                     VStack(alignment: .leading, spacing: 18) {
                         SectionHeading(title: "Qu’est-ce qui te fait vibrer ?")
                         let genres = ["Électronique", "Jazz", "Rap français", "Indie", "Piano", "Soul"]
-                        let colors: [Color] = [.indigo, .orange, .blue, .purple, .teal, .pink]
                         LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                             ForEach(Array(genres.enumerated()), id: \.offset) { i, genre in
                                 Button { query = genre; scope = "Catalogue"; focused = false } label: {
                                     ZStack(alignment: .bottomLeading) {
-                                        LinearGradient(colors: [colors[i].opacity(0.8), colors[i].opacity(0.18)], startPoint: .topLeading, endPoint: .bottomTrailing)
+                                        Palette.surface
                                         Image(systemName: ["waveform", "pianokeys", "mic.fill", "guitars.fill", "pianokeys", "sparkles"][i])
-                                            .font(.system(size: 64, weight: .ultraLight)).rotationEffect(.degrees(-18)).foregroundStyle(.white.opacity(0.13)).frame(maxWidth: .infinity, alignment: .trailing).offset(x: 12, y: -10)
-                                        Text(genre).font(.system(size: 18, weight: .bold, design: .rounded)).foregroundStyle(.white).padding(16)
-                                    }.frame(height: 110).clipShape(RoundedRectangle(cornerRadius: 19))
+                                            .font(.system(size: 30, weight: .light)).foregroundStyle(.secondary).frame(maxWidth: .infinity, alignment: .trailing).padding(13)
+                                        Text(genre).font(.system(size: 16, weight: .semibold)).foregroundStyle(.primary).padding(13)
+                                    }.frame(height: 88).clipShape(RoundedRectangle(cornerRadius: 10))
                                 }.buttonStyle(.plain)
                             }
                         }
-                        Text("Catalogue YouTube public via Invidious · Aucune clé API. Lecture audio native, qualité AAC disponible selon le titre. L’instance peut être changée dans les réglages.")
+                        Text("Chansons du catalogue YouTube Music : artistes, albums et pochettes. Invidious est utilisé uniquement pour récupérer l’audio. Aucune clé API requise.")
                             .font(.caption).foregroundStyle(.secondary).lineSpacing(4)
                     }
                 } else if loading { ProgressView("Recherche en cours…").frame(maxWidth: .infinity).padding(30) }
@@ -66,7 +72,7 @@ struct SearchView: View {
                     let tracks = scope == "Catalogue" ? results : localResults
                     if tracks.isEmpty { EmptyState(symbol: "magnifyingglass", title: "Pas encore trouvé", message: "Essaie un autre titre ou un autre artiste.") }
                     else {
-                        SectionHeading(title: "\(tracks.count) résultats", subtitle: scope == "Catalogue" ? "YouTube via Invidious · audio natif" : "Dans ta bibliothèque")
+                        SectionHeading(title: "\(tracks.count) titres", subtitle: scope == "Catalogue" ? "YouTube Music · chansons" : "Dans ta bibliothèque")
                         ForEach(tracks) { track in
                             TrackRow(track: track, context: tracks) {
                                 let saved = library.add(track)
@@ -74,7 +80,7 @@ struct SearchView: View {
                                 focused = false
                             }
                         }
-                        if scope == "Catalogue", hasMore {
+                        if scope == "Catalogue", continuation != nil {
                             Button {
                                 pageTask?.cancel()
                                 pageTask = Task { await loadMore() }
@@ -88,33 +94,38 @@ struct SearchView: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .task(id: searchKey) { pageTask?.cancel(); await search() }
-        .onDisappear { pageTask?.cancel() }
+        .onDisappear { pageTask?.cancel(); prefetchTask?.cancel() }
     }
     private func search() async {
-        error = nil; loading = false; results = []; page = 1; hasMore = false; loadingMore = false
+        prefetchTask?.cancel()
+        error = nil; loading = false; results = []; continuation = nil; loadingMore = false
         guard scope == "Catalogue", !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         loading = true
         do {
             try await Task.sleep(for: .milliseconds(650))
-            let service = try InvidiousService(address: library.settings.invidiousAddress, automaticFallback: library.settings.usesInvidiousFallback)
-            let found = try await service.search(query)
+            let found = try await MusicCatalogService().search(query)
             try Task.checkCancellation()
-            results = found; loading = false; hasMore = !found.isEmpty
+            results = found.tracks; loading = false; continuation = found.continuation
+            let settings = library.settings
+            prefetchTask = Task {
+                do { try await Task.sleep(for: .milliseconds(400)) } catch { return }
+                await InvidiousAudioLoader.prefetch(found.tracks, settings: settings)
+            }
         } catch is CancellationError { }
         catch { if !Task.isCancelled { self.error = error.localizedDescription; loading = false } }
     }
     private func loadMore() async {
+        guard let token = continuation else { return }
         let key = searchKey
         loadingMore = true
         defer { if key == searchKey { loadingMore = false } }
         do {
-            let service = try InvidiousService(address: library.settings.invidiousAddress, automaticFallback: library.settings.usesInvidiousFallback)
-            let found = try await service.search(query, page: page + 1)
+            let found = try await MusicCatalogService().search(query, continuation: token)
             try Task.checkCancellation()
             guard key == searchKey else { return }
             let ids = Set(results.map(\.location))
-            let new = found.filter { !ids.contains($0.location) }
-            results.append(contentsOf: new); page += 1; hasMore = !new.isEmpty
+            let new = found.tracks.filter { !ids.contains($0.location) }
+            results.append(contentsOf: new); continuation = new.isEmpty ? nil : found.continuation
         } catch { if !Task.isCancelled, key == searchKey { library.error = error.localizedDescription } }
     }
 }

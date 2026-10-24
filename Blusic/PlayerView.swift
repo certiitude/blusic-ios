@@ -18,9 +18,9 @@ struct PlayerView: View {
                 ScrollView(showsIndicators: false) {
                     VStack(spacing: 0) {
                         Capsule().fill(.white.opacity(0.28)).frame(width: 36, height: 5).padding(.top, 12)
-                        header.padding(.top, 13).padding(.bottom, 24)
+                        header.padding(.top, 10).padding(.bottom, 18)
                         if let track = player.current {
-                            let size = min(geometry.size.width - 72, max(190, geometry.size.height * 0.37))
+                            let size = min(geometry.size.width - 64, max(160, geometry.size.height * 0.30))
                             Group {
                                 if mode == "lyrics" { LyricsView(track: track).frame(height: size + 20) }
                                 else if mode == "queue" { queue.frame(height: size + 20) }
@@ -31,11 +31,27 @@ struct PlayerView: View {
                                         .animation(reduceMotion ? nil : .spring(response: 0.6, dampingFraction: 0.8), value: player.isPlaying)
                                         .frame(maxWidth: .infinity).frame(height: size + 20)
                                 }
-                            }.padding(.bottom, 27)
+                            }.padding(.bottom, 20)
 
-                            metadata(track).padding(.bottom, 24)
-                            progress.padding(.bottom, 18)
-                            transport.padding(.bottom, 24)
+                            metadata(track).padding(.bottom, 17)
+                            if player.isLoading {
+                                VStack(spacing: 8) {
+                                    if let fraction = player.loadingProgress { ProgressView(value: fraction).tint(.white) }
+                                    HStack {
+                                        Text(player.loadingMessage).font(.caption).foregroundStyle(.white.opacity(0.7)).lineLimit(2)
+                                        Spacer(minLength: 6)
+                                        if let fraction = player.loadingProgress { Text("\(Int(fraction * 100)) %").font(.caption.monospacedDigit()) }
+                                        Button("Annuler") { player.pause() }.font(.caption.bold())
+                                    }
+                                }.padding(.bottom, 16)
+                            } else if let error = player.error {
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(error).font(.caption).foregroundStyle(.white.opacity(0.8)).lineLimit(4)
+                                    Button("Réessayer") { player.play(track) }.font(.caption.bold())
+                                }.frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 14)
+                            }
+                            progress.padding(.bottom, 12)
+                            transport.padding(.bottom, 16)
                             HStack(spacing: 12) {
                                 Image(systemName: "speaker.fill").font(.system(size: 11))
                                 Slider(value: Binding(get: { Double(library.settings.volume) }, set: { library.settings.volume = Float($0) }), in: 0...1)
@@ -52,7 +68,7 @@ struct PlayerView: View {
                                 Text("Arrêt à la fin du titre").font(.caption).foregroundStyle(.white.opacity(0.6)).padding(.top, 14)
                             }
                         }
-                    }.padding(.horizontal, 30).padding(.bottom, 30).frame(minHeight: geometry.size.height, alignment: .top)
+                    }.padding(.horizontal, 28).padding(.bottom, 20).frame(maxWidth: .infinity).frame(minHeight: geometry.size.height, alignment: .top)
                 }
             }
         }
@@ -64,8 +80,8 @@ struct PlayerView: View {
         GeometryReader { geometry in
             ZStack {
                 Color(red: 0.04, green: 0.09, blue: 0.14)
-                Image(player.current?.artwork ?? "cover-night").resizable().scaledToFill()
-                    .frame(width: geometry.size.width, height: geometry.size.height).blur(radius: 80).opacity(0.65)
+                ArtworkView(track: player.current, size: max(geometry.size.width, geometry.size.height), radius: 0)
+                    .frame(width: geometry.size.width, height: geometry.size.height).clipped().blur(radius: 70).opacity(0.5)
                 LinearGradient(colors: [.black.opacity(0.1), .black.opacity(0.45)], startPoint: .top, endPoint: .bottom)
             }.clipped()
         }.ignoresSafeArea()
@@ -95,13 +111,16 @@ struct PlayerView: View {
     private func metadata(_ track: Track) -> some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 7) {
-                Text(track.title).font(.system(size: 25, weight: .bold, design: .rounded)).tracking(-0.7).lineLimit(1).minimumScaleFactor(0.7)
+                Text(track.title).font(.system(size: 24, weight: .bold)).tracking(-0.5).lineLimit(1).minimumScaleFactor(0.7)
                 Text(track.subtitle).font(.system(size: 17)).foregroundStyle(.white.opacity(0.58)).lineLimit(1)
                 HStack(spacing: 5) {
                     Image(systemName: track.isOffline ? "checkmark.circle" : "waveform")
                     Text(player.formatLabel.isEmpty ? track.sourceLabel : player.formatLabel)
                     if player.loopB != nil { Text("· BOUCLE A–B") }
                 }.font(.system(size: 9, weight: .semibold)).tracking(0.7).foregroundStyle(.white.opacity(0.45)).padding(.top, 3)
+                if let seconds = player.firstAudioLatency {
+                    Text(String(format: "Démarrage : %.1f s", seconds)).font(.system(size: 9)).foregroundStyle(.white.opacity(0.4))
+                }
             }
             Spacer(minLength: 0)
             IconButton(symbol: library.favorites.contains(track.id) ? "heart.fill" : "heart", label: "Favori") { library.toggleFavorite(track) }
@@ -132,11 +151,11 @@ struct PlayerView: View {
             Spacer(minLength: 5)
             Button { player.toggle(); library.haptic() } label: {
                 ZStack {
-                    Circle().fill(.white.opacity(0.95)).frame(width: 72, height: 72)
-                    if player.isLoading { ProgressView().tint(.black) }
+                    Circle().fill(.white.opacity(0.95)).frame(width: 66, height: 66)
+                    if player.isLoading { Image(systemName: "xmark").font(.system(size: 22, weight: .semibold)).foregroundStyle(.black) }
                     else { Image(systemName: player.isPlaying ? "pause.fill" : "play.fill").font(.system(size: 27, weight: .semibold)).foregroundStyle(.black).offset(x: player.isPlaying ? 0 : 2) }
                 }
-            }.buttonStyle(.plain).accessibilityLabel(player.isPlaying ? "Pause" : "Lire")
+            }.buttonStyle(.plain).accessibilityLabel(player.isLoading ? "Annuler le chargement" : player.isPlaying ? "Pause" : "Lire")
             Spacer(minLength: 5)
             IconButton(symbol: "forward.end.fill", label: "Titre suivant") { player.next() }
             Spacer(minLength: 5)

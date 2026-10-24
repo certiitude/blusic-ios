@@ -14,9 +14,8 @@ struct LibraryView: View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 7) {
-                    Text("TON PETIT MONDE").font(.system(size: 10, weight: .bold)).tracking(2.6).foregroundStyle(library.settings.color)
                     HStack {
-                        Text("Bibliothèque").font(.system(size: 34, weight: .bold, design: .rounded)).tracking(-1.2)
+                        Text("Bibliothèque").font(.system(size: 27, weight: .bold)).tracking(-0.8)
                         Spacer()
                         Menu {
                             Button { showAudioImport = true } label: { Label("Importer des fichiers audio", systemImage: "square.and.arrow.down") }
@@ -121,13 +120,13 @@ struct LibraryView: View {
     }
     private func smartCard(_ title: String, count: Int, symbol: String, colors: [Color]) -> some View {
         VStack(alignment: .leading, spacing: 20) {
-            Image(systemName: symbol).font(.system(size: 24)).foregroundStyle(.white)
+            Image(systemName: symbol).font(.system(size: 23)).foregroundStyle(.primary)
             VStack(alignment: .leading, spacing: 5) {
-                Text(title).font(.system(size: 15, weight: .bold)).foregroundStyle(.white)
-                Text("\(count) titres").font(.system(size: 11)).foregroundStyle(.white.opacity(0.7))
+                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(.primary)
+                Text("\(count) titres").font(.system(size: 11)).foregroundStyle(.secondary)
             }
         }.frame(maxWidth: .infinity, alignment: .leading).padding(19)
-            .background(LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 21))
+            .surface(radius: 12)
     }
 }
 
@@ -228,6 +227,7 @@ struct TrackCollectionView: View {
         }
         .listStyle(.plain).scrollContentBackground(.hidden).background(Palette.background)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(.visible, for: .navigationBar)
         .searchable(text: $query, prompt: "Dans cette sélection")
         .toolbar {
             if playlist != nil {
@@ -307,6 +307,6 @@ struct ArtistView: View {
                 SectionHeading(title: "Titres", subtitle: "\(tracks.count) titres dans ta collection")
                 ForEach(tracks) { TrackRow(track: $0, context: tracks) }
             }.pagePadding().padding(.bottom, 24)
-        }.background(Palette.background).navigationBarTitleDisplayMode(.inline)
+        }.background(Palette.background).navigationBarTitleDisplayMode(.inline).toolbar(.visible, for: .navigationBar)
     }
 }

@@ -2,14 +2,14 @@
 
 ## Statut de ce livrable
 
-Projet natif généré sous Windows, puis **compilé avec Xcode 26.3 sur GitHub Actions**. Les **10 XCTest ont réussi sur iPhone Simulator** et une IPA physique arm64 non signée a été récupérée. Voir `COMPILATION-RESULTAT.md`. Les essais manuels ci-dessous restent nécessaires ; les tests unitaires ne prouvent pas le fonctionnement audio/UI complet sur iPhone.
+Projet natif généré sous Windows, puis **compilé avec Xcode 26.3 sur GitHub Actions**. Pour la version **1.1.0**, **20 XCTest ont réussi sur iPhone Simulator**, dont un test réseau réel Invidious avec décodage d’un titre complet et commandes natives, et une IPA physique arm64 non signée a été récupérée. Voir `COMPILATION-RESULTAT.md`. Les essais manuels ci-dessous restent nécessaires ; ces tests ne prouvent pas le fonctionnement audio/UI complet sur appareil physique.
 
 ## Compilation
 
 - [ ] Xcode ouvre le projet et affiche les cibles Blusic et BlusicTests.
 - [ ] Build du scheme Blusic pour iPhone Simulator avec Xcode 16+.
 - [x] Build avec Xcode 26.3 réussi, incluant la compilation de la branche `glassEffect`. Rendu visuel à vérifier séparément.
-- [x] 10 tests unitaires passent sur le simulateur iPhone via GitHub Actions.
+- [x] 20 tests passent sur le simulateur iPhone via GitHub Actions, dont recherche/flux/décodage/lecture Invidious en réseau réel.
 - [ ] Signature par une Team Apple et installation sur iPhone physique.
 - [ ] L’icône reprend le symbole blanc sur fond noir et l’écran de lancement n’émet pas de flash blanc.
 

@@ -19,13 +19,13 @@ La piste communautaire la plus proche vérifiée ici pour un grand catalogue san
 - Une recherche `GET /api/v1/search?q=Niska%20Sal%C3%A9&type=video` a renvoyé le clip officiel « Niska - Salé » et son identifiant `KVpeHSX2ZEY`.
 - `GET /api/v1/videos/KVpeHSX2ZEY` a renvoyé une durée de 170 secondes et des formats audio, dont **AAC à 130 544 bit/s / 44,1 kHz / stéréo** et **Opus à 153 666 bit/s / 48 kHz / stéréo**.
 - Ce sont des flux **avec pertes**, pas du FLAC et pas une garantie de débit pour tous les morceaux.
-- Le test vérifie la recherche et les métadonnées des flux ; **aucun test d’écoute de ces flux dans Blusic ou sur iPhone n’a encore été effectué**.
+- La recherche initiale vérifiait seulement les métadonnées. **Depuis la version 1.1.0**, un test réseau sur iPhone Simulator a téléchargé et décodé 170,247 secondes d’AAC, vérifié un signal non silencieux et exercé la lecture, le seek et la pause du moteur natif. Les essais manuels sur iPhone physique restent à faire.
 - Une autre instance, `invidious.nerdvpn.de`, a répondu **HTTP 401** au même type de recherche. Les instances publiques ne sont donc pas interchangeables ni garanties.
 - Le projet impose l’absence de publicité à ses instances publiques listées, mais signale également des problèmes de blocage par YouTube.
 
 **Périmètre :** contenus publics accessibles sur YouTube selon la région et la disponibilité. Ce n’est pas un accès aux bibliothèques privées Spotify/Apple Music, ni une garantie de retrouver chaque titre de ces services.
 
-**État du code :** Invidious est intégré dans la version **1.1.0** : recherche sans clé, import de playlists, résolution des flux et lecture AAC native. La compilation et les essais de cette version sont suivis séparément de la compilation initiale 1.0.0.
+**État du code :** Invidious est intégré dans la version **1.1.0** : recherche sans clé, import de playlists, résolution des flux et lecture AAC native. Compilation réussie et **20 tests passés**, dont le test réseau/natif, dans https://github.com/certiitude/blusic-ios/actions/runs/40108900861.
 
 ## Jamendo : FLAC documenté, catalogue indépendant
 

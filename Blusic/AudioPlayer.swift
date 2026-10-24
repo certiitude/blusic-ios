@@ -6,13 +6,20 @@ import MediaPlayer
 import UIKit
 import SwiftUI
 
-/// One native audio graph. Playback never depends on a web view or a foreground timer.
+/// Progressive AVPlayer for immediate network playback, plus the full native
+/// effects graph for local/prepared audio. No web view is used for normal music.
 @MainActor
 final class AudioPlayer: ObservableObject {
     @Published private(set) var current: Track?
     @Published private(set) var queue: [Track] = []
     @Published private(set) var isPlaying = false
     @Published private(set) var isLoading = false
+    @Published private(set) var loadingMessage = ""
+    @Published private(set) var loadingProgress: Double?
+    @Published private(set) var isStreaming = false
+    @Published private(set) var preparingEffects = false
+    @Published private(set) var effectsMessage: String?
+    @Published private(set) var firstAudioLatency: Double?
     @Published private(set) var position = 0.0
     @Published private(set) var duration = 0.0
     @Published private(set) var formatLabel = ""
@@ -36,6 +43,21 @@ final class AudioPlayer: ObservableObject {
     private var scheduledOffset = 0.0
     private var generation = UUID()
     private var loadTask: Task<Void, Never>?
+    private var loadingWatchdog: Task<Void, Never>?
+    private let loadingTimeout: TimeInterval
+    private let onlineLoader: any OnlineAudioLoading
+    private var streamPlayer: AVPlayer?
+    private var streamSource: InvidiousStream?
+    private var streamObservations: [NSKeyValueObservation] = []
+    private var streamEndObservation: NSObjectProtocol?
+    private var alternateTask: Task<Void, Never>?
+    private var bufferWatchdog: Task<Void, Never>?
+    private var effectsTask: Task<Void, Never>?
+    private var wantsPlayback = false
+    private var usedDirectFallback = false
+    private var tryingAlternate = false
+    private var beganLoading = Date()
+    private var requestedEffects = false
     private var timer: Timer?
     private var lastTick = Date()
     private var sessionID = UUID()
@@ -47,8 +69,10 @@ final class AudioPlayer: ObservableObject {
     private var playedIDs = Set<UUID>()
     private var artworkTask: Task<Void, Never>?
 
-    init(library: LibraryStore) {
+    init(library: LibraryStore, loadingTimeout: TimeInterval = 35, onlineLoader: any OnlineAudioLoading = InvidiousAudioLoader()) {
         self.library = library
+        self.loadingTimeout = loadingTimeout
+        self.onlineLoader = onlineLoader
         engine.attach(node); engine.attach(pitch); engine.attach(equalizer)
         for (index, band) in equalizer.bands.enumerated() {
             band.filterType = .parametric; band.frequency = equalizerFrequencies[index]
@@ -81,10 +105,14 @@ final class AudioPlayer: ObservableObject {
         }
         if !queue.contains(where: { $0.id == track.id }) { queue.append(track) }
         flushListening()
-        loadTask?.cancel(); artworkTask?.cancel()
+        loadTask?.cancel(); loadingWatchdog?.cancel(); artworkTask?.cancel()
+        alternateTask?.cancel(); bufferWatchdog?.cancel(); effectsTask?.cancel(); stopStreaming()
         generation = UUID()
         node.stop(); engine.stop()
         audioFile = nil; isPlaying = false; isLoading = false
+        error = nil; loadingMessage = ""; loadingProgress = nil
+        firstAudioLatency = nil; beganLoading = Date(); wantsPlayback = true; usedDirectFallback = false; tryingAlternate = false
+        preparingEffects = false; effectsMessage = nil; requestedEffects = false
         current = track; position = 0; duration = track.duration
         formatLabel = ""; loopA = nil; loopB = nil
         sessionID = UUID(); lastTick = Date()
@@ -99,69 +127,70 @@ final class AudioPlayer: ObservableObject {
             return
         }
         isLoading = true
+        loadingMessage = "Préparation de l’audio…"
         let token = generation
+        loadingWatchdog = Task { @MainActor [weak self] in
+            guard let timeout = self?.loadingTimeout else { return }
+            do { try await Task.sleep(for: .seconds(timeout)) } catch { return }
+            guard let self, generation == token, isLoading else { return }
+            generation = UUID(); loadTask?.cancel()
+            alternateTask?.cancel(); bufferWatchdog?.cancel(); wantsPlayback = false; stopStreaming()
+            isLoading = false; loadingMessage = "Chargement interrompu"; loadingProgress = nil
+            error = "Le chargement n’a pas abouti en \(Int(timeout.rounded())) s. Le serveur audio peut être bloqué ou trop lent. Réessaie ou change d’instance dans les réglages."
+        }
         loadTask = Task { [weak self] in
             guard let self else { return }
             do {
                 let fileURL: URL
                 var reportedBitrate: Int?
                 if track.source == .invidious {
-                    let service = try InvidiousService(address: library.settings.invidiousAddress,
-                                                       automaticFallback: library.settings.usesInvidiousFallback)
-                    let audio = try await service.audio(for: track)
-                    fileURL = audio.fileURL
-                    reportedBitrate = audio.bitrate
+                    if let streaming = onlineLoader as? any StreamingAudioLoading {
+                        loadingMessage = "Connexion au flux audio…"
+                        let resource = try await streaming.playback(track, settings: library.settings, direct: false)
+                        try Task.checkCancellation()
+                        guard generation == token else { return }
+                        switch resource {
+                        case .stream(let stream):
+                            try startStreaming(stream, token: token)
+                            return
+                        case .file(let audio): fileURL = audio.fileURL; reportedBitrate = audio.bitrate
+                        }
+                    } else {
+                        let audio = try await onlineLoader.load(track, settings: library.settings, progress: { [weak self] update in
+                            Task { @MainActor [weak self] in
+                                guard let self, generation == token, isLoading else { return }
+                                loadingMessage = update.message; loadingProgress = update.fraction
+                            }
+                        })
+                        fileURL = audio.fileURL; reportedBitrate = audio.bitrate
+                    }
                 } else if track.source == .remote, let url = nativeURL {
                     fileURL = try await AudioCache.shared.localCopy(of: url)
                 } else if let url = nativeURL { fileURL = url }
                 else { throw BlusicError.message("Source audio introuvable.") }
                 try Task.checkCancellation()
                 guard generation == token else { return }
-                let file = try AVAudioFile(forReading: fileURL)
-                guard file.length > 0 else { throw BlusicError.message("Le fichier audio est vide.") }
-                audioFile = file
-                duration = Double(file.length) / file.processingFormat.sampleRate
-                let rate = String(format: "%g", file.fileFormat.sampleRate / 1000)
-                let codec: String
-                switch file.fileFormat.streamDescription.pointee.mFormatID {
-                case kAudioFormatLinearPCM: codec = "PCM · sans perte"
-                case kAudioFormatAppleLossless: codec = "ALAC · sans perte"
-                case kAudioFormatFLAC: codec = "FLAC · sans perte"
-                case kAudioFormatMPEG4AAC: codec = "AAC"
-                case kAudioFormatMPEGLayer3: codec = "MP3"
-                default: codec = "Audio natif"
-                }
-                formatLabel = "\(codec) · \(rate) kHz"
-                if track.source == .invidious {
-                    let quality = reportedBitrate.map { " · \(Int((Double($0) / 1000).rounded())) kbit/s" } ?? ""
-                    formatLabel = "\(codec)\(quality) · Invidious"
-                }
-                engine.disconnectNodeOutput(node)
-                engine.disconnectNodeOutput(pitch)
-                engine.disconnectNodeOutput(equalizer)
-                engine.connect(node, to: pitch, format: file.processingFormat)
-                engine.connect(pitch, to: equalizer, format: file.processingFormat)
-                engine.connect(equalizer, to: engine.mainMixerNode, format: file.processingFormat)
-                try activateSession()
-                try engine.start()
-                schedule(at: 0)
-                node.play(); isPlaying = true; isLoading = false
-                lastTick = Date()
-                updateNowPlaying(loadArtwork: true)
+                try startNativeFile(fileURL, track: track, bitrate: reportedBitrate, at: 0, autoplay: true)
             } catch is CancellationError {
-                if generation == token { isLoading = false }
+                if generation == token { isLoading = false; loadingWatchdog?.cancel(); loadingMessage = ""; loadingProgress = nil }
             } catch {
                 guard generation == token else { return }
                 isLoading = false; isPlaying = false
+                loadingWatchdog?.cancel(); loadingMessage = "Échec du chargement"; loadingProgress = nil
                 self.error = "Lecture impossible : \(error.localizedDescription)"
             }
         }
     }
 
     func toggle() {
+        if isLoading { pause(); return }
         if isPlaying { pause(); return }
         guard let current else { if let first = queue.first ?? library.tracks.first { play(first) }; return }
         if current.source == .youtube { youtubeTrack = current; return }
+        if let streamPlayer {
+            wantsPlayback = true; streamPlayer.playImmediately(atRate: library.settings.playbackRate)
+            return
+        }
         guard audioFile != nil else { play(current); return }
         do {
             try activateSession()
@@ -173,11 +202,18 @@ final class AudioPlayer: ObservableObject {
     }
     func pause() {
         flushListening()
-        if isLoading { generation = UUID(); loadTask?.cancel(); isLoading = false }
+        if isLoading { generation = UUID(); loadTask?.cancel(); stopStreaming(); isLoading = false }
+        wantsPlayback = false; streamPlayer?.pause(); alternateTask?.cancel(); bufferWatchdog?.cancel()
+        loadingWatchdog?.cancel(); loadingMessage = ""; loadingProgress = nil
         node.pause(); isPlaying = false
         updateNowPlaying()
     }
     func seek(to seconds: Double) {
+        if let streamPlayer {
+            let target = max(0, min(seconds, max(0, duration - 0.05)))
+            streamPlayer.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            position = target; updateNowPlaying(); return
+        }
         guard audioFile != nil else { return }
         let playing = isPlaying
         schedule(at: max(0, min(seconds, max(0, duration - 0.02))))
@@ -225,7 +261,7 @@ final class AudioPlayer: ObservableObject {
     }
     func forget(_ id: UUID) {
         if current?.id == id {
-            pause(); node.stop(); engine.stop(); audioFile = nil; current = nil; position = 0; duration = 0
+            pause(); stopStreaming(); effectsTask?.cancel(); node.stop(); engine.stop(); audioFile = nil; current = nil; position = 0; duration = 0
             MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         }
         queue.removeAll { $0.id == id }; persistQueue()
@@ -245,7 +281,161 @@ final class AudioPlayer: ObservableObject {
         let headroom = settings.equalizerEnabled ? max(0, settings.equalizer.max() ?? 0) : 0
         equalizer.globalGain = -headroom
         engine.mainMixerNode.outputVolume = min(1, max(0, settings.volume))
+        streamPlayer?.volume = min(1, max(0, settings.volume))
+        if let streamPlayer, isPlaying { streamPlayer.rate = settings.playbackRate }
+        if isStreaming, settings.equalizerEnabled || settings.pitch != 0 { prepareNativeEffects() }
         updateNowPlaying()
+    }
+
+    private func startNativeFile(_ url: URL, track: Track, bitrate: Int?, at seconds: Double, autoplay: Bool) throws {
+        let file = try AVAudioFile(forReading: url)
+        guard file.length > 0 else { throw BlusicError.message("Le fichier audio est vide.") }
+        audioFile = file
+        duration = Double(file.length) / file.processingFormat.sampleRate
+        let codec: String
+        switch file.fileFormat.streamDescription.pointee.mFormatID {
+        case kAudioFormatLinearPCM: codec = "PCM · sans perte"
+        case kAudioFormatAppleLossless: codec = "ALAC · sans perte"
+        case kAudioFormatFLAC: codec = "FLAC · sans perte"
+        case kAudioFormatMPEG4AAC: codec = "AAC"
+        case kAudioFormatMPEGLayer3: codec = "MP3"
+        default: codec = "Audio natif"
+        }
+        let rate = String(format: "%g", file.fileFormat.sampleRate / 1000)
+        let quality = bitrate.flatMap { $0 > 0 ? " · \(Int((Double($0) / 1000).rounded())) kbit/s" : nil } ?? ""
+        formatLabel = track.source == .invidious ? "\(codec)\(quality) · Invidious" : "\(codec) · \(rate) kHz"
+        engine.disconnectNodeOutput(node); engine.disconnectNodeOutput(pitch); engine.disconnectNodeOutput(equalizer)
+        engine.connect(node, to: pitch, format: file.processingFormat)
+        engine.connect(pitch, to: equalizer, format: file.processingFormat)
+        engine.connect(equalizer, to: engine.mainMixerNode, format: file.processingFormat)
+        try activateSession(); try engine.start()
+        schedule(at: min(seconds, max(0, duration - 0.05)))
+        stopStreaming()
+        if autoplay { node.play() }
+        isPlaying = autoplay; wantsPlayback = autoplay; isLoading = false
+        loadingWatchdog?.cancel(); loadingMessage = ""; loadingProgress = nil
+        lastTick = Date(); updateNowPlaying(loadArtwork: true)
+    }
+
+    private func startStreaming(_ source: InvidiousStream, token: UUID, at seconds: Double = 0) throws {
+        stopStreaming()
+        try activateSession()
+        let item = AVPlayerItem(url: source.url)
+        item.preferredForwardBufferDuration = 0.5
+        item.audioTimePitchAlgorithm = .spectral
+        let player = AVPlayer(playerItem: item)
+        player.automaticallyWaitsToMinimizeStalling = false
+        player.volume = library.settings.volume
+        streamPlayer = player; streamSource = source; isStreaming = true; wantsPlayback = true
+        duration = source.duration > 0 ? source.duration : duration
+        formatLabel = "AAC · \(Int((Double(source.bitrate) / 1000).rounded())) kbit/s · progressif"
+        loadingMessage = "Mise en tampon du flux…"
+        streamObservations = [
+            player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] observed, _ in
+                Task { @MainActor [weak self] in
+                    guard let self, streamPlayer === observed, generation == token else { return }
+                    if observed.timeControlStatus == .playing {
+                        isPlaying = true; lastTick = Date()
+                        observed.rate = library.settings.playbackRate
+                        if firstAudioLatency != nil { finishLoading() }
+                        updateNowPlaying(loadArtwork: true)
+                    } else if observed.timeControlStatus == .waitingToPlayAtSpecifiedRate, wantsPlayback {
+                        flushListening(); isPlaying = false; isLoading = true
+                        loadingMessage = "Mise en tampon du flux…"
+                        if bufferWatchdog == nil {
+                            bufferWatchdog = Task { @MainActor [weak self] in
+                                do { try await Task.sleep(for: .seconds(8)) } catch { return }
+                                guard let self, generation == token, isLoading else { return }
+                                retryStreamOrFail(token: token)
+                            }
+                        }
+                    }
+                }
+            },
+            item.observe(\.status, options: [.new]) { [weak self] observed, _ in
+                guard observed.status == .failed else { return }
+                Task { @MainActor [weak self] in self?.retryStreamOrFail(token: token) }
+            }
+        ]
+        streamEndObservation = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, streamPlayer === player, generation == token else { return }
+                position = duration; next(userInitiated: false)
+            }
+        }
+        if seconds > 0 { player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
+        player.playImmediately(atRate: library.settings.playbackRate)
+        bufferWatchdog?.cancel()
+        bufferWatchdog = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            guard let self, generation == token, isLoading else { return }
+            retryStreamOrFail(token: token)
+        }
+    }
+
+    private func retryStreamOrFail(token: UUID) {
+        guard generation == token, wantsPlayback, !tryingAlternate, let current else { return }
+        guard !usedDirectFallback, let loader = onlineLoader as? any StreamingAudioLoading else {
+            stopStreaming(); isPlaying = false; isLoading = false; wantsPlayback = false
+            loadingWatchdog?.cancel(); bufferWatchdog?.cancel()
+            error = "Le flux ne démarre pas sur ce réseau. Réessaie ou change d’instance Invidious dans les réglages."
+            return
+        }
+        usedDirectFallback = true
+        tryingAlternate = true; bufferWatchdog?.cancel(); bufferWatchdog = nil
+        loadingMessage = "Essai d’un autre accès audio…"
+        alternateTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            defer { if generation == token { tryingAlternate = false; alternateTask = nil } }
+            do {
+                let resource = try await loader.playback(current, settings: library.settings, direct: true)
+                try Task.checkCancellation()
+                guard generation == token, wantsPlayback else { return }
+                switch resource {
+                case .stream(let source): try startStreaming(source, token: token, at: position)
+                case .file(let audio): try startNativeFile(audio.fileURL, track: current, bitrate: audio.bitrate, at: position, autoplay: true)
+                }
+            } catch {
+                guard generation == token, !Task.isCancelled else { return }
+                stopStreaming(); isLoading = false; isPlaying = false; wantsPlayback = false; loadingWatchdog?.cancel()
+                self.error = "Lecture impossible : \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func stopStreaming() {
+        streamObservations.removeAll()
+        if let observer = streamEndObservation { NotificationCenter.default.removeObserver(observer); streamEndObservation = nil }
+        streamPlayer?.pause(); streamPlayer = nil; streamSource = nil; isStreaming = false
+    }
+    private func finishLoading() {
+        isLoading = false; loadingMessage = ""; loadingProgress = nil
+        loadingWatchdog?.cancel(); loadingWatchdog = nil; bufferWatchdog?.cancel(); bufferWatchdog = nil
+    }
+
+    func prepareNativeEffects() {
+        requestedEffects = true
+        guard isStreaming, firstAudioLatency != nil, !preparingEffects, let source = streamSource, let current else { return }
+        preparingEffects = true; effectsMessage = "Préparation de l’égaliseur et de la tonalité…"
+        let token = generation
+        effectsTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let file = try await AudioCache.shared.localCopy(of: source.url,
+                    cacheKey: "invidious:\(current.location):aac:\(source.bitrate)", fileExtension: "m4a", expectedDuration: source.duration,
+                    session: InvidiousService.mediaSession)
+                await AudioCache.shared.storeInvidiousInfo(track: current, bitrate: source.bitrate, instance: source.instance)
+                try Task.checkCancellation()
+                guard generation == token, isStreaming else { return }
+                let seconds = streamPlayer?.currentTime().seconds ?? position
+                let playing = wantsPlayback
+                try startNativeFile(file, track: current, bitrate: source.bitrate, at: seconds.isFinite ? seconds : position, autoplay: playing)
+                preparingEffects = false; effectsMessage = nil
+            } catch {
+                guard generation == token, !Task.isCancelled else { return }
+                preparingEffects = false; effectsMessage = "La lecture continue ; les effets n’ont pas pu être préparés."
+            }
+        }
     }
 
     private func activateSession() throws {
@@ -275,8 +465,17 @@ final class AudioPlayer: ObservableObject {
             sleepDeadline = nil; pause(); library.notice = "Bonne nuit. Lecture arrêtée."
         }
         guard isPlaying else { lastTick = Date(); return }
-        if let render = node.lastRenderTime, let time = node.playerTime(forNodeTime: render) {
+        if let streamPlayer {
+            let seconds = streamPlayer.currentTime().seconds
+            if seconds.isFinite { position = seconds }
+            if let itemDuration = streamPlayer.currentItem?.duration.seconds, itemDuration.isFinite, itemDuration > 0 { duration = itemDuration }
+        } else if let render = node.lastRenderTime, let time = node.playerTime(forNodeTime: render) {
             position = min(duration, scheduledOffset + Double(time.sampleTime) / time.sampleRate)
+        }
+        if firstAudioLatency == nil, position > 0.05 {
+            firstAudioLatency = Date().timeIntervalSince(beganLoading)
+            finishLoading()
+            if isStreaming, requestedEffects || library.settings.equalizerEnabled || library.settings.pitch != 0 { prepareNativeEffects() }
         }
         flushListening(force: false)
         if let a = loopA, let b = loopB, b > a, position >= b { seek(to: a) }
@@ -362,7 +561,7 @@ final class AudioPlayer: ObservableObject {
         })
         observations.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
             Task { @MainActor [weak self] in
-                guard let self, isPlaying else { return }
+                guard let self, !isStreaming, isPlaying else { return }
                 let time = position
                 pause()
                 do { try engine.start(); schedule(at: time); node.play(); isPlaying = true; updateNowPlaying() }
@@ -374,22 +573,50 @@ final class AudioPlayer: ObservableObject {
 
 actor AudioCache {
     static let shared = AudioCache()
+    private struct CachedSource: Codable {
+        var bitrate: Int
+        var instance: URL
+        var expires: Date
+    }
+    private var directory: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("BlusicAudio")
+    }
+    private func destination(key: String, ext: String) -> URL {
+        let hash = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
+        return directory.appendingPathComponent(hash).appendingPathExtension(ext)
+    }
+    func cachedInvidious(track: Track) -> InvidiousAudio? {
+        let metadata = destination(key: "invidious:\(track.location):aac", ext: "json")
+        guard let data = try? Data(contentsOf: metadata), let source = try? JSONDecoder().decode(CachedSource.self, from: data),
+              source.expires > Date() else { return nil }
+        let file = destination(key: "invidious:\(track.location):aac:\(source.bitrate)", ext: "m4a")
+        do {
+            try validate(file, expectedDuration: track.duration)
+            return InvidiousAudio(fileURL: file, bitrate: source.bitrate, instance: source.instance)
+        } catch { return nil }
+    }
+    func storeInvidiousInfo(track: Track, bitrate: Int, instance: URL) {
+        let metadata = destination(key: "invidious:\(track.location):aac", ext: "json")
+        let source = CachedSource(bitrate: bitrate, instance: instance, expires: Date().addingTimeInterval(bitrate >= 90000 ? 86400 : 600))
+        if let data = try? JSONEncoder().encode(source) { try? data.write(to: metadata, options: .atomic) }
+    }
     func localCopy(of url: URL, cacheKey: String? = nil, fileExtension: String? = nil,
-                   expectedDuration: Double = 0, session: URLSession = .shared) async throws -> URL {
+                   expectedDuration: Double = 0, session: URLSession = .shared,
+                   progress: @escaping @Sendable (Double?) -> Void = { _ in }) async throws -> URL {
         guard url.scheme == "https" else { throw BlusicError.message("Seules les sources HTTPS sont acceptées.") }
-        let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("BlusicAudio")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let key = SHA256.hash(data: Data((cacheKey ?? url.absoluteString).utf8)).map { String(format: "%02x", $0) }.joined()
         let destination = directory.appendingPathComponent(key).appendingPathExtension(fileExtension ?? (url.pathExtension.isEmpty ? "audio" : url.pathExtension))
         if FileManager.default.fileExists(atPath: destination.path) {
-            do { try validate(destination, expectedDuration: expectedDuration); return destination }
+            do { try validate(destination, expectedDuration: expectedDuration); progress(1); return destination }
             catch { try? FileManager.default.removeItem(at: destination) }
         }
         var request = URLRequest(url: url)
-        request.timeoutInterval = 120
+        request.timeoutInterval = 8
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("Blusic/1.1 (iOS; Invidious client)", forHTTPHeaderField: "User-Agent")
-        let (temp, response) = try await session.download(for: request)
+        let delegate = AudioTransferProgress(progress: progress)
+        let (temp, response) = try await session.download(for: request, delegate: delegate)
         defer { try? FileManager.default.removeItem(at: temp) }
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw BlusicError.message("La source audio n’est pas accessible.")
@@ -413,4 +640,22 @@ actor AudioCache {
             throw BlusicError.message("Le fichier audio est vide, tronqué ou plus court que le morceau annoncé.")
         }
     }
+}
+
+private final class AudioTransferProgress: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let callback: @Sendable (Double?) -> Void
+    private let lock = NSLock()
+    private var lastFraction = -1.0
+    init(progress: @escaping @Sendable (Double?) -> Void) { callback = progress }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
+                    totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+        let fraction = min(1, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
+        lock.lock()
+        let shouldReport = fraction - lastFraction >= 0.025 || fraction == 1
+        if shouldReport { lastFraction = fraction }
+        lock.unlock()
+        if shouldReport { callback(fraction) }
+    }
+    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
 }

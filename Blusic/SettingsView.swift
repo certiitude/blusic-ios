@@ -79,7 +79,7 @@ struct SettingsView: View {
                 }
                 if let instanceStatus { Text(instanceStatus).font(.caption).foregroundStyle(.secondary) }
                 Link("Instances publiques Invidious", destination: URL(string: "https://docs.invidious.io/instances/")!)
-                Text("Catalogue YouTube public sans clé Google. Blusic sélectionne le meilleur flux AAC/M4A compatible et utilise le moteur audio natif : arrière-plan, égaliseur, vitesse et tonalité. Les URL temporaires sont résolues à chaque lecture et un relais est essayé si l’accès direct échoue.")
+                Text("La recherche interroge les chansons de YouTube Music. Cette instance sert à récupérer l’audio AAC/M4A pour le lecteur natif : arrière-plan, égaliseur, vitesse et tonalité. Le relais est essayé avant l’accès direct. Le chargement peut être annulé et s’arrête avec une erreur après 35 secondes au maximum.")
                     .font(.caption).foregroundStyle(.secondary)
             } header: { Text("Invidious") } footer: { Text("Service communautaire non officiel : certaines instances bloquent l’API et certains titres sont indisponibles. La qualité AAC est compressée, pas lossless. Les serveurs de secours proviennent de l’annuaire public du projet et doivent annoncer leur API comme active.") }
             Section("Ta bibliothèque") {
@@ -93,7 +93,7 @@ struct SettingsView: View {
             }
             Section("À propos") {
                 NavigationLink("Confidentialité et sources") { privacy }
-                LabeledContent("Version", value: "1.1.0")
+                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.2.0")
                 Text("Fait pour écouter. Pas pour te distraire.").font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -107,7 +107,7 @@ struct SettingsView: View {
         List {
             Section("Sur ton iPhone") { Text("Aucun compte Blusic, aucune publicité ajoutée, aucun outil de mesure d’audience. Fichiers, favoris, réglages, paroles et historique sont enregistrés dans le conteneur de l’application. Les sauvegardes iCloud de l’iPhone peuvent les inclure selon tes réglages système.") }
             Section("Connexions externes") {
-                Text("Les recherches, imports de playlists et identifiants vidéo sont transmis à l’instance Invidious choisie. En cas de panne, le secours automatique consulte api.invidious.io et peut contacter d’autres instances publiques. Les flux audio directs et certaines pochettes contactent Google ; les relais passent par l’instance. Les fichiers audio sont mis en cache dans le conteneur de Blusic. Une recherche de paroles transmet le titre et l’artiste à LRCLIB. Le lecteur vidéo officiel n’est ouvert que sur demande depuis le menu d’un titre ; il reste soumis aux règles et publicités YouTube.")
+                Text("La recherche de chansons transmet la requête à music.youtube.com, sans connexion au compte Google. Les imports de playlists et identifiants nécessaires à la lecture sont transmis à l’instance Invidious choisie. En cas de panne, le secours consulte api.invidious.io et peut contacter d’autres instances publiques. Les pochettes et flux directs peuvent contacter Google ; les relais passent par l’instance. Les fichiers validés sont mis en cache, avec une expiration de 24 heures pour la qualité normale ou de 10 minutes pour un flux bas débit. Une recherche de paroles transmet le titre et l’artiste à LRCLIB. Le lecteur vidéo officiel n’est ouvert que sur demande depuis le menu d’un titre.")
                 Link("Documentation Invidious", destination: URL(string: "https://docs.invidious.io/")!)
                 Link("Confidentialité Google", destination: URL(string: "https://policies.google.com/privacy")!)
                 Link("Conditions YouTube", destination: URL(string: "https://www.youtube.com/t/terms")!)

@@ -3,10 +3,10 @@ import AVKit
 
 enum Palette {
     static let background = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark
-        ? UIColor(red: 0.027, green: 0.031, blue: 0.043, alpha: 1)
+        ? UIColor(red: 0.035, green: 0.035, blue: 0.035, alpha: 1)
         : UIColor(red: 0.957, green: 0.965, blue: 0.98, alpha: 1) })
     static let surface = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark
-        ? UIColor(red: 0.075, green: 0.083, blue: 0.105, alpha: 1) : .white })
+        ? UIColor(red: 0.075, green: 0.075, blue: 0.075, alpha: 1) : .white })
     static let line = Color.primary.opacity(0.07)
 }
 
@@ -63,20 +63,29 @@ struct ArtworkView: View {
     var size: CGFloat? = nil
     var radius: CGFloat = 14
     var body: some View {
-        ZStack {
-            Image(track?.artwork ?? "cover-night").resizable().scaledToFill()
-            if let url = track?.artworkURL {
-                if url.isFileURL, let image = UIImage(contentsOfFile: url.path) {
-                    Image(uiImage: image).resizable().scaledToFill()
-                } else if !url.isFileURL {
-                    AsyncImage(url: url) { image in image.resizable().scaledToFill() } placeholder: { Color.clear }
+        Color.clear
+            .aspectRatio(1, contentMode: .fit)
+            .overlay {
+                GeometryReader { geometry in
+                    ZStack {
+                        Image(track?.artwork ?? "cover-night").resizable().scaledToFill()
+                            .frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                        if let url = track?.artworkURL {
+                            if url.isFileURL, let image = UIImage(contentsOfFile: url.path) {
+                                Image(uiImage: image).resizable().scaledToFill()
+                                    .frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                            } else if !url.isFileURL {
+                                AsyncImage(url: url) { image in
+                                    image.resizable().scaledToFill().frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                                } placeholder: { Color.clear }
+                            }
+                        }
+                    }.frame(width: geometry.size.width, height: geometry.size.height).clipped()
                 }
             }
-        }
-        .frame(width: size, height: size)
-        .aspectRatio(1, contentMode: .fit)
-        .clipped().clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
-        .accessibilityHidden(true)
+            .frame(width: size, height: size)
+            .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
+            .accessibilityHidden(true)
     }
 }
 
@@ -98,7 +107,7 @@ struct SectionHeading: View {
     var subtitle: String? = nil
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.system(size: 23, weight: .bold, design: .rounded)).tracking(-0.5)
+            Text(title).font(.system(size: 23, weight: .bold)).tracking(-0.5)
             if let subtitle { Text(subtitle).font(.subheadline).foregroundStyle(.secondary) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

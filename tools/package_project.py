@@ -4,7 +4,7 @@ import hashlib
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-EXCLUDED = {"dist", "build", "DerivedData", ".git", ".venv", "__pycache__", "xcuserdata"}
+EXCLUDED = {"dist", "build", "DerivedData", ".git", ".venv", "__pycache__", "xcuserdata", "website", "node_modules"}
 
 
 def main():

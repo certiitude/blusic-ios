@@ -1,6 +1,24 @@
 # IPA Blusic réellement compilée
 
-## Exécution vérifiée
+## Version 1.1.0 — Invidious intégré et testé
+
+- Exécution : https://github.com/certiitude/blusic-ios/actions/runs/40108900861
+- Commit compilé : `cbba3f39902983b91f19859323ef232080641357`.
+- Statut final : **success**, compilation Release iPhone **arm64**, Xcode **26.3**.
+- **20 tests exécutés, 0 échec** sur iPhone Simulator.
+- Le test réseau réel `testLiveInvidiousAACDecodesAndNativePlaybackAdvances` a réussi : recherche du clip officiel `KVpeHSX2ZEY`, récupération d’un **AAC à 130 544 bit/s**, décodage de **170,247 secondes**, signal PCM non silencieux (crête de l’échantillon contrôlé : **0,99575335**), progression du moteur natif, déplacement à 30 s et pause vérifiés.
+- Ce test n’est ni une écoute humaine ni une validation de l’arrière-plan sur appareil physique. Il est distinct du simple contrôle des métadonnées effectué lors de la recherche initiale.
+
+**Fichier : `dist/github/40108900861/Blusic-unsigned.ipa`**
+
+- Taille : **35 116 809 octets**.
+- Version : **1.1.0**, iOS minimum **17.0**, identifiant `app.blusic.ios`.
+- Vérifications après téléchargement : Info.plist **iPhoneOS**, Mach-O **arm64** pour iOS physique, images compilées et quatre démos embarquées présentes.
+- **IPA non signée**, à signer pour l’installation sur l’iPhone.
+
+La version 1.1 utilise désormais Invidious sans clé Google pour le catalogue et la lecture audio native. La disponibilité dépend des instances et des contenus YouTube publics ; le flux AAC n’est pas lossless et il ne couvre pas automatiquement toutes les plateformes.
+
+## Historique — version 1.0.0
 
 - Dépôt **privé** autorisé : https://github.com/certiitude/blusic-ios
 - Exécution : https://github.com/certiitude/blusic-ios/actions/runs/39665142579
@@ -30,4 +48,4 @@ L’IPA est aussi disponible dans l’artefact **Blusic-iPhone-unsigned-needs-si
 
 ## Catalogue musical : limite inchangée
 
-Cette compilation prouve que le projet produit une application iPhone. Elle ne transforme pas la bibliothèque de démonstration en catalogue commercial universel. L’IPA comprend les imports personnels et l’intégration officielle YouTube décrite dans le README. Les pistes d’autres sources gratuites figurent dans `API-MUSICALES.md` et ne sont pas encore intégrées.
+La compilation initiale 1.0.0 utilisait le lecteur officiel YouTube. **La version 1.1.0 décrite en tête de ce rapport intègre Invidious et a passé son test de lecture native en réseau réel.** Aucune des deux versions ne promet un catalogue universel ou une source YouTube lossless.

@@ -43,11 +43,24 @@ jobs:
       - name: Boot iPhone simulator
         run: xcrun simctl bootstatus "$SIMULATOR_ID" -b
       - name: Unit tests on iPhone simulator
+        id: iphone-tests
         run: >-
           xcodebuild test -project Blusic.xcodeproj -scheme Blusic
           -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
           -derivedDataPath build/DerivedData -resultBundlePath build/BlusicTests.xcresult
           -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+      - name: Capture native layouts on large and compact iPhones
+        if: always()
+        run: >-
+          python3 tools/capture_simulator.py --device "$SIMULATOR_ID"
+          --app build/DerivedData/Build/Products/Debug-iphonesimulator/Blusic.app
+          --output build/screenshots
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Blusic-iPhone-screenshots
+          path: build/screenshots
+          retention-days: 7
       - uses: actions/upload-artifact@v4
         if: always()
         with:

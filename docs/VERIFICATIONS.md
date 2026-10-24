@@ -4,13 +4,17 @@ Environnement local : Windows, Python 3.12. Un runner macOS GitHub Actions a ens
 
 ## Compilation et XCTest réellement exécutés
 
+**Version 1.1.0 / Invidious :** l’exécution https://github.com/certiitude/blusic-ios/actions/runs/40108900861 a terminé en **success** avec **Xcode 26.3** : compilation iPhone arm64, packaging vérifié et **20 XCTest exécutés avec 0 échec**. Le test réel de flux a décodé un titre de 170,247 secondes, vérifié un signal PCM non silencieux et confirmé lecture native, seek et pause sur iPhone Simulator. L’IPA non signée récupérée mesure 35 116 809 octets. Aucune écoute humaine ni validation d’arrière-plan sur appareil physique n’est revendiquée.
+
+**Historique 1.0.0 :**
+
 L’exécution https://github.com/certiitude/blusic-ios/actions/runs/39665142579 a terminé en **success** avec **Xcode 26.3** : compilation Release iPhone arm64 réussie, packaging vérifié, puis **10 XCTest exécutés avec 0 échec** sur iPhone Simulator. L’IPA non signée de 35 048 694 octets est récupérée sur le PC. Rapport détaillé dans `COMPILATION-RESULTAT.md`.
 
 ## Contrôles exécutés
 
 `python tools/check_project.py` a terminé avec le statut **PASS** :
 
-- Analyse syntaxique des **18 fichiers Swift**, incluant les tests ; sans vérification des types ni des API du SDK Apple.
+- Analyse syntaxique des **19 fichiers Swift** de la version 1.1, incluant les tests ; cette analyse seule ne vérifie pas les types ni les API du SDK Apple. La compilation Xcode distante a été réalisée séparément et a réussi.
 - Analyse du fichier OpenStep `project.pbxproj`, résolution de ses références et présence de chaque source dans sa phase de compilation.
 - Présence des ressources audio dans la phase de copie du bundle.
 - Validation des deux plists XML et du scheme partagé.
