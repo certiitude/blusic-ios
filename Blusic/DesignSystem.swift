@@ -63,9 +63,13 @@ struct ArtworkView: View {
     var size: CGFloat? = nil
     var radius: CGFloat = 14
     var artworkURL: URL? = nil
+    var square = true
+    @ViewBuilder private var sizing: some View {
+        if square { Color.clear.aspectRatio(1, contentMode: .fit) }
+        else { Color.clear }
+    }
     var body: some View {
-        Color.clear
-            .aspectRatio(1, contentMode: .fit)
+        sizing
             .overlay {
                 GeometryReader { geometry in
                     ZStack {

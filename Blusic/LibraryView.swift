@@ -309,7 +309,7 @@ struct ArtistView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 ZStack(alignment: .bottomLeading) {
-                    ArtworkView(track: tracks.first, radius: 0, artworkURL: artist.artworkURL).frame(height: 300).clipped()
+                    ArtworkView(track: tracks.first, radius: 0, artworkURL: artist.artworkURL, square: false).frame(height: 300).clipped()
                     LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .top, endPoint: .bottom)
                     VStack(alignment: .leading, spacing: 10) {
                         Label(profile == nil ? "TA BIBLIOTHÈQUE" : "YOUTUBE MUSIC", systemImage: "music.note").font(.system(size: 10, weight: .bold)).tracking(1)
