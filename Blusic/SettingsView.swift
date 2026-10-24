@@ -3,11 +3,11 @@ import SwiftUI
 struct SettingsView: View {
     @EnvironmentObject private var library: LibraryStore
     @Environment(\.dismiss) private var dismiss
-    @State private var apiKey = ""
-    @State private var showKey = false
+    @State private var instanceAddress = ""
     @State private var exportURL: URL?
     @State private var sharing = false
-    @State private var keyStatus: String?
+    @State private var instanceStatus: String?
+    @State private var checkingInstance = false
     private let accents = ["blue", "violet", "rose", "mint", "orange", "white"]
 
     var body: some View {
@@ -51,20 +51,37 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
-                Group {
-                    if showKey { TextField("Clé YouTube Data API v3", text: $apiKey) }
-                    else { SecureField("Clé YouTube Data API v3", text: $apiKey) }
-                }.textInputAutocapitalization(.never).autocorrectionDisabled()
-                Toggle("Afficher la clé", isOn: $showKey)
-                Button("Enregistrer la clé") {
-                    do { try SecureStore.write(apiKey.trimmingCharacters(in: .whitespacesAndNewlines), account: "youtube-api-key"); keyStatus = "Clé enregistrée dans le trousseau de cet iPhone." }
-                    catch { keyStatus = error.localizedDescription }
+                TextField("https://ton-instance.example", text: $instanceAddress)
+                    .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .accessibilityLabel("Adresse de l’instance Invidious")
+                Toggle("Instances de secours automatiques", isOn: Binding(get: { library.settings.usesInvidiousFallback }, set: { library.settings.invidiousAutomaticFallback = $0 }))
+                Button("Enregistrer l’instance") {
+                    do {
+                        let url = try InvidiousService.instanceURL(instanceAddress)
+                        library.settings.invidiousInstance = url.absoluteString
+                        instanceStatus = "Instance enregistrée : \(url.host ?? url.absoluteString)"
+                    } catch { instanceStatus = error.localizedDescription }
                 }
-                if let keyStatus { Text(keyStatus).font(.caption).foregroundStyle(.secondary) }
-                Link("Créer une clé dans Google Cloud", destination: URL(string: "https://console.cloud.google.com/apis/library/youtube.googleapis.com")!)
-                Text("Recherche et playlists publiques via l’API officielle. La vidéo reste visible et ses publicités éventuelles restent gérées par YouTube. Pas de lecture audio YouTube seule, de téléchargement YouTube ni de garantie de lecture en arrière-plan. Le catalogue YouTube Music personnel n’est pas synchronisé.")
+                Button {
+                    Task {
+                        checkingInstance = true
+                        defer { checkingInstance = false }
+                        do {
+                            let service = try InvidiousService(address: instanceAddress, automaticFallback: false)
+                            instanceStatus = try await service.checkConnection()
+                        } catch { instanceStatus = error.localizedDescription }
+                    }
+                } label: { HStack { Text("Tester cette instance"); if checkingInstance { Spacer(); ProgressView() } } }.disabled(checkingInstance)
+                Button("Revenir à l’instance par défaut") {
+                    library.settings.invidiousInstance = nil
+                    instanceAddress = InvidiousService.defaultInstance
+                    instanceStatus = nil
+                }
+                if let instanceStatus { Text(instanceStatus).font(.caption).foregroundStyle(.secondary) }
+                Link("Instances publiques Invidious", destination: URL(string: "https://docs.invidious.io/instances/")!)
+                Text("Catalogue YouTube public sans clé Google. Blusic sélectionne le meilleur flux AAC/M4A compatible et utilise le moteur audio natif : arrière-plan, égaliseur, vitesse et tonalité. Les URL temporaires sont résolues à chaque lecture et un relais est essayé si l’accès direct échoue.")
                     .font(.caption).foregroundStyle(.secondary)
-            } header: { Text("YouTube") } footer: { Text("La clé reste dans le trousseau et n’est jamais incluse dans les sauvegardes. Google applique ses quotas et restrictions de clé.") }
+            } header: { Text("Invidious") } footer: { Text("Service communautaire non officiel : certaines instances bloquent l’API et certains titres sont indisponibles. La qualité AAC est compressée, pas lossless. Les serveurs de secours proviennent de l’annuaire public du projet et doivent annoncer leur API comme active.") }
             Section("Ta bibliothèque") {
                 NavigationLink { ManageFilesView() } label: { Label("Gérer les fichiers importés", systemImage: "internaldrive") }
                 Button {
@@ -76,13 +93,13 @@ struct SettingsView: View {
             }
             Section("À propos") {
                 NavigationLink("Confidentialité et sources") { privacy }
-                LabeledContent("Version", value: "1.0.0")
+                LabeledContent("Version", value: "1.1.0")
                 Text("Fait pour écouter. Pas pour te distraire.").font(.caption).foregroundStyle(.secondary)
             }
         }
         .navigationTitle("À ton image").navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Terminé") { dismiss() } } }
-        .onAppear { apiKey = SecureStore.read("youtube-api-key") }
+        .onAppear { instanceAddress = library.settings.invidiousAddress }
         .sheet(isPresented: $sharing) { if let exportURL { ShareSheet(items: [exportURL]) } }
     }
     private func color(_ accent: String) -> Color { var settings = AppSettings(); settings.accent = accent; return settings.color }
@@ -90,7 +107,8 @@ struct SettingsView: View {
         List {
             Section("Sur ton iPhone") { Text("Aucun compte Blusic, aucune publicité ajoutée, aucun outil de mesure d’audience. Fichiers, favoris, réglages, paroles et historique sont enregistrés dans le conteneur de l’application. Les sauvegardes iCloud de l’iPhone peuvent les inclure selon tes réglages système.") }
             Section("Connexions externes") {
-                Text("Une recherche ou un import YouTube transmet ta requête et ta clé à Google. Le lecteur intégré et les pochettes YouTube contactent Google et sont soumis à ses règles de confidentialité et à ses publicités. Une recherche de paroles transmet le titre et l’artiste à LRCLIB. Les URL audio importées contactent leur hébergeur et sont mises en cache.")
+                Text("Les recherches, imports de playlists et identifiants vidéo sont transmis à l’instance Invidious choisie. En cas de panne, le secours automatique consulte api.invidious.io et peut contacter d’autres instances publiques. Les flux audio directs et certaines pochettes contactent Google ; les relais passent par l’instance. Les fichiers audio sont mis en cache dans le conteneur de Blusic. Une recherche de paroles transmet le titre et l’artiste à LRCLIB. Le lecteur vidéo officiel n’est ouvert que sur demande depuis le menu d’un titre ; il reste soumis aux règles et publicités YouTube.")
+                Link("Documentation Invidious", destination: URL(string: "https://docs.invidious.io/")!)
                 Link("Confidentialité Google", destination: URL(string: "https://policies.google.com/privacy")!)
                 Link("Conditions YouTube", destination: URL(string: "https://www.youtube.com/t/terms")!)
                 Link("LRCLIB", destination: URL(string: "https://lrclib.net")!)

@@ -199,7 +199,7 @@ enum PlaylistImporter {
             let audioURL = URL(string: link)
             let remote = audioURL?.scheme == "https" && ["mp3", "m4a", "flac", "wav", "aac", "aiff"].contains(audioURL?.pathExtension.lowercased() ?? "")
             tracks.append(Track(title: title, artist: value(artistIndex), album: value(albumIndex),
-                                source: id != nil ? .youtube : remote ? .remote : .unresolved, location: id ?? (remote ? link : "")))
+                                source: id != nil ? .invidious : remote ? .remote : .unresolved, location: id ?? (remote ? link : "")))
         }
         guard !tracks.isEmpty else { throw BlusicError.message("Aucun titre trouvé dans cet export.") }
         return tracks
@@ -218,7 +218,7 @@ enum PlaylistImporter {
             let remote = URL(string: line)?.scheme == "https"
             result.append(Track(title: title.isEmpty ? (line as NSString).lastPathComponent : parts.count > 1 ? parts.dropFirst().joined(separator: " - ") : title,
                                 artist: parts.count > 1 ? parts[0] : "", duration: max(0, duration),
-                                source: id != nil ? .youtube : remote ? .remote : .unresolved, location: id ?? (remote ? line : "")))
+                                source: id != nil ? .invidious : remote ? .remote : .unresolved, location: id ?? (remote ? line : "")))
             title = ""; duration = 0
         }
         guard !result.isEmpty else { throw BlusicError.message("La playlist M3U est vide.") }

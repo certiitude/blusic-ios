@@ -274,7 +274,7 @@ struct TrackCollectionView: View {
     private func exportCSV() {
         func quote(_ s: String) -> String { "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
         let rows = tracks.map { track -> String in
-            let link = track.source == .youtube ? "https://www.youtube.com/watch?v=\(track.location)" : track.source == .remote ? track.location : ""
+            let link = track.isYouTubeContent ? "https://www.youtube.com/watch?v=\(track.location)" : track.source == .remote ? track.location : ""
             return [track.title, track.artist, track.album, link].map(quote).joined(separator: ",")
         }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("Blusic-playlist.csv")

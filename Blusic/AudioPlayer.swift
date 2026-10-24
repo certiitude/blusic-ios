@@ -93,7 +93,8 @@ final class AudioPlayer: ObservableObject {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
         if track.source == .youtube { youtubeTrack = track; return }
         if track.source == .unresolved { unresolvedTrack = track; return }
-        guard let url = library.nativeURL(for: track) else {
+        let nativeURL = library.nativeURL(for: track)
+        guard track.source == .invidious || nativeURL != nil else {
             error = "Ce fichier est introuvable. Réassocie une source dans la bibliothèque."
             return
         }
@@ -102,7 +103,18 @@ final class AudioPlayer: ObservableObject {
         loadTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let fileURL = track.source == .remote ? try await AudioCache.shared.localCopy(of: url) : url
+                let fileURL: URL
+                var reportedBitrate: Int?
+                if track.source == .invidious {
+                    let service = try InvidiousService(address: library.settings.invidiousAddress,
+                                                       automaticFallback: library.settings.usesInvidiousFallback)
+                    let audio = try await service.audio(for: track)
+                    fileURL = audio.fileURL
+                    reportedBitrate = audio.bitrate
+                } else if track.source == .remote, let url = nativeURL {
+                    fileURL = try await AudioCache.shared.localCopy(of: url)
+                } else if let url = nativeURL { fileURL = url }
+                else { throw BlusicError.message("Source audio introuvable.") }
                 try Task.checkCancellation()
                 guard generation == token else { return }
                 let file = try AVAudioFile(forReading: fileURL)
@@ -120,6 +132,10 @@ final class AudioPlayer: ObservableObject {
                 default: codec = "Audio natif"
                 }
                 formatLabel = "\(codec) · \(rate) kHz"
+                if track.source == .invidious {
+                    let quality = reportedBitrate.map { " · \(Int((Double($0) / 1000).rounded())) kbit/s" } ?? ""
+                    formatLabel = "\(codec)\(quality) · Invidious"
+                }
                 engine.disconnectNodeOutput(node)
                 engine.disconnectNodeOutput(pitch)
                 engine.disconnectNodeOutput(equalizer)
@@ -203,6 +219,10 @@ final class AudioPlayer: ObservableObject {
     func removeFromQueue(at offsets: IndexSet) { queue.remove(atOffsets: offsets); persistQueue() }
     func moveQueue(from offsets: IndexSet, to destination: Int) { queue.move(fromOffsets: offsets, toOffset: destination); persistQueue() }
     func clearQueue() { queue = current.map { [$0] } ?? []; persistQueue() }
+    func openOfficialPlayer(for track: Track) {
+        pause()
+        youtubeTrack = track
+    }
     func forget(_ id: UUID) {
         if current?.id == id {
             pause(); node.stop(); engine.stop(); audioFile = nil; current = nil; position = 0; duration = 0
@@ -354,23 +374,43 @@ final class AudioPlayer: ObservableObject {
 
 actor AudioCache {
     static let shared = AudioCache()
-    func localCopy(of url: URL) async throws -> URL {
+    func localCopy(of url: URL, cacheKey: String? = nil, fileExtension: String? = nil,
+                   expectedDuration: Double = 0, session: URLSession = .shared) async throws -> URL {
         guard url.scheme == "https" else { throw BlusicError.message("Seules les sources HTTPS sont acceptées.") }
         let directory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("BlusicAudio")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let key = SHA256.hash(data: Data(url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined()
-        let destination = directory.appendingPathComponent(key).appendingPathExtension(url.pathExtension.isEmpty ? "audio" : url.pathExtension)
-        if FileManager.default.fileExists(atPath: destination.path) { return destination }
+        let key = SHA256.hash(data: Data((cacheKey ?? url.absoluteString).utf8)).map { String(format: "%02x", $0) }.joined()
+        let destination = directory.appendingPathComponent(key).appendingPathExtension(fileExtension ?? (url.pathExtension.isEmpty ? "audio" : url.pathExtension))
+        if FileManager.default.fileExists(atPath: destination.path) {
+            do { try validate(destination, expectedDuration: expectedDuration); return destination }
+            catch { try? FileManager.default.removeItem(at: destination) }
+        }
         var request = URLRequest(url: url)
         request.timeoutInterval = 120
-        let (temp, response) = try await URLSession.shared.download(for: request)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("Blusic/1.1 (iOS; Invidious client)", forHTTPHeaderField: "User-Agent")
+        let (temp, response) = try await session.download(for: request)
+        defer { try? FileManager.default.removeItem(at: temp) }
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw BlusicError.message("La source audio n’est pas accessible.")
+        }
+        if let mime = response.mimeType, mime.hasPrefix("text/") || mime == "application/json" {
+            throw BlusicError.message("La source a renvoyé une page d’erreur à la place du fichier audio.")
         }
         let size = (try temp.resourceValues(forKeys: [.fileSizeKey])).fileSize ?? 0
         guard size <= 300_000_000 else { throw BlusicError.message("Ce fichier dépasse la limite de cache de 300 Mo. Importe-le depuis Fichiers.") }
         try Task.checkCancellation()
+        try validate(temp, expectedDuration: expectedDuration)
         if !FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.moveItem(at: temp, to: destination) }
+        try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: destination.path)
         return destination
+    }
+    private func validate(_ url: URL, expectedDuration: Double) throws {
+        let file = try AVAudioFile(forReading: url)
+        let duration = Double(file.length) / file.processingFormat.sampleRate
+        guard file.length > 0, duration.isFinite, duration > 0,
+              expectedDuration <= 0 || duration >= expectedDuration * 0.8 else {
+            throw BlusicError.message("Le fichier audio est vide, tronqué ou plus court que le morceau annoncé.")
+        }
     }
 }

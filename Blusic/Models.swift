@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 enum AudioSource: String, Codable, CaseIterable {
-    case bundled, local, remote, youtube, unresolved
+    case bundled, local, remote, youtube, invidious, unresolved
 }
 
 struct Track: Identifiable, Codable, Equatable, Hashable {
@@ -19,8 +19,11 @@ struct Track: Identifiable, Codable, Equatable, Hashable {
     var addedAt: Date = Date()
     var lyrics: String?
     var isExplicit: Bool = false
+    /// Discovery origin only. Expiring audio URLs are never saved in the library.
+    var originInstance: URL?
 
-    var isNative: Bool { [.bundled, .local, .remote].contains(source) }
+    var isNative: Bool { [.bundled, .local, .remote, .invidious].contains(source) }
+    var isYouTubeContent: Bool { source == .youtube || source == .invidious }
     var isOffline: Bool { [.bundled, .local].contains(source) }
     var subtitle: String { artist.isEmpty ? "Artiste inconnu" : artist }
     var sourceLabel: String {
@@ -29,6 +32,7 @@ struct Track: Identifiable, Codable, Equatable, Hashable {
         case .local: return "Sur cet iPhone"
         case .remote: return "Source HTTPS"
         case .youtube: return "YouTube"
+        case .invidious: return "Invidious · YouTube"
         case .unresolved: return "Source à associer"
         }
     }
@@ -70,6 +74,12 @@ struct AppSettings: Codable, Equatable {
     var lyricsOffset = 0.0
     var volume: Float = 0.8
     var restoreQueue = true
+    // Optional fields keep v1.0 Codable snapshots readable without resetting the library.
+    var invidiousInstance: String?
+    var invidiousAutomaticFallback: Bool?
+
+    var usesInvidiousFallback: Bool { invidiousAutomaticFallback ?? true }
+    var invidiousAddress: String { invidiousInstance ?? InvidiousService.defaultInstance }
 
     var color: Color {
         switch accent {

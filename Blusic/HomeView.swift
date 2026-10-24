@@ -3,7 +3,11 @@ import SwiftUI
 struct HomeView: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var player: AudioPlayer
-    private var discovery: [Track] { Array(library.tracks.filter { $0.isNative }.prefix(12)) }
+    @State private var online: [Track] = []
+    @State private var onlineError: String?
+    @State private var loadingCatalogue = false
+    @State private var retry = 0
+    private var discovery: [Track] { online.isEmpty ? Array(library.tracks.filter { $0.isNative }.prefix(12)) : online }
     private var featured: Track? { discovery.first }
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
@@ -23,6 +27,15 @@ struct HomeView: View {
                 }.pagePadding().padding(.top, 18)
 
                 if let featured { hero(featured).pagePadding() }
+                if loadingCatalogue {
+                    ProgressView("Connexion au catalogue Invidious…").font(.caption).frame(maxWidth: .infinity)
+                } else if let onlineError {
+                    VStack(alignment: .leading, spacing: 10) {
+                        Label("Catalogue momentanément indisponible", systemImage: "wifi.exclamationmark").font(.subheadline.bold())
+                        Text(onlineError).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                        Button("Réessayer") { retry += 1 }.font(.caption.bold())
+                    }.padding(16).surface().pagePadding()
+                }
                 VStack(alignment: .leading, spacing: 14) {
                     SectionHeading(title: "À portée d’oreille")
                     LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
@@ -49,7 +62,8 @@ struct HomeView: View {
 
                 if !discovery.isEmpty {
                     VStack(alignment: .leading, spacing: 17) {
-                        SectionHeading(title: "Premières ondes", subtitle: "Des originaux Blusic à découvrir.").pagePadding()
+                        SectionHeading(title: online.isEmpty ? "Premières ondes" : "À découvrir en ligne",
+                                       subtitle: online.isEmpty ? "Des originaux Blusic à découvrir." : "Sélection via Invidious · catalogue YouTube public").pagePadding()
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(alignment: .top, spacing: 15) {
                                 ForEach(discovery) { track in
@@ -81,11 +95,21 @@ struct HomeView: View {
                 }.padding(18).surface().pagePadding()
             }.padding(.bottom, 24)
         }
+        .task(id: "\(library.settings.invidiousAddress)|\(retry)") {
+            loadingCatalogue = true; onlineError = nil
+            defer { loadingCatalogue = false }
+            do {
+                let service = try InvidiousService(address: library.settings.invidiousAddress, automaticFallback: library.settings.usesInvidiousFallback)
+                let tracks = try await service.search("rap français officiel")
+                try Task.checkCancellation()
+                online = Array(tracks.prefix(12))
+            } catch { if !Task.isCancelled { onlineError = error.localizedDescription } }
+        }
     }
     private func hero(_ track: Track) -> some View {
         Button { player.play(track, in: discovery) } label: {
             ZStack(alignment: .bottomLeading) {
-                Image(track.artwork).resizable().scaledToFill().frame(height: 300).clipped()
+                ArtworkView(track: track, radius: 0).frame(height: 300).clipped()
                 LinearGradient(colors: [.clear, .black.opacity(0.15), .black.opacity(0.82)], startPoint: .top, endPoint: .bottom)
                 VStack(alignment: .leading, spacing: 9) {
                     HStack(spacing: 5) {
@@ -93,7 +117,7 @@ struct HomeView: View {
                         Text("LA SÉLECTION BLUSIC").font(.system(size: 9, weight: .bold)).tracking(1.6)
                     }.padding(.horizontal, 10).padding(.vertical, 7).background(.white.opacity(0.12), in: Capsule())
                     Spacer()
-                    Text("Un peu de calme.\nBeaucoup de musique.")
+                    Text(track.source == .invidious ? "Le son du moment.\nÀ ton rythme." : "Un peu de calme.\nBeaucoup de musique.")
                         .font(.system(size: 29, weight: .bold, design: .rounded)).tracking(-0.9).multilineTextAlignment(.leading)
                     HStack {
                         Text("\(track.title) · \(track.subtitle)").font(.system(size: 11)).foregroundStyle(.white.opacity(0.75))

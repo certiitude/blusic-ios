@@ -1,15 +1,15 @@
-# Recette iPhone — Blusic 1.0
+# Recette iPhone — Blusic 1.1
 
 ## Statut de ce livrable
 
-Projet natif généré et contrôlé statiquement sous Windows. **Pas encore compilé ni testé sur iPhone ou simulateur dans cet environnement.** Ne pas assimiler les contrôles de structure aux tests ci-dessous. Le résultat de GitHub Actions devra être consulté après une exécution réelle.
+Projet natif généré sous Windows, puis **compilé avec Xcode 26.3 sur GitHub Actions**. Les **10 XCTest ont réussi sur iPhone Simulator** et une IPA physique arm64 non signée a été récupérée. Voir `COMPILATION-RESULTAT.md`. Les essais manuels ci-dessous restent nécessaires ; les tests unitaires ne prouvent pas le fonctionnement audio/UI complet sur iPhone.
 
 ## Compilation
 
 - [ ] Xcode ouvre le projet et affiche les cibles Blusic et BlusicTests.
 - [ ] Build du scheme Blusic pour iPhone Simulator avec Xcode 16+.
-- [ ] Build avec Xcode 26 et vérification de la branche `glassEffect` sur iOS 26.
-- [ ] Product → Test : 10 tests unitaires passent.
+- [x] Build avec Xcode 26.3 réussi, incluant la compilation de la branche `glassEffect`. Rendu visuel à vérifier séparément.
+- [x] 10 tests unitaires passent sur le simulateur iPhone via GitHub Actions.
 - [ ] Signature par une Team Apple et installation sur iPhone physique.
 - [ ] L’icône reprend le symbole blanc sur fond noir et l’écran de lancement n’émet pas de flash blanc.
 
@@ -55,12 +55,16 @@ Projet natif généré et contrôlé statiquement sous Windows. **Pas encore com
 - [ ] Import `examples/paroles.lrc` sur un morceau : ligne courante change avec la musique.
 - [ ] Toucher une ligne : déplacement effectif ; menu de décalage et défilement automatique testés.
 - [ ] LRCLIB : morceau trouvé, instrumental, titre introuvable et réseau coupé.
-- [ ] Ajouter une clé API YouTube valide ; rechercher et ouvrir une vidéo lisible hors YouTube.
-- [ ] Vérifier que les contrôles YouTube, la vidéo et la marque restent visibles.
+- [ ] Recherche → Catalogue : trouver un titre via Invidious sans clé Google et charger les pages suivantes.
+- [ ] Lire un titre Invidious dans le lecteur natif ; vérifier que la durée dépasse celle d’un extrait et que l’audio avance.
+- [ ] Tester EQ, vitesse, tonalité et arrière-plan sur une piste Invidious.
+- [ ] Changer d’instance, tester son API, simuler une instance HTTP 401/403 et vérifier les erreurs et le secours.
+- [ ] Rejouer un titre : identifiant stable, favoris conservés, aucun stockage durable de son URL signée.
+- [ ] Ouvrir le lecteur officiel via le menu : vérifier que le moteur natif est en pause et que les contrôles vidéo restent visibles.
 - [ ] Vidéo refusée/intégration bloquée : bouton Ouvrir dans YouTube utilisable.
 - [ ] Fermer le lecteur vidéo : l’audio de la vidéo s’arrête.
 - [ ] Importer une playlist publique de plus de 50 titres : pagination complète.
-- [ ] Clé absente, invalide, quota épuisé, playlist privée : erreur lisible.
+- [ ] Instance inaccessible, API bloquée, playlist privée, absence de flux AAC : erreur lisible.
 
 ## Interface et statistiques
 

@@ -28,7 +28,7 @@ struct ImportPlaylistView: View {
             Section("Depuis YouTube") {
                 TextField("Lien d’une playlist publique", text: $link).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                 Button { importYouTube() } label: { Label("Récupérer les titres", systemImage: "play.rectangle") }.disabled(link.isEmpty || busy)
-                Text("YouTube et YouTube Music : lien public avec list=. Une clé YouTube Data API est à renseigner dans les réglages. Lecture vidéo officielle au premier plan.").font(.caption).foregroundStyle(.secondary)
+                Text("Playlists publiques YouTube et YouTube Music via Invidious, sans clé API. Lecture audio native selon la disponibilité des flux. Les playlists privées et radios dynamiques ne sont pas accessibles.").font(.caption).foregroundStyle(.secondary)
             }
             if busy { Section { ProgressView("Préparation de l’import…") } }
             if let error { Section { Text(error).font(.subheadline).foregroundStyle(.red) } }
@@ -76,11 +76,13 @@ struct ImportPlaylistView: View {
         task = Task {
             defer { busy = false }
             do {
-                let tracks = try await YouTubeService().playlist(url, key: SecureStore.read("youtube-api-key"))
+                let service = try InvidiousService(address: library.settings.invidiousAddress, automaticFallback: library.settings.usesInvidiousFallback)
+                let imported = try await service.playlist(url)
+                let tracks = imported.tracks
                 try Task.checkCancellation()
                 guard !tracks.isEmpty else { throw BlusicError.message("Cette playlist ne contient aucun titre public accessible.") }
                 preview = tracks
-                if name.isEmpty { name = "Ma playlist YouTube" }
+                if name.isEmpty { name = imported.name }
             } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
         }
     }

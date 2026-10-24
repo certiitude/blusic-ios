@@ -1,6 +1,10 @@
 # Vérifications réalisées
 
-Environnement de création : Windows, Python 3.12. Pas de macOS, Xcode, SDK iOS ou iPhone accessibles dans cette session.
+Environnement local : Windows, Python 3.12. Un runner macOS GitHub Actions a ensuite été connecté avec l’autorisation du créateur.
+
+## Compilation et XCTest réellement exécutés
+
+L’exécution https://github.com/certiitude/blusic-ios/actions/runs/39665142579 a terminé en **success** avec **Xcode 26.3** : compilation Release iPhone arm64 réussie, packaging vérifié, puis **10 XCTest exécutés avec 0 échec** sur iPhone Simulator. L’IPA non signée de 35 048 694 octets est récupérée sur le PC. Rapport détaillé dans `COMPILATION-RESULTAT.md`.
 
 ## Contrôles exécutés
 
@@ -16,12 +20,10 @@ Environnement de création : Windows, Python 3.12. Pas de macOS, Xcode, SDK iOS 
 
 Les contrôles ont notamment permis de corriger une référence de source Xcode et de simplifier les publishers de persistance. Une revue du moteur a également corrigé le remplacement des sources importées, la déduplication des files/playlists, l’arrêt d’un chargement en pause et la reprise après fin de morceau. Ces changements restent à confirmer à l’exécution native.
 
-## Préparé mais non exécuté ici
+## Tests manuels restant à effectuer
 
-- **10 XCTest** pour LRC, CSV, M3U, IDs YouTube, sauvegarde et décodage des fichiers embarqués.
-- Workflow GitHub Actions pour les exécuter sur iPhone Simulator et compiler une IPA non signée pour appareil physique.
-- Liste de tests manuels dans `RECETTE-IPHONE.md`.
+- Écoute, ergonomie, rendu Liquid Glass, AirPlay, vidéo YouTube et arrière-plan sur iPhone physique : liste dans `RECETTE-IPHONE.md`.
 
 ## Non revendiqué
 
-Aucun build Xcode réussi, aucune installation iPhone, aucune capture du rendu iOS, aucune vérification de lecture en arrière-plan, d’AirPlay, de lecteur YouTube ou de Liquid Glass natif n’est revendiquée avant une exécution sur l’environnement Apple.
+Aucune installation sur iPhone physique, capture du rendu iOS ou vérification manuelle de lecture en arrière-plan, d’AirPlay, de lecteur YouTube ou de rendu Liquid Glass n’est revendiquée. Le passage des tests unitaires ne valide pas l’accès à un catalogue musical universel.

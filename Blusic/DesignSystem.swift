@@ -129,7 +129,7 @@ struct TrackRow: View {
                             if track.isExplicit { Image(systemName: "e.square.fill").font(.system(size: 10)) }
                             Text(track.subtitle).lineLimit(1)
                             if track.source == .unresolved { Image(systemName: "link.badge.plus").accessibilityLabel("Source à associer") }
-                            if track.source == .youtube { Image(systemName: "play.rectangle").accessibilityLabel("YouTube") }
+                            if track.isYouTubeContent { Image(systemName: track.source == .invidious ? "network" : "play.rectangle").accessibilityLabel(track.sourceLabel) }
                         }.font(.system(size: 12)).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
@@ -158,7 +158,8 @@ struct TrackActions: View {
             if library.playlists.isEmpty { Text("Crée une playlist dans la bibliothèque") }
             ForEach(library.playlists) { playlist in Button(playlist.name) { library.add(track, to: playlist) } }
         } label: { Label("Ajouter à une playlist", systemImage: "plus.square.on.square") }
-        if track.source == .youtube, let url = URL(string: "https://www.youtube.com/watch?v=\(track.location)") {
+        if track.isYouTubeContent, let url = URL(string: "https://www.youtube.com/watch?v=\(track.location)") {
+            Button { player.openOfficialPlayer(for: track) } label: { Label("Ouvrir le lecteur officiel", systemImage: "play.rectangle") }
             ShareLink(item: url) { Label("Partager", systemImage: "square.and.arrow.up") }
         } else if track.source == .local, let url = library.nativeURL(for: track) {
             ShareLink(item: url) { Label("Partager le fichier", systemImage: "square.and.arrow.up") }

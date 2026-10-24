@@ -2,6 +2,17 @@
 
 **Ta musique, simplement.** Application iPhone native en SwiftUI, pensée autour d’une interface sombre, de pochettes immersives et d’un lecteur en verre translucide. Identité adaptée de l’icône Blusic fournie ; ergonomie mobile inspirée des captures et d’Apple Music.
 
+## Version 1.1 — Invidious
+
+- **Recherche → Catalogue** : recherche du catalogue YouTube public, sans clé Google.
+- **Lecture audio native** : résolution des adresses temporaires, meilleur flux AAC/M4A compatible, téléchargement en cache puis lecture avec arrière-plan, EQ, vitesse et tonalité.
+- Import des playlists publiques YouTube/YouTube Music via Invidious, avec pagination.
+- **Réglages → Invidious** : adresse du serveur, test de connexion, secours automatiques et réinitialisation. Instance initiale : `https://yt.chocolatemoo53.com`.
+- Migration des titres YouTube sauvegardés dans la version 1.0 en conservant leurs identifiants, favoris et playlists.
+- Menu d’un titre → **Ouvrir le lecteur officiel** en secours explicite si le flux est inaccessible.
+
+Le catalogue dépend des contenus YouTube publics et des instances communautaires. **Ce n’est ni du lossless ni une garantie de disposer de tous les titres des autres plateformes.** La qualité réellement fournie est affichée. L’instance peut bloquer l’API ou les flux ; dans ce cas Blusic signale l’erreur et permet de choisir un autre serveur.
+
 ## Ouvrir le projet
 
 Ouvre **`Blusic.xcodeproj`** dans **Xcode 16 ou plus récent sur un Mac**. Aucun paquet Swift, serveur, CocoaPods ou XcodeGen à installer. Les quatre morceaux originaux et les pochettes sont déjà dans le projet.
@@ -32,7 +43,9 @@ python tools/github_ipa.py build --repo TON-COMPTE/blusic-ios
 
 L’utilitaire suit la compilation et télécharge **`dist/github/<execution>/Blusic-unsigned.ipa`**. Avec le dépôt Git configuré, **`Compiler IPA.cmd`** lance cette procédure par double-clic.
 
-**L’IPA issue du workflow est non signée.** Elle doit encore être signée pour ton appareil, par exemple via Xcode sur Mac ou un outil de sideload compatible tel qu’AltStore Classic sous Windows. Ce dépôt ne contient ni certificat, ni profil Apple, ni compte de signature. Aucune IPA installable n’a été produite dans l’environnement Windows de création.
+**Une compilation distante a réussi** : [résultat et IPA récupérée](docs/COMPILATION-RESULTAT.md). Les **10 tests iPhone Simulator passent**. L’IPA obtenue est non signée et doit encore être signée pour ton appareil, par exemple avec AltStore Classic sous Windows. Ce dépôt ne contient ni certificat, ni profil Apple, ni compte de signature.
+
+**Catalogue :** Invidious est intégré dans la version 1.1, mais n’offre pas une couverture universelle de toutes les plateformes. Voir [la recherche d’API et leurs limites](docs/API-MUSICALES.md).
 
 ## Fonctions implémentées
 
@@ -77,22 +90,23 @@ L’utilitaire suit la compilation et télécharge **`dist/github/<execution>/Bl
 - Import **M3U/M3U8** avec métadonnées `EXTINF` et URL HTTPS. Les chemins de fichiers externes sont traités comme des références à associer.
 - Les listes Spotify/Apple Music/Deezer sont transférables **via leur export CSV** : pas de connexion OAuth directe à ces comptes dans cette version.
 - Association automatique aux fichiers déjà en bibliothèque quand titre et artiste concordent ; sinon association manuelle à un fichier audio au toucher du morceau.
-- Import paginé de **playlists YouTube publiques** avec une clé API ; aperçu avant confirmation. Les playlists privées, radios dynamiques et bibliothèques personnelles ne sont pas synchronisées.
+- Import paginé de **playlists YouTube publiques via Invidious sans clé API** ; aperçu avant confirmation. Les playlists privées, radios dynamiques et bibliothèques personnelles ne sont pas synchronisées.
 - Export de playlists CSV et sauvegarde/fusion JSON des métadonnées, favoris, paroles et historique. Les fichiers audio sont à conserver séparément.
 - Historique réel, temps d’écoute quotidien, classement par temps écouté, vues jour/7 jours/30 jours. Une session compte comme écoute après 30 secondes. Les vidéos YouTube ne gonflent pas les statistiques natives.
 - Sauvegarde JSON atomique ; fichiers stockés dans le conteneur de l’app ; gestion/suppression des imports.
 
-## YouTube : ce qui est effectivement intégré
+## Invidious et YouTube : ce qui est effectivement intégré
 
-YouTube Music ne propose pas d’API publique permettant à une app tierce d’offrir gratuitement son catalogue audio seul, sans publicité, avec téléchargement et lecture de fond. Blusic utilise donc :
+Invidious est un service communautaire non officiel qui interroge les contenus publics YouTube. Blusic utilise :
 
-1. **YouTube Data API v3** pour la recherche et les playlists publiques.
-2. **Le lecteur vidéo officiel YouTube**, visible dans `WKWebView`, pour lire les résultats.
-3. Un bouton **Ouvrir dans YouTube** si le propriétaire refuse l’intégration vidéo.
+1. **L’API Invidious** pour la recherche, les playlists et la résolution des flux. Aucun compte ni clé API Google requis.
+2. **Le moteur AVAudioEngine** pour les flux AAC/M4A. Les pistes ne stockent que leur identifiant vidéo et leur instance d’origine ; les URL signées temporaires sont résolues à la lecture.
+3. Un essai du relais média de la même instance après un échec d’accès direct, puis jusqu’à deux instances de secours annonçant une API active dans l’annuaire du projet, si le secours est activé.
+4. **Le lecteur vidéo officiel YouTube** en secours sur demande depuis le menu d’un titre. Il est visible et conserve les publicités éventuelles de YouTube.
 
-Dans **Réglages → YouTube**, enregistre ta propre clé API Google. Active **YouTube Data API v3** dans ton projet Google Cloud, puis applique les restrictions appropriées. La clé est conservée dans le **trousseau iOS**, jamais dans le code ou les exports. Les restrictions de clé doivent correspondre à ton Bundle Identifier ; les quotas et règles de Google s’appliquent.
+Dans **Réglages → Invidious**, indique une autre adresse HTTPS si nécessaire. Le bouton de test vérifie l’API de l’adresse saisie sans masquer son erreur derrière un serveur de secours. L’instance reçoit les recherches et les identifiants vidéo ; les flux directs peuvent contacter Google. Les détails sont expliqués dans l’écran de confidentialité.
 
-Blusic n’ajoute **aucune publicité**. Celles du lecteur YouTube restent sous le contrôle de YouTube. La lecture YouTube **audio seule, sans pub, en arrière-plan, lossless, avec pitch/EQ ou en téléchargement n’est pas proposée**. L’écoute de fond, le hors-ligne et les effets concernent le moteur natif.
+Blusic n’ajoute **aucune publicité**. Les flux Invidious passent par le moteur natif et ses effets. **Pas de promesse de lossless** : les formats YouTube sont compressés, même s’ils étaient convertis ensuite en PCM. Le format Opus/WebM n’est pas sélectionné pour assurer la compatibilité avec le moteur iOS 17 ; le meilleur AAC/M4A annoncé est choisi. Le cache est un fichier audio temporaire et non un album distribué avec l’application. Les erreurs de flux vides, tronqués, JSON ou HTML sont signalées.
 
 ## Vérifications et tests
 
@@ -105,7 +119,7 @@ python tools/check_project.py
 
 Le script contrôle : syntaxe des fichiers Swift par arbre syntaxique, cohérence des références Xcode et phases de compilation, plists, scheme partagé, ressources des asset catalogs, icône opaque 1024 px, durée/format/niveau/non-saturation des quatre fichiers WAV.
 
-**Ces contrôles ne compilent pas Swift et ne constituent pas un test iPhone.** La compilation Xcode, les XCTest, le rendu réel, le lecteur YouTube, AirPlay et le maintien audio écran verrouillé restent à vérifier sur l’environnement Apple. Voir [`docs/RECETTE-IPHONE.md`](docs/RECETTE-IPHONE.md).
+**Ces contrôles statiques ne constituent pas un test iPhone.** En complément, la compilation **Xcode 26.3** et les **10 XCTest** ont réussi sur GitHub Actions : voir [le rapport](docs/COMPILATION-RESULTAT.md). Le rendu réel, le lecteur YouTube, AirPlay et le maintien audio écran verrouillé restent à vérifier manuellement sur appareil. Voir [`docs/RECETTE-IPHONE.md`](docs/RECETTE-IPHONE.md).
 
 ### À lancer sur Mac
 
@@ -116,7 +130,9 @@ xcodebuild -project Blusic.xcodeproj -scheme Blusic \
   -derivedDataPath build/DerivedData CODE_SIGNING_ALLOWED=NO build
 ```
 
-Dans Xcode : **Product → Test** pour les 10 tests unitaires, dont les imports CSV multiligne, les limites YouTube, le parseur LRC, la sérialisation et le décodage des ressources audio. Le workflow GitHub choisit automatiquement un simulateur iPhone disponible et exécute ces tests.
+Dans Xcode : **Product → Test**. La suite contient désormais **20 tests**, dont les imports, la compatibilité des sauvegardes, la pagination Invidious, les erreurs HTTP et l’annulation. **Un test en réseau réel** cherche un titre, récupère son AAC, vérifie une durée de morceau complet et un signal PCM non silencieux, démarre le moteur natif puis vérifie l’avancement, le seek et la pause sur simulateur. Ce test nécessite une instance fonctionnelle et ne se transforme pas en réussite quand le réseau échoue.
+
+Contrôle léger depuis Windows, sans télécharger un morceau complet : `python tools/probe_invidious.py`. Il vérifie la recherche, les métadonnées et 8 Ko du flux direct/relayé ; ce n’est pas un test d’écoute iPhone.
 
 ## Organisation
 
@@ -128,6 +144,7 @@ Blusic/
   LibraryStore.swift         Persistance, imports audio et historique
   AudioPlayer.swift          Moteur audio, cache et commandes système
   MusicServices.swift        YouTube, LRCLIB, CSV/M3U et trousseau
+  InvidiousService.swift      Catalogue, playlists, flux et instances de secours
   DesignSystem.swift         Verre, icône vectorielle et composants
   *View.swift                Écrans SwiftUI
   Assets.xcassets/            Icône et pochettes originales

@@ -16,6 +16,7 @@ final class LibraryStore: ObservableObject {
     @Published var error: String?
     private var cancellables = Set<AnyCancellable>()
     private let fileManager = FileManager.default
+    private let persists: Bool
 
     static var root: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -24,10 +25,12 @@ final class LibraryStore: ObservableObject {
     static var audioDirectory: URL { root.appendingPathComponent("Audio", isDirectory: true) }
     private var database: URL { Self.root.appendingPathComponent("library.json") }
 
-    init() {
+    init(inMemory: Bool = false) {
+        persists = !inMemory
         do {
             try fileManager.createDirectory(at: Self.audioDirectory, withIntermediateDirectories: true)
-            if fileManager.fileExists(atPath: database.path) {
+            if inMemory { seed() }
+            else if fileManager.fileExists(atPath: database.path) {
                 let snapshot = try JSONDecoder().decode(LibrarySnapshot.self, from: Data(contentsOf: database))
                 guard snapshot.version == 1 else { throw BlusicError.message("Version de bibliothèque non prise en charge.") }
                 apply(snapshot)
@@ -194,6 +197,7 @@ final class LibraryStore: ObservableObject {
         guard backup.version == 1 else { throw BlusicError.message("Cette sauvegarde nécessite une autre version de Blusic.") }
         // Merge rather than erase the current library. Native media files are not in a JSON export.
         for var track in backup.tracks where !tracks.contains(where: { $0.id == track.id }) {
+            if track.source == .youtube { track.source = .invidious }
             if track.source == .local {
                 guard track.location == (track.location as NSString).lastPathComponent else { continue }
                 if !fileManager.fileExists(atPath: Self.audioDirectory.appendingPathComponent(track.location).path) {
@@ -213,6 +217,7 @@ final class LibraryStore: ObservableObject {
         notice = "Bibliothèque fusionnée. Les fichiers audio absents sont à réassocier."
     }
     func save() {
+        guard persists else { return }
         do { try JSONEncoder().encode(snapshot()).write(to: database, options: [.atomic, .completeFileProtectionUnlessOpen]) }
         catch { self.error = "Sauvegarde impossible : \(error.localizedDescription)" }
     }
@@ -221,7 +226,12 @@ final class LibraryStore: ObservableObject {
                         settings: settings, queue: savedQueue, currentTrackID: savedCurrentID)
     }
     private func apply(_ data: LibrarySnapshot) {
-        tracks = data.tracks; playlists = data.playlists; favorites = data.favorites
+        tracks = data.tracks.map { item in
+            var track = item
+            if track.source == .youtube { track.source = .invidious }
+            return track
+        }
+        playlists = data.playlists; favorites = data.favorites
         history = data.history; settings = data.settings; savedQueue = data.queue; savedCurrentID = data.currentTrackID
     }
     private func seed() {
