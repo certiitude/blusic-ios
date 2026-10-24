@@ -53,7 +53,8 @@ def main():
         if label == "large":
             screens += [("artists", ["--blusic-screen=search", "--blusic-query=Niska", "--blusic-kind=artists"], 13),
                         ("artist-profile", ["--blusic-preview-artist"], 13),
-                        ("sound", ["--blusic-preview-sound"], 4)]
+                        ("sound", ["--blusic-preview-sound"], 4),
+                        ("lyrics", ["--blusic-preview-player", "--blusic-lyrics"], 4)]
         for screen, launch_args, wait in screens:
             run("launch", "--terminate-running-process", device, "app.blusic.ios", *launch_args)
             time.sleep(wait)

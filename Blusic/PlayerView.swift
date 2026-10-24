@@ -5,7 +5,12 @@ struct PlayerView: View {
     @EnvironmentObject private var player: AudioPlayer
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var mode = "artwork"
+    @State private var mode = {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--blusic-lyrics") { return "lyrics" }
+        #endif
+        return "artwork"
+    }()
     @State private var scrubbing = false
     @State private var scrubPosition = 0.0
     @State private var showSound = false

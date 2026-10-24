@@ -20,6 +20,7 @@ final class AudioPlayer: ObservableObject {
     @Published private(set) var preparingEffects = false
     @Published private(set) var effectsMessage: String?
     @Published private(set) var firstAudioLatency: Double?
+    @Published private(set) var isTransitioning = false
     #if DEBUG
     private(set) var artworkFetchCount = 0
     #endif
@@ -38,11 +39,23 @@ final class AudioPlayer: ObservableObject {
 
     let equalizerFrequencies: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
     private let library: LibraryStore
-    private let engine = AVAudioEngine()
-    private let node = AVAudioPlayerNode()
-    private let varispeed = AVAudioUnitVarispeed()
-    private let pitch = AVAudioUnitTimePitch()
-    private let equalizer = AVAudioUnitEQ(numberOfBands: 10)
+    private var engine = AVAudioEngine()
+    private var node = AVAudioPlayerNode()
+    private var varispeed = AVAudioUnitVarispeed()
+    private var pitch = AVAudioUnitTimePitch()
+    private var equalizer = AVAudioUnitEQ(numberOfBands: 10)
+    private struct FadingDeck {
+        var volume: @MainActor (Float) -> Void
+        var stop: @MainActor () -> Void
+        var remaining: @MainActor () -> Double
+        var active: @MainActor () -> Bool
+        var baseGain: Float
+    }
+    private var outgoing: FadingDeck?
+    private var fadeTask: Task<Void, Never>?
+    private var incomingGain: Float = 1
+    private var outgoingGain: Float = 1
+    private var automaticFadeID: UUID?
     private var audioFile: AVAudioFile?
     private var scheduledOffset = 0.0
     private var generation = UUID()
@@ -74,19 +87,15 @@ final class AudioPlayer: ObservableObject {
     private var playedIDs = Set<UUID>()
     private var artworkTask: Task<Void, Never>?
 
+    #if DEBUG
+    var overlappingPlaybackCount: Int { (isPlaying ? 1 : 0) + (outgoing?.active() == true ? 1 : 0) }
+    #endif
+
     init(library: LibraryStore, loadingTimeout: TimeInterval = 35, onlineLoader: any OnlineAudioLoading = InvidiousAudioLoader()) {
         self.library = library
         self.loadingTimeout = loadingTimeout
         self.onlineLoader = onlineLoader
-        engine.attach(node); engine.attach(varispeed); engine.attach(pitch); engine.attach(equalizer)
-        for (index, band) in equalizer.bands.enumerated() {
-            band.filterType = .parametric; band.frequency = equalizerFrequencies[index]
-            band.bandwidth = 1; band.bypass = false
-        }
-        engine.connect(node, to: varispeed, format: nil)
-        engine.connect(varispeed, to: pitch, format: nil)
-        engine.connect(pitch, to: equalizer, format: nil)
-        engine.connect(equalizer, to: engine.mainMixerNode, format: nil)
+        wireGraph()
         apply(library.settings)
         configureRemoteCommands()
         observeAudioSession()
@@ -102,6 +111,18 @@ final class AudioPlayer: ObservableObject {
         }
     }
 
+    private func wireGraph() {
+        engine.attach(node); engine.attach(varispeed); engine.attach(pitch); engine.attach(equalizer)
+        for (index, band) in equalizer.bands.enumerated() {
+            band.filterType = .parametric; band.frequency = equalizerFrequencies[index]
+            band.bandwidth = 1; band.bypass = false
+        }
+        engine.connect(node, to: varispeed, format: nil)
+        engine.connect(varispeed, to: pitch, format: nil)
+        engine.connect(pitch, to: equalizer, format: nil)
+        engine.connect(equalizer, to: engine.mainMixerNode, format: nil)
+    }
+
     func play(_ requested: Track, in tracks: [Track]? = nil) {
         let track = library.add(requested)
         if let tracks {
@@ -111,6 +132,7 @@ final class AudioPlayer: ObservableObject {
         }
         if !queue.contains(where: { $0.id == track.id }) { queue.append(track) }
         flushListening()
+        retainOutgoingForFade(nextID: track.id)
         loadTask?.cancel(); loadingWatchdog?.cancel(); artworkTask?.cancel()
         alternateTask?.cancel(); bufferWatchdog?.cancel(); effectsTask?.cancel(); stopStreaming()
         generation = UUID()
@@ -119,6 +141,7 @@ final class AudioPlayer: ObservableObject {
         error = nil; loadingMessage = ""; loadingProgress = nil
         firstAudioLatency = nil; beganLoading = Date(); wantsPlayback = true; usedDirectFallback = false; tryingAlternate = false
         preparingEffects = false; effectsMessage = nil; requestedEffects = false
+        automaticFadeID = nil
         current = track; position = 0; duration = track.duration
         declaredDuration = track.duration
         formatLabel = ""; loopA = nil; loopB = nil
@@ -130,6 +153,7 @@ final class AudioPlayer: ObservableObject {
         if track.source == .unresolved { unresolvedTrack = track; return }
         let nativeURL = library.nativeURL(for: track)
         guard track.source == .invidious || track.source == .catalogReference || nativeURL != nil else {
+            cancelTransition()
             error = "Ce fichier est introuvable. Réassocie une source dans la bibliothèque."
             return
         }
@@ -142,6 +166,7 @@ final class AudioPlayer: ObservableObject {
             guard let self, generation == token, isLoading else { return }
             generation = UUID(); loadTask?.cancel()
             alternateTask?.cancel(); bufferWatchdog?.cancel(); wantsPlayback = false; stopStreaming()
+            cancelTransition()
             isLoading = false; loadingMessage = "Chargement interrompu"; loadingProgress = nil
             error = "Le chargement n’a pas abouti en \(Int(timeout.rounded())) s. Le serveur audio peut être bloqué ou trop lent. Réessaie ou change d’instance dans les réglages."
         }
@@ -161,7 +186,7 @@ final class AudioPlayer: ObservableObject {
                         queue = queue.map { $0.id == track.id ? playingTrack : $0 }
                     } catch {
                         guard generation == token, !Task.isCancelled else { return }
-                        isLoading = false; loadingWatchdog?.cancel(); unresolvedTrack = track
+                        isLoading = false; loadingWatchdog?.cancel(); cancelTransition(); unresolvedTrack = track
                         return
                     }
                 }
@@ -198,10 +223,11 @@ final class AudioPlayer: ObservableObject {
                 guard generation == token else { return }
                 try startNativeFile(fileURL, track: playingTrack, bitrate: reportedBitrate, at: 0, autoplay: true)
             } catch is CancellationError {
-                if generation == token { isLoading = false; loadingWatchdog?.cancel(); loadingMessage = ""; loadingProgress = nil }
+                if generation == token { isLoading = false; loadingWatchdog?.cancel(); cancelTransition(); loadingMessage = ""; loadingProgress = nil }
             } catch {
                 guard generation == token else { return }
                 isLoading = false; isPlaying = false
+                cancelTransition()
                 loadingWatchdog?.cancel(); loadingMessage = "Échec du chargement"; loadingProgress = nil
                 self.error = "Lecture impossible : \(error.localizedDescription)"
             }
@@ -235,6 +261,7 @@ final class AudioPlayer: ObservableObject {
         wantsPlayback = false; streamPlayer?.pause(); alternateTask?.cancel(); bufferWatchdog?.cancel()
         loadingWatchdog?.cancel(); loadingMessage = ""; loadingProgress = nil
         node.pause(); isPlaying = false
+        cancelTransition()
         updateNowPlaying()
     }
     func seek(to seconds: Double) {
@@ -314,13 +341,76 @@ final class AudioPlayer: ObservableObject {
         // Headroom avoids clipping with positive EQ boosts.
         let headroom = settings.equalizerEnabled ? max(0, settings.equalizer.max() ?? 0) : 0
         equalizer.globalGain = -headroom
-        engine.mainMixerNode.outputVolume = min(1, max(0, settings.volume))
-        streamPlayer?.volume = min(1, max(0, settings.volume))
+        if !settings.usesCrossfade, outgoing != nil { cancelTransition() }
+        setIncomingGain(incomingGain)
+        outgoing?.volume(min(1, max(0, settings.volume)) * outgoingGain)
         if let streamPlayer, wantsPlayback, abs(streamPlayer.rate - settings.playbackRate) > 0.001 { streamPlayer.rate = settings.playbackRate }
         let algorithm: AVAudioTimePitchAlgorithm = settings.usesLinkedSpeedAndPitch ? .varispeed : .spectral
         if let item = streamPlayer?.currentItem, item.audioTimePitchAlgorithm != algorithm { item.audioTimePitchAlgorithm = algorithm }
         if isStreaming, settings.needsPreparedEffects { prepareNativeEffects() }
         updateNowPlaying()
+    }
+
+    private func setIncomingGain(_ gain: Float) {
+        incomingGain = min(1, max(0, gain))
+        let volume = min(1, max(0, library.settings.volume)) * incomingGain
+        engine.mainMixerNode.outputVolume = volume
+        streamPlayer?.volume = volume
+    }
+    private func cancelTransition(restoreVolume: Bool = true) {
+        fadeTask?.cancel(); fadeTask = nil
+        outgoing?.stop(); outgoing = nil; outgoingGain = 0; isTransitioning = false
+        if restoreVolume { setIncomingGain(1) }
+    }
+    private func retainOutgoingForFade(nextID: UUID) {
+        let actualVolume = streamPlayer?.volume ?? engine.mainMixerNode.outputVolume
+        cancelTransition(restoreVolume: false)
+        guard library.settings.usesCrossfade, isPlaying, current?.id != nextID else { incomingGain = 1; return }
+        let oldDuration = duration
+        let oldRate = Double(max(0.5, library.settings.playbackRate))
+        let baseGain = min(1, max(0, actualVolume / max(0.001, library.settings.volume)))
+        if let player = streamPlayer {
+            outgoing = FadingDeck(volume: { player.volume = $0 }, stop: { player.pause() }, remaining: {
+                let seconds = player.currentTime().seconds
+                return seconds.isFinite ? max(0, oldDuration - seconds) / oldRate : 0
+            }, active: { player.timeControlStatus == .playing }, baseGain: baseGain)
+            stopStreaming(pause: false)
+        } else if let oldFile = audioFile, node.isPlaying {
+            let oldEngine = engine, oldNode = node, offset = scheduledOffset
+            let sampleRate = oldFile.processingFormat.sampleRate
+            outgoing = FadingDeck(volume: { oldEngine.mainMixerNode.outputVolume = $0 }, stop: {
+                oldNode.stop(); oldEngine.stop(); _ = oldFile
+            }, remaining: {
+                guard let render = oldNode.lastRenderTime, let time = oldNode.playerTime(forNodeTime: render) else { return 0 }
+                return max(0, oldDuration - offset - Double(time.sampleTime) / sampleRate) / oldRate
+            }, active: { oldEngine.isRunning && oldNode.isPlaying }, baseGain: baseGain)
+            engine = AVAudioEngine(); node = AVAudioPlayerNode(); varispeed = AVAudioUnitVarispeed()
+            pitch = AVAudioUnitTimePitch(); equalizer = AVAudioUnitEQ(numberOfBands: 10)
+            wireGraph()
+        }
+        incomingGain = outgoing == nil ? 1 : 0
+        outgoingGain = baseGain
+        isTransitioning = outgoing != nil
+        apply(library.settings)
+    }
+    private func beginCrossfade() {
+        guard let deck = outgoing, fadeTask == nil else { return }
+        let seconds = min(library.settings.crossfadeSeconds, max(0.15, deck.remaining()))
+        let began = Date()
+        fadeTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                let fraction = min(1, Date().timeIntervalSince(began) / seconds)
+                setIncomingGain(Float(fraction))
+                outgoingGain = deck.baseGain * Float(1 - fraction)
+                deck.volume(library.settings.volume * outgoingGain)
+                if fraction >= 1 {
+                    deck.stop(); outgoing = nil; isTransitioning = false; outgoingGain = 0; fadeTask = nil
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(20)) } catch { return }
+            }
+        }
     }
 
     private func startNativeFile(_ url: URL, track: Track, bitrate: Int?, at seconds: Double, autoplay: Bool) throws {
@@ -348,6 +438,7 @@ final class AudioPlayer: ObservableObject {
         try activateSession(); try engine.start()
         schedule(at: min(seconds, max(0, duration - 0.05)))
         stopStreaming()
+        setIncomingGain(incomingGain)
         if autoplay { node.play() }
         isPlaying = autoplay; wantsPlayback = autoplay; isLoading = false
         loadingWatchdog?.cancel(); loadingMessage = ""; loadingProgress = nil
@@ -357,12 +448,14 @@ final class AudioPlayer: ObservableObject {
     private func startStreaming(_ source: InvidiousStream, token: UUID, at seconds: Double = 0) throws {
         stopStreaming()
         try activateSession()
-        let item = AVPlayerItem(url: source.url)
+        let prepared = PreparedAudioCache.shared.take(source.url)
+        let item = prepared?.currentItem ?? AVPlayerItem(url: source.url)
         item.preferredForwardBufferDuration = 0.5
-        item.audioTimePitchAlgorithm = library.settings.usesLinkedSpeedAndPitch ? .varispeed : .spectral
-        let player = AVPlayer(playerItem: item)
+        let algorithm: AVAudioTimePitchAlgorithm = library.settings.usesLinkedSpeedAndPitch ? .varispeed : .spectral
+        if item.audioTimePitchAlgorithm != algorithm { item.audioTimePitchAlgorithm = algorithm }
+        let player = prepared ?? AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = false
-        player.volume = library.settings.volume
+        player.volume = library.settings.volume * incomingGain
         streamPlayer = player; streamSource = source; isStreaming = true; wantsPlayback = true
         if declaredDuration <= 0, source.duration > 0 { declaredDuration = source.duration }
         duration = PlaybackDuration.effective(declared: declaredDuration, measured: source.duration)
@@ -415,6 +508,7 @@ final class AudioPlayer: ObservableObject {
         guard generation == token, wantsPlayback, !tryingAlternate, let current else { return }
         guard !usedDirectFallback, let loader = onlineLoader as? any StreamingAudioLoading else {
             stopStreaming(); isPlaying = false; isLoading = false; wantsPlayback = false
+            cancelTransition()
             loadingWatchdog?.cancel(); bufferWatchdog?.cancel()
             error = "Le flux ne démarre pas sur ce réseau. Réessaie ou change d’instance Invidious dans les réglages."
             return
@@ -436,15 +530,17 @@ final class AudioPlayer: ObservableObject {
             } catch {
                 guard generation == token, !Task.isCancelled else { return }
                 stopStreaming(); isLoading = false; isPlaying = false; wantsPlayback = false; loadingWatchdog?.cancel()
+                cancelTransition()
                 self.error = "Lecture impossible : \(error.localizedDescription)"
             }
         }
     }
 
-    private func stopStreaming() {
+    private func stopStreaming(pause: Bool = true) {
         streamObservations.removeAll()
         if let observer = streamEndObservation { NotificationCenter.default.removeObserver(observer); streamEndObservation = nil }
-        streamPlayer?.pause(); streamPlayer = nil; streamSource = nil; isStreaming = false
+        if pause { streamPlayer?.pause() }
+        streamPlayer = nil; streamSource = nil; isStreaming = false
     }
     private func finishLoading() {
         isLoading = false; loadingMessage = ""; loadingProgress = nil
@@ -516,9 +612,23 @@ final class AudioPlayer: ObservableObject {
         if firstAudioLatency == nil, position > 0.05 {
             firstAudioLatency = Date().timeIntervalSince(beganLoading)
             finishLoading()
+            beginCrossfade()
+            let nextIndex = (queue.firstIndex { $0.id == current?.id } ?? -1) + 1
+            if queue.indices.contains(nextIndex) {
+                let nextTracks = Array(queue.dropFirst(nextIndex).prefix(2)).filter { $0.source == .invidious }
+                let settings = library.settings
+                Task { await InvidiousAudioLoader.prefetch(nextTracks, settings: settings) }
+            }
             if isStreaming, requestedEffects || library.settings.needsPreparedEffects { prepareNativeEffects() }
         }
         flushListening(force: false)
+        if library.settings.usesCrossfade, !isLoading, !isTransitioning, stopAtEnd == false, repeatMode != .one,
+           loopB == nil, let id = current?.id, automaticFadeID != id, duration > 0,
+           (duration - position) / Double(max(0.5, library.settings.playbackRate)) <= library.settings.crossfadeSeconds {
+            let index = queue.firstIndex { $0.id == id } ?? -1
+            let canAdvance = shuffle ? queue.contains { !playedIDs.contains($0.id) } || repeatMode == .all : index + 1 < queue.count || repeatMode == .all
+            if queue.count > 1, canAdvance { automaticFadeID = id; next(userInitiated: false); return }
+        }
         if isStreaming, duration > 0, position >= duration - 0.03 { position = duration; next(userInitiated: false); return }
         if let a = loopA, let b = loopB, b > a, position >= b { seek(to: a) }
     }
@@ -605,9 +715,10 @@ final class AudioPlayer: ObservableObject {
                 Task { @MainActor [weak self] in self?.pause() }
             }
         })
-        observations.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+        observations.append(NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: nil, queue: .main) { [weak self] notification in
+            let changed = notification.object as? AVAudioEngine
             Task { @MainActor [weak self] in
-                guard let self, !isStreaming, isPlaying else { return }
+                guard let self, changed === engine, !isStreaming, !isTransitioning, isPlaying else { return }
                 let time = position
                 pause()
                 do { try engine.start(); schedule(at: time); node.play(); isPlaying = true; updateNowPlaying() }

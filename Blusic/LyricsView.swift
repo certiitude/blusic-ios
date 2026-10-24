@@ -11,6 +11,7 @@ struct LyricsView: View {
     @State private var message: String?
     @State private var importing = false
     @State private var autoScroll = true
+    @State private var fetchTask: Task<Void, Never>?
     private var lines: [LyricLine] { LRCParser.parse(raw) }
     private var activeLine: Int? {
         lines.last { $0.time <= player.position + library.settings.lyricsOffset }?.id
@@ -25,7 +26,7 @@ struct LyricsView: View {
                 if loading { ProgressView().tint(.white).padding(.top, 8) }
                 else {
                     HStack {
-                        Button("Rechercher les paroles") { Task { await fetch() } }.font(.caption.bold()).buttonStyle(.bordered)
+                        Button("Rechercher les paroles") { fetchTask?.cancel(); fetchTask = Task { await fetch() } }.font(.caption.bold()).buttonStyle(.bordered)
                         Button { importing = true } label: { Image(systemName: "square.and.arrow.down").frame(width: 44, height: 44) }.accessibilityLabel("Importer des paroles LRC")
                     }.tint(.white)
                     Text("Recherche via LRCLIB · Import .lrc ou .txt").font(.system(size: 10)).foregroundStyle(.white.opacity(0.4))
@@ -41,7 +42,7 @@ struct LyricsView: View {
                         Button("Retarder les paroles de 0,5 s") { library.settings.lyricsOffset -= 0.5 }
                         Button("Réinitialiser le décalage") { library.settings.lyricsOffset = 0 }
                         Button("Importer un fichier .lrc") { importing = true }
-                        Button("Actualiser depuis LRCLIB") { Task { await fetch() } }
+                        Button("Actualiser depuis LRCLIB") { fetchTask?.cancel(); fetchTask = Task { await fetch() } }
                     } label: { Image(systemName: "ellipsis").frame(width: 44, height: 30) }.tint(.white)
                 }
                 ScrollViewReader { proxy in
@@ -68,7 +69,12 @@ struct LyricsView: View {
                 }
             }
         }
-        .task(id: track.id) { raw = library.track(track.id)?.lyrics ?? track.lyrics ?? ""; message = nil }
+        .task(id: "\(track.id)|\(track.title)|\(track.artist)|\(track.album)") {
+            fetchTask?.cancel()
+            raw = library.track(track.id)?.lyrics ?? track.lyrics ?? ""; message = nil
+            if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, track.source != .bundled { await fetch() }
+        }
+        .onDisappear { fetchTask?.cancel() }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.plainText, .data]) { result in
             do {
                 let url = try result.get()
@@ -85,14 +91,17 @@ struct LyricsView: View {
         loading = true
         defer { loading = false }
         do {
-            guard let result = try await LyricsService().fetch(for: track) else {
+            var lookup = track
+            if lookup.duration <= 0 { lookup.duration = player.duration }
+            guard let result = try await LyricsService().fetch(for: lookup) else {
                 message = "Paroles introuvables.\nImporte ton fichier .lrc."; return
             }
-            if result.instrumental == true { message = "Un instrumental.\nJuste les notes."; return }
-            raw = result.syncedLyrics ?? result.plainLyrics ?? ""
+            try Task.checkCancellation()
+            if result.instrumental == true { raw = ""; message = "Un instrumental.\nJuste les notes."; return }
+            raw = result.text ?? ""
             if raw.isEmpty { message = "Pas de paroles disponibles pour ce titre." }
             cache()
-        } catch { message = error.localizedDescription }
+        } catch { if !Task.isCancelled { message = error.localizedDescription } }
     }
     private func cache() {
         if let index = library.tracks.firstIndex(where: { $0.id == track.id }) { library.tracks[index].lyrics = raw }

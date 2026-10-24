@@ -457,8 +457,8 @@ final class BlusicTests: XCTestCase {
         defer { player.forget(track.id) }
         let began = Date()
         player.play(track, in: [track])
-        for _ in 0..<50 {
-            if !player.isLoading { break }
+        for _ in 0..<100 {
+            if player.firstAudioLatency != nil { break }
             try await Task.sleep(for: .milliseconds(50))
         }
         XCTAssertTrue(player.isPlaying, player.error ?? "Playback has not started")
@@ -466,6 +466,105 @@ final class BlusicTests: XCTestCase {
         XCTAssertLessThan(latency, 2)
         XCTAssertLessThan(Date().timeIntervalSince(began), 2.5)
         print("PREFETCHED START: first-audio clock=\(latency)s, title=\(track.title), id=\(track.location)")
+    }
+
+    @MainActor
+    func testCrossfadeOverlapsTwoNativeDecksAndFinishes() async throws {
+        let store = LibraryStore(inMemory: true); store.tracks = []
+        store.settings.crossfadeEnabled = true; store.settings.crossfadeDuration = 0.6
+        let player = AudioPlayer(library: store)
+        let first = Track(title: "Fade fixture A", artist: "Test", duration: 4, source: .bundled, location: "bleu-nuit.wav")
+        let second = Track(title: "Fade fixture B", artist: "Test", duration: 4, source: .bundled, location: "orbite.wav")
+        defer { player.forget(second.id); player.forget(first.id) }
+        player.play(first, in: [first, second])
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertTrue(player.isPlaying)
+        player.next()
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(player.current?.id, second.id)
+        XCTAssertTrue(player.isTransitioning)
+        XCTAssertEqual(player.overlappingPlaybackCount, 2)
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertFalse(player.isTransitioning)
+        XCTAssertEqual(player.overlappingPlaybackCount, 1)
+    }
+
+    @MainActor
+    func testDisabledCrossfadeDoesNotKeepAnOutgoingDeck() async throws {
+        let store = LibraryStore(inMemory: true); store.tracks = []; store.settings.crossfadeEnabled = false
+        let player = AudioPlayer(library: store)
+        let first = Track(title: "Cut fixture A", artist: "Test", duration: 4, source: .bundled, location: "bleu-nuit.wav")
+        let second = Track(title: "Cut fixture B", artist: "Test", duration: 4, source: .bundled, location: "orbite.wav")
+        defer { player.forget(second.id); player.forget(first.id) }
+        player.play(first, in: [first, second]); try await Task.sleep(for: .milliseconds(350))
+        player.next(); try await Task.sleep(for: .milliseconds(350))
+        XCTAssertFalse(player.isTransitioning)
+        XCTAssertEqual(player.overlappingPlaybackCount, 1)
+    }
+
+    @MainActor
+    func testPauseStopsBothCrossfadeDecks() async throws {
+        let store = LibraryStore(inMemory: true); store.tracks = []
+        store.settings.crossfadeEnabled = true; store.settings.crossfadeDuration = 3
+        let player = AudioPlayer(library: store)
+        let first = Track(title: "Pause fixture A", artist: "Test", duration: 5, source: .bundled, location: "bleu-nuit.wav")
+        let second = Track(title: "Pause fixture B", artist: "Test", duration: 5, source: .bundled, location: "orbite.wav")
+        defer { player.forget(second.id); player.forget(first.id) }
+        player.play(first, in: [first, second]); try await Task.sleep(for: .milliseconds(350))
+        player.next(); try await Task.sleep(for: .milliseconds(350)); player.pause()
+        XCTAssertFalse(player.isPlaying)
+        XCTAssertFalse(player.isTransitioning)
+        XCTAssertEqual(player.overlappingPlaybackCount, 0)
+    }
+
+    @MainActor
+    func testAutomaticCrossfadeAdvancesBeforeTheOldTrackEnds() async throws {
+        let store = LibraryStore(inMemory: true); store.tracks = []
+        store.settings.crossfadeEnabled = true; store.settings.crossfadeDuration = 1
+        let player = AudioPlayer(library: store)
+        let first = Track(title: "Auto fixture A", artist: "Test", duration: 2, source: .bundled, location: "bleu-nuit.wav")
+        let second = Track(title: "Auto fixture B", artist: "Test", duration: 3, source: .bundled, location: "orbite.wav")
+        defer { player.forget(second.id); player.forget(first.id) }
+        player.play(first, in: [first, second]); try await Task.sleep(for: .milliseconds(1750))
+        XCTAssertEqual(player.current?.id, second.id)
+        XCTAssertTrue(player.isPlaying)
+    }
+
+    func testLyricsUsePlainTextWhenSyncedFieldIsEmpty() throws {
+        let result = try JSONDecoder().decode(LyricsResult.self, from: Data(#"{"plainLyrics":"Un texte de test","syncedLyrics":"  ","instrumental":false}"#.utf8))
+        XCTAssertEqual(result.text, "Un texte de test")
+    }
+
+    func testLyricsFallbackUsesPrimaryArtistAndReturnsSyncedText() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        InvidiousStubProtocol.handler = { request in
+            if request.url?.path == "/api/get" { return (404, Data()) }
+            return (200, Data(#"[{"trackName":"Test song","artistName":"Artist","duration":120,"plainLyrics":"Texte de test","syncedLyrics":"[00:00.00]Texte de test","instrumental":false}]"#.utf8))
+        }
+        let track = Track(title: "Test song (Official Audio)", artist: "Artist, Guest", duration: 120, source: .invidious, location: "abcdefghijk")
+        let result = try await LyricsService(session: session).fetch(for: track)
+        XCTAssertFalse(LRCParser.parse(result?.text ?? "").isEmpty)
+    }
+
+    func testLyricsFallbackDoesNotDisplayAnotherArtistsWords() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        InvidiousStubProtocol.handler = { request in
+            if request.url?.path == "/api/get" { return (404, Data()) }
+            return (200, Data(#"[{"trackName":"Test song","artistName":"Unrelated singer","duration":120,"plainLyrics":"Wrong test fixture","instrumental":false}]"#.utf8))
+        }
+        let track = Track(title: "Test song", artist: "Artist", duration: 120, source: .invidious, location: "abcdefghijk")
+        let result = try await LyricsService(session: session).fetch(for: track)
+        XCTAssertNil(result)
+    }
+
+    func testLiveLyricsAreAvailableForTheMusicCatalogTrack() async throws {
+        let track = Track(title: "Salé", artist: "Niska", album: "Commando", duration: 171, source: .invidious, location: "zka6uW2aurU")
+        let result = try await LyricsService().fetch(for: track)
+        let lines = LRCParser.parse(result?.text ?? "")
+        XCTAssertGreaterThan(lines.count, 10)
+        print("LIVE LYRICS: matched title/artist, synced lines=\(lines.count)")
     }
 }
 

@@ -116,23 +116,79 @@ struct LyricsResult: Decodable {
     var plainLyrics: String?
     var syncedLyrics: String?
     var instrumental: Bool?
+    var trackName: String?
+    var artistName: String?
+    var duration: Double?
+    var text: String? {
+        for value in [syncedLyrics, plainLyrics] {
+            if let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return value }
+        }
+        return nil
+    }
 }
 
 struct LyricsService {
+    var session: URLSession = .shared
     func fetch(for track: Track) async throws -> LyricsResult? {
-        var url = URLComponents(string: "https://lrclib.net/api/get")!
-        url.queryItems = [URLQueryItem(name: "track_name", value: track.title),
-                          URLQueryItem(name: "artist_name", value: track.artist)]
-        if !track.album.isEmpty { url.queryItems?.append(URLQueryItem(name: "album_name", value: track.album)) }
-        if track.duration > 0 { url.queryItems?.append(URLQueryItem(name: "duration", value: String(Int(track.duration)))) }
+        let artist = Self.primaryArtist(track.artist)
+        var title = Self.cleanTitle(track.title)
+        if !artist.isEmpty, title.lowercased().hasPrefix((artist + " - ").lowercased()) { title = String(title.dropFirst(artist.count + 3)) }
+        var exact = [URLQueryItem(name: "track_name", value: title), URLQueryItem(name: "artist_name", value: track.artist)]
+        if !track.album.isEmpty { exact.append(URLQueryItem(name: "album_name", value: track.album)) }
+        if track.duration > 0 { exact.append(URLQueryItem(name: "duration", value: String(Int(track.duration)))) }
+        var networkError: Error?
+        do {
+            if let data = try await request("get", parameters: exact) {
+                let result = try JSONDecoder().decode(LyricsResult.self, from: data)
+                if result.text != nil || result.instrumental == true { return result }
+            }
+        } catch { try rethrowCancellation(error); networkError = error }
+        let variants = [
+            [URLQueryItem(name: "track_name", value: title), URLQueryItem(name: "artist_name", value: artist)],
+            [URLQueryItem(name: "q", value: "\(title) \(artist)")]
+        ]
+        for parameters in variants {
+            do {
+                try Task.checkCancellation()
+                guard let data = try await request("search", parameters: parameters) else { continue }
+                let results = try JSONDecoder().decode([LyricsResult].self, from: data)
+                let ranked = results.compactMap { result -> (LyricsResult, Int)? in
+                    guard PlaylistImporter.normalize(result.trackName ?? "") == PlaylistImporter.normalize(title) else { return nil }
+                    let singer = PlaylistImporter.normalize(result.artistName ?? "")
+                    let expected = PlaylistImporter.normalize(artist)
+                    guard !singer.isEmpty, !expected.isEmpty, singer.contains(expected) || expected.contains(singer), result.text != nil || result.instrumental == true else { return nil }
+                    if let seconds = result.duration, track.duration > 0, abs(seconds - track.duration) > max(12, track.duration * 0.08) { return nil }
+                    let synced = !(result.syncedLyrics?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+                    return (result, synced ? 20 : 10)
+                }.sorted { $0.1 > $1.1 }
+                if let best = ranked.first { return best.0 }
+            } catch { try rethrowCancellation(error); networkError = error }
+        }
+        if let networkError { throw networkError }
+        return nil
+    }
+    static func primaryArtist(_ value: String) -> String {
+        let first = value.components(separatedBy: ", ").first ?? value
+        return first.replacingOccurrences(of: #"(?i)\s*(?: - Topic|VEVO|Officiel|Official)$"#, with: "", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+    }
+    static func cleanTitle(_ value: String) -> String {
+        value.replacingOccurrences(of: #"(?i)\s*[\(\[](?:clip(?: officiel)?|official(?: music)? video|official audio|lyrics(?: video)?|paroles|audio)[\)\]]\s*$"#,
+                                   with: "", options: .regularExpression).trimmingCharacters(in: .whitespaces)
+    }
+    private func request(_ endpoint: String, parameters: [URLQueryItem]) async throws -> Data? {
+        var url = URLComponents(string: "https://lrclib.net/api/" + endpoint)!
+        url.queryItems = parameters
         var request = URLRequest(url: url.url!)
-        request.timeoutInterval = 15
-        request.setValue("Blusic/1.0 (iOS personal music player)", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await URLSession.shared.data(for: request)
+        request.timeoutInterval = 7
+        request.setValue("Blusic/1.4 (iOS personal music player)", forHTTPHeaderField: "User-Agent")
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else { throw BlusicError.message("Service de paroles indisponible.") }
         if http.statusCode == 404 { return nil }
         guard (200...299).contains(http.statusCode) else { throw BlusicError.message("Les paroles sont momentanément indisponibles.") }
-        return try JSONDecoder().decode(LyricsResult.self, from: data)
+        return data
+    }
+    private func rethrowCancellation(_ error: Error) throws {
+        if Task.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled { throw CancellationError() }
     }
 }
 

@@ -2,6 +2,16 @@
 
 **Ta musique, simplement.** Application iPhone native en SwiftUI, pensée autour d’une interface sombre, de pochettes immersives et d’un lecteur en verre translucide. Identité adaptée de l’icône Blusic fournie ; ergonomie mobile inspirée des captures et d’Apple Music.
 
+## Version 1.4 — transitions et paroles automatiques
+
+- **Réglages → Écoute → Fondu entre les titres** : activable/désactivable, durée de **0,5 à 8 secondes**. Le lecteur conserve le titre sortant pendant la préparation du suivant puis croise leurs gains, sans nouvel encodage audio. Deux lecteurs progressifs ou deux graphes natifs peuvent se chevaucher. La pause arrête les deux.
+- La transition automatique prépare le titre suivant à l’approche de la fin. Le fondu réel est limité au temps restant du titre sortant ; un serveur indisponible peut empêcher un chevauchement sans coupure.
+- Le préchargement prépare désormais un **lecteur silencieux mis en tampon**, pas uniquement une URL, afin de réduire le délai après un toucher.
+- **Paroles** : recherche automatique à l’ouverture, repli sur recherche titre/artiste principal si l’album ou les crédits diffèrent. Un champ synchronisé vide ne masque plus des paroles non synchronisées disponibles.
+- Les erreurs du fournisseur, les instrumentaux et l’absence de paroles restent explicitement affichés. Le test réseau vérifie la présence de lignes synchronisées pour un titre connu, sans recopier le texte dans les logs. Les captures de la vue paroles emploient un texte de démonstration original.
+
+La suite inclut **43 tests** à exécuter sur iPhone Simulator : performances, durée bornée, vitesse/demi-tons, artistes, imports, fondu activé/désactivé, arrêt des deux lecteurs, enchaînement automatique et paroles.
+
 ## Version 1.3 — durée, vitesse liée, artistes et imports
 
 - **Fin du morceau bornée par la durée du catalogue** : une estimation AAC/conteneur doublée ne prolonge plus la lecture par une queue silencieuse. Le segment natif et le lecteur progressif s’arrêtent à cette borne.

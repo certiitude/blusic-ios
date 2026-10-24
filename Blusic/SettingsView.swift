@@ -45,6 +45,15 @@ struct SettingsView: View {
                 Toggle("Listes compactes", isOn: $library.settings.compactRows)
             }
             Section("Écoute") {
+                Toggle("Fondu entre les titres", isOn: Binding(get: { library.settings.usesCrossfade }, set: { library.settings.crossfadeEnabled = $0 }))
+                if library.settings.usesCrossfade {
+                    VStack(alignment: .leading, spacing: 8) {
+                        LabeledContent("Durée du fondu", value: String(format: "%.1f s", library.settings.crossfadeSeconds))
+                        Slider(value: Binding(get: { library.settings.crossfadeSeconds }, set: { library.settings.crossfadeDuration = $0 }), in: 0.5...8, step: 0.5)
+                            .accessibilityLabel("Durée du fondu entre les titres")
+                        Text("Le titre précédent continue pendant la préparation du suivant, puis leurs volumes se croisent. Une source indisponible peut empêcher le chevauchement.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
                 NavigationLink { SoundSettingsView() } label: { Label("Égaliseur, vitesse et tonalité", systemImage: "slider.horizontal.3") }
                 Toggle("Retrouver la file au lancement", isOn: $library.settings.restoreQueue)
                 Text("Lecture native en arrière-plan, commandes sur l’écran verrouillé, Bluetooth et AirPlay. Import WAV, ALAC, FLAC, AIFF, AAC et MP3 non protégés, selon le décodage pris en charge par iOS.")
@@ -93,7 +102,7 @@ struct SettingsView: View {
             }
             Section("À propos") {
                 NavigationLink("Confidentialité et sources") { privacy }
-                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.3.0")
+                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.4.0")
                 Text("Fait pour écouter. Pas pour te distraire.").font(.caption).foregroundStyle(.secondary)
             }
         }

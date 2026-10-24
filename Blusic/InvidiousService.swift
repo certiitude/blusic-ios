@@ -1,4 +1,5 @@
 import Foundation
+import AVFoundation
 
 struct InvidiousVideo: Decodable {
     struct Thumbnail: Decodable { var url: String; var width: Int? }
@@ -108,7 +109,57 @@ struct InvidiousAudioLoader: StreamingAudioLoading {
     static func prefetch(_ tracks: [Track], settings: AppSettings) async {
         for track in tracks.prefix(2) {
             guard !Task.isCancelled else { return }
-            _ = try? await InvidiousStreamCache.shared.resolve(track, settings: settings, direct: false)
+            if let stream = try? await InvidiousStreamCache.shared.resolve(track, settings: settings, direct: false) {
+                await PreparedAudioCache.shared.prepare(stream, settings: settings)
+            }
+        }
+    }
+}
+
+/// Prebuffers a silent, paused player, not just its expiring URL.
+@MainActor
+final class PreparedAudioCache {
+    static let shared = PreparedAudioCache()
+    private struct Entry { var player: AVPlayer; var ready: Bool; var expires: Date }
+    private var entries: [URL: Entry] = [:]
+    func prepare(_ stream: InvidiousStream, settings: AppSettings) async {
+        prune()
+        if entries[stream.url] == nil {
+            let item = AVPlayerItem(url: stream.url)
+            item.preferredForwardBufferDuration = 1
+            item.audioTimePitchAlgorithm = settings.usesLinkedSpeedAndPitch ? .varispeed : .spectral
+            let player = AVPlayer(playerItem: item)
+            player.volume = 0
+            entries[stream.url] = Entry(player: player, ready: false, expires: Date().addingTimeInterval(90))
+            for _ in 0..<60 {
+                if item.status != .unknown { break }
+                if Task.isCancelled { return }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard item.status == .readyToPlay else { entries[stream.url] = nil; return }
+            player.preroll(atRate: settings.playbackRate) { [weak self] ready in
+                Task { @MainActor [weak self] in
+                    guard let self, entries[stream.url]?.player === player else { return }
+                    entries[stream.url]?.ready = ready
+                }
+            }
+        }
+        for _ in 0..<60 {
+            if entries[stream.url]?.ready == true { return }
+            if Task.isCancelled { return }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+    }
+    func take(_ url: URL) -> AVPlayer? {
+        prune()
+        guard let entry = entries[url], entry.ready else { return nil }
+        entries[url] = nil
+        return entry.player
+    }
+    private func prune() {
+        for (url, entry) in entries where entry.expires <= Date() { entry.player.cancelPendingPrerolls(); entries[url] = nil }
+        while entries.count > 4, let oldest = entries.min(by: { $0.value.expires < $1.value.expires }) {
+            oldest.value.player.cancelPendingPrerolls(); entries[oldest.key] = nil
         }
     }
 }

@@ -91,6 +91,9 @@ struct RootView: View {
             #if DEBUG
             guard !preparedScreenshot else { return }
             preparedScreenshot = true
+            if ProcessInfo.processInfo.arguments.contains("--blusic-lyrics"), let index = library.tracks.firstIndex(where: { $0.source == .bundled }) {
+                library.tracks[index].lyrics = "[00:00.00]Chaque note trouve sa place\n[00:04.00]Le rythme suit ton envie\n[00:08.00]Un exemple de paroles\n[00:12.00]Pour vérifier le défilement"
+            }
             if ProcessInfo.processInfo.arguments.contains("--blusic-preview-player"), let demo = library.tracks.first(where: { $0.source == .bundled }) {
                 player.play(demo, in: [demo]); sheet = .player
             } else if ProcessInfo.processInfo.arguments.contains("--blusic-preview-artist") {
@@ -123,7 +126,7 @@ struct RootView: View {
                             ArtworkView(track: current, size: 40, radius: 6)
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(current.title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
-                                Text(player.isLoading ? player.loadingMessage : current.subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                                Text(player.isLoading ? player.loadingMessage : player.isTransitioning ? "Fondu en cours…" : current.subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                             Spacer(minLength: 0)
                         }.contentShape(Rectangle())

@@ -104,10 +104,14 @@ struct AppSettings: Codable, Equatable, Sendable {
     var invidiousInstance: String?
     var invidiousAutomaticFallback: Bool?
     var linkSpeedAndPitch: Bool?
+    var crossfadeEnabled: Bool?
+    var crossfadeDuration: Double?
 
     var usesInvidiousFallback: Bool { invidiousAutomaticFallback ?? true }
     var invidiousAddress: String { invidiousInstance ?? InvidiousService.defaultInstance }
     var usesLinkedSpeedAndPitch: Bool { linkSpeedAndPitch ?? true }
+    var usesCrossfade: Bool { crossfadeEnabled ?? false }
+    var crossfadeSeconds: Double { min(8, max(0.5, crossfadeDuration ?? 3)) }
     var effectiveSemitones: Float { usesLinkedSpeedAndPitch ? Self.semitones(for: playbackRate) : pitch }
     var needsPreparedEffects: Bool { equalizerEnabled || (!usesLinkedSpeedAndPitch && abs(pitch) > 0.001) }
     static func rate(for semitones: Float) -> Float { Float(pow(2, Double(min(12, max(-12, semitones))) / 12)) }
