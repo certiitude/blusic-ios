@@ -621,9 +621,10 @@ actor AudioCache {
         var request = URLRequest(url: url)
         request.timeoutInterval = 8
         request.cachePolicy = .reloadIgnoringLocalCacheData
+        if fileExtension == "m4a" { request.setValue("bytes=0-", forHTTPHeaderField: "Range") }
         request.setValue("Blusic/1.1 (iOS; Invidious client)", forHTTPHeaderField: "User-Agent")
-        let delegate = AudioTransferProgress(progress: progress)
-        let (temp, response) = try await session.download(for: request, delegate: delegate)
+        progress(nil)
+        let (temp, response) = try await session.download(for: request)
         defer { try? FileManager.default.removeItem(at: temp) }
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw BlusicError.message("La source audio n’est pas accessible.")
@@ -637,6 +638,7 @@ actor AudioCache {
         try validate(temp, expectedDuration: expectedDuration)
         if !FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.moveItem(at: temp, to: destination) }
         try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: destination.path)
+        progress(1)
         return destination
     }
     private func validate(_ url: URL, expectedDuration: Double) throws {
@@ -647,22 +649,4 @@ actor AudioCache {
             throw BlusicError.message("Le fichier audio est vide, tronqué ou plus court que le morceau annoncé.")
         }
     }
-}
-
-private final class AudioTransferProgress: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
-    private let callback: @Sendable (Double?) -> Void
-    private let lock = NSLock()
-    private var lastFraction = -1.0
-    init(progress: @escaping @Sendable (Double?) -> Void) { callback = progress }
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didWriteData bytesWritten: Int64,
-                    totalBytesWritten: Int64, totalBytesExpectedToWrite: Int64) {
-        guard totalBytesExpectedToWrite > 0 else { return }
-        let fraction = min(1, Double(totalBytesWritten) / Double(totalBytesExpectedToWrite))
-        lock.lock()
-        let shouldReport = fraction - lastFraction >= 0.025 || fraction == 1
-        if shouldReport { lastFraction = fraction }
-        lock.unlock()
-        if shouldReport { callback(fraction) }
-    }
-    func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {}
 }

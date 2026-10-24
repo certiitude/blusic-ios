@@ -143,7 +143,9 @@ struct InvidiousService {
     static let mediaSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 7
-        config.timeoutIntervalForResource = 16
+        // Full-file preparation is separate from progressive playback. Some
+        // hosts throttle complete downloads; it must not delay the first sound.
+        config.timeoutIntervalForResource = 90
         config.waitsForConnectivity = false
         return URLSession(configuration: config)
     }()

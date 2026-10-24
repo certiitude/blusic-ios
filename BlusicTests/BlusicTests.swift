@@ -221,6 +221,7 @@ final class BlusicTests: XCTestCase {
         guard startup < 12 else { XCTFail("Cold progressive startup too slow: \(startup) s"); return }
         XCTAssertNotNil(player.firstAudioLatency)
         XCTAssertLessThanOrEqual(player.artworkFetchCount, 2, "Playback status observations must not trigger an artwork request loop")
+        print("COLD PROGRESSIVE START: \(startup)s, first-audio clock=\(player.firstAudioLatency ?? -1)s, title=\(track.title), artist=\(track.artist), id=\(track.location), artwork requests=\(player.artworkFetchCount)")
         let loaded = try await service.audio(for: track) // Fetch the full file only after progressive startup was measured.
         let file = try AVAudioFile(forReading: loaded.fileURL)
         let duration = Double(file.length) / file.processingFormat.sampleRate
