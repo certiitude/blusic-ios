@@ -49,6 +49,9 @@ jobs:
           -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
           -derivedDataPath build/DerivedData -resultBundlePath build/BlusicTests.xcresult
           -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+      - name: Export test summary
+        if: always()
+        run: xcrun xcresulttool get test-results summary --path build/BlusicTests.xcresult > build/test-summary.json
       - name: Capture native layouts on large and compact iPhones
         if: always()
         run: >-
@@ -65,5 +68,7 @@ jobs:
         if: always()
         with:
           name: Blusic-test-results
-          path: build/BlusicTests.xcresult
+          path: |
+            build/BlusicTests.xcresult
+            build/test-summary.json
           retention-days: 7

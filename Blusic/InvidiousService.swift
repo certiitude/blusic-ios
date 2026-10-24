@@ -67,6 +67,7 @@ struct InvidiousAudio: Sendable {
     var fileURL: URL
     var bitrate: Int
     var instance: URL
+    var duration: Double? = nil
 }
 
 struct AudioLoadUpdate: Sendable {
@@ -253,8 +254,9 @@ struct InvidiousService {
                                 cacheKey: "invidious:\(track.location):aac:\(format.bitrate)", fileExtension: "m4a",
                                 expectedDuration: Double(details.lengthSeconds ?? 0), session: Self.mediaSession,
                                 progress: { fraction in progress(AudioLoadUpdate(message: "Chargement de l’audio…", fraction: fraction)) })
-                            await AudioCache.shared.storeInvidiousInfo(track: track, bitrate: format.bitrate, instance: server)
-                            return InvidiousAudio(fileURL: file, bitrate: format.bitrate, instance: server)
+                            let duration = Double(details.lengthSeconds ?? 0)
+                            await AudioCache.shared.storeInvidiousInfo(track: track, bitrate: format.bitrate, instance: server, duration: duration)
+                            return InvidiousAudio(fileURL: file, bitrate: format.bitrate, instance: server, duration: duration)
                         } catch {
                             try Self.rethrowCancellation(error)
                             failures.append("\(server.host ?? "Instance") : flux \(local ? "relayé" : "direct") inaccessible")

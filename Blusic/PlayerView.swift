@@ -112,7 +112,11 @@ struct PlayerView: View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 7) {
                 Text(track.title).font(.system(size: 24, weight: .bold)).tracking(-0.5).lineLimit(1).minimumScaleFactor(0.7)
-                Text(track.subtitle).font(.system(size: 17)).foregroundStyle(.white.opacity(0.58)).lineLimit(1)
+                Button {
+                    if let artistID = track.artistID { library.requestedArtist = MusicArtist(id: artistID, name: track.subtitle) }
+                } label: {
+                    Text(track.subtitle).font(.system(size: 17)).foregroundStyle(.white.opacity(0.58)).lineLimit(1)
+                }.buttonStyle(.plain).disabled(track.artistID == nil)
                 HStack(spacing: 5) {
                     Image(systemName: track.isOffline ? "checkmark.circle" : "waveform")
                     Text(player.formatLabel.isEmpty ? track.sourceLabel : player.formatLabel)

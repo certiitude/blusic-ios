@@ -9,11 +9,13 @@ final class LibraryStore: ObservableObject {
     @Published var playlists: [Playlist] = []
     @Published var favorites: Set<UUID> = []
     @Published var history: [ListeningEvent] = []
+    @Published var followedArtists: [MusicArtist] = []
     @Published var settings = AppSettings()
     @Published var savedQueue: [UUID] = []
     @Published var savedCurrentID: UUID?
     @Published var notice: String?
     @Published var error: String?
+    @Published var requestedArtist: MusicArtist?
     private var cancellables = Set<AnyCancellable>()
     private let fileManager = FileManager.default
     private let persists: Bool
@@ -48,8 +50,9 @@ final class LibraryStore: ObservableObject {
                             $settings.map { _ in true }.eraseToAnyPublisher(),
                             $history.map { _ in true }.eraseToAnyPublisher(),
                             $savedQueue.map { _ in true }.eraseToAnyPublisher(),
-                            $savedCurrentID.map { _ in true }.eraseToAnyPublisher())
-            .dropFirst(7)
+                            $savedCurrentID.map { _ in true }.eraseToAnyPublisher(),
+                            $followedArtists.map { _ in true }.eraseToAnyPublisher())
+            .dropFirst(8)
             .debounce(for: .milliseconds(450), scheduler: RunLoop.main)
             .sink { [weak self] _ in self?.save() }.store(in: &cancellables)
     }
@@ -69,11 +72,23 @@ final class LibraryStore: ObservableObject {
         haptic()
     }
     func haptic() { if settings.haptics { UISelectionFeedbackGenerator().selectionChanged() } }
+    func toggleFollow(_ artist: MusicArtist) {
+        if followedArtists.contains(where: { $0.id == artist.id }) { followedArtists.removeAll { $0.id == artist.id } }
+        else { followedArtists.append(artist) }
+        haptic()
+    }
 
     @discardableResult
     func add(_ track: Track) -> Track {
         if let existing = tracks.first(where: { $0.id == track.id }) { return existing }
-        if let existing = tracks.first(where: { $0.source == track.source && $0.location == track.location && !$0.location.isEmpty }) {
+        if let index = tracks.firstIndex(where: { $0.source == track.source && $0.location == track.location && !$0.location.isEmpty }) {
+            var existing = tracks[index]
+            if existing.artistID == nil { existing.artistID = track.artistID }
+            if existing.musicCatalog == nil { existing.musicCatalog = track.musicCatalog }
+            if existing.artworkURL == nil { existing.artworkURL = track.artworkURL }
+            if existing.album.isEmpty { existing.album = track.album }
+            if existing.duration <= 0 { existing.duration = track.duration }
+            if existing != tracks[index] { tracks[index] = existing }
             return existing
         }
         tracks.append(track)
@@ -111,6 +126,9 @@ final class LibraryStore: ObservableObject {
         tracks[index].location = replacement.location
         tracks[index].duration = replacement.duration
         tracks[index].artworkURL = replacement.artworkURL
+        tracks[index].album = replacement.album
+        tracks[index].artistID = replacement.artistID
+        tracks[index].musicCatalog = replacement.musicCatalog
     }
     func nativeURL(for track: Track) -> URL? {
         switch track.source {
@@ -213,6 +231,7 @@ final class LibraryStore: ObservableObject {
         let known = Set(history.map(\.id))
         history.append(contentsOf: backup.history.filter { !known.contains($0.id) })
         history.sort { $0.date < $1.date }
+        for artist in backup.followedArtists ?? [] where !followedArtists.contains(where: { $0.id == artist.id }) { followedArtists.append(artist) }
         save()
         notice = "Bibliothèque fusionnée. Les fichiers audio absents sont à réassocier."
     }
@@ -223,7 +242,7 @@ final class LibraryStore: ObservableObject {
     }
     private func snapshot() -> LibrarySnapshot {
         LibrarySnapshot(tracks: tracks, playlists: playlists, favorites: favorites, history: history,
-                        settings: settings, queue: savedQueue, currentTrackID: savedCurrentID)
+                        settings: settings, queue: savedQueue, currentTrackID: savedCurrentID, followedArtists: followedArtists)
     }
     private func apply(_ data: LibrarySnapshot) {
         tracks = data.tracks.map { item in
@@ -233,6 +252,7 @@ final class LibraryStore: ObservableObject {
         }
         playlists = data.playlists; favorites = data.favorites
         history = data.history; settings = data.settings; savedQueue = data.queue; savedCurrentID = data.currentTrackID
+        followedArtists = data.followedArtists ?? []
     }
     private func seed() {
         tracks = [

@@ -2,6 +2,17 @@
 
 **Ta musique, simplement.** Application iPhone native en SwiftUI, pensée autour d’une interface sombre, de pochettes immersives et d’un lecteur en verre translucide. Identité adaptée de l’icône Blusic fournie ; ergonomie mobile inspirée des captures et d’Apple Music.
 
+## Version 1.3 — durée, vitesse liée, artistes et imports
+
+- **Fin du morceau bornée par la durée du catalogue** : une estimation AAC/conteneur doublée ne prolonge plus la lecture par une queue silencieuse. Le segment natif et le lecteur progressif s’arrêtent à cette borne.
+- **Vitesse et tonalité liées par défaut** : `vitesse = 2^(demi-tons/12)`. +12 donne ×2, −12 donne ×0,5. Le lecteur progressif et le moteur natif utilisent le varispeed, sans réencodage AAC ni étirement temporel dans ce mode. Le mode indépendant reste disponible.
+- **Liquid Glass** rétabli sur les commandes d’en-tête, le mini-lecteur et les onglets, avec un fond et un espace séparés pour conserver l’absence de superpositions.
+- **Recherche → Catalogue → Artistes** : profils YouTube Music, photo, description disponible, titres et suivi local dans Blusic. Les artistes suivis sont conservés dans la bibliothèque et les sauvegardes.
+- **Import direct de playlists Deezer publiques**, sans utiliser les extraits de 30 secondes. **Spotify / Apple Music / autres : CSV**, puis bouton d’association à YouTube Music avec progression et annulation. Une correspondance douteuse, une reprise ou une version live différente n’est pas acceptée automatiquement.
+- Les références restantes peuvent être associées au premier lancement ou choisies manuellement via « Trouver le titre sur YouTube Music ».
+
+La recherche d’une source gratuite garantissant l’AAC 256 kbit/s n’a pas produit de fournisseur suffisamment vérifié pour l’ajouter : [détails et sources](docs/QUALITE-AUDIO.md). Le lecteur sélectionne toujours le meilleur AAC réellement annoncé, y compris 256 kbit/s si l’instance le fournit. Il ne transforme pas artificiellement un flux 128 kbit/s en « 256 ».
+
 ## Site vitrine Windows et iOS
 
 Le dossier **[`website/`](website/README.md)** contient le site Blusic prêt pour Vercel : design Liquid Glass sombre, logo animé au démarrage, animations au défilement, aperçu Windows, illustration iPhone, démo audio et téléchargements Windows/IPA iOS. Dans Vercel : **Root Directory `website`**, **Framework Other**, aucune commande de build, sortie **`.`**.

@@ -62,6 +62,7 @@ struct ArtworkView: View {
     var track: Track?
     var size: CGFloat? = nil
     var radius: CGFloat = 14
+    var artworkURL: URL? = nil
     var body: some View {
         Color.clear
             .aspectRatio(1, contentMode: .fit)
@@ -70,7 +71,7 @@ struct ArtworkView: View {
                     ZStack {
                         Image(track?.artwork ?? "cover-night").resizable().scaledToFill()
                             .frame(width: geometry.size.width, height: geometry.size.height).clipped()
-                        if let url = track?.artworkURL {
+                        if let url = artworkURL ?? track?.artworkURL {
                             if url.isFileURL, let image = UIImage(contentsOfFile: url.path) {
                                 Image(uiImage: image).resizable().scaledToFill()
                                     .frame(width: geometry.size.width, height: geometry.size.height).clipped()
@@ -137,7 +138,7 @@ struct TrackRow: View {
                         HStack(spacing: 4) {
                             if track.isExplicit { Image(systemName: "e.square.fill").font(.system(size: 10)) }
                             Text(track.subtitle).lineLimit(1)
-                            if track.source == .unresolved { Image(systemName: "link.badge.plus").accessibilityLabel("Source à associer") }
+                            if track.source == .unresolved || track.source == .catalogReference { Image(systemName: "link.badge.plus").accessibilityLabel("Source à associer") }
                             if track.isYouTubeContent { Image(systemName: track.source == .invidious ? "network" : "play.rectangle").accessibilityLabel(track.sourceLabel) }
                         }.font(.system(size: 12)).foregroundStyle(.secondary)
                     }
@@ -167,7 +168,10 @@ struct TrackActions: View {
             if library.playlists.isEmpty { Text("Crée une playlist dans la bibliothèque") }
             ForEach(library.playlists) { playlist in Button(playlist.name) { library.add(track, to: playlist) } }
         } label: { Label("Ajouter à une playlist", systemImage: "plus.square.on.square") }
-        if track.isYouTubeContent, let url = URL(string: "https://www.youtube.com/watch?v=\(track.location)") {
+        if let artistID = track.artistID {
+            Button { library.requestedArtist = MusicArtist(id: artistID, name: track.subtitle) } label: { Label("Voir l’artiste", systemImage: "person.crop.circle") }
+        }
+        if track.isYouTubeContent, let url = URL(string: "https://\(track.musicCatalog == "youtube-music" ? "music.youtube.com" : "www.youtube.com")/watch?v=\(track.location)") {
             Button { player.openOfficialPlayer(for: track) } label: { Label("Ouvrir le lecteur officiel", systemImage: "play.rectangle") }
             ShareLink(item: url) { Label("Partager", systemImage: "square.and.arrow.up") }
         } else if track.source == .local, let url = library.nativeURL(for: track) {

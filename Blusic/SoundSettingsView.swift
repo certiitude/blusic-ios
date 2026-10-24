@@ -16,7 +16,7 @@ struct SoundSettingsView: View {
         Form {
             if player.isStreaming {
                 Section {
-                    Text("La musique démarre en lecture progressive. La vitesse est déjà réglable ; l’égaliseur et la tonalité utilisent le moteur complet une fois l’audio préparé.")
+                    Text("La vitesse et la tonalité liées fonctionnent immédiatement en lecture progressive. L’égaliseur et la tonalité indépendante utilisent le moteur complet après préparation.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button { player.prepareNativeEffects() } label: {
                         HStack { Text(player.preparingEffects ? "Préparation des effets…" : "Préparer les effets audio"); if player.preparingEffects { Spacer(); ProgressView() } }
@@ -25,17 +25,18 @@ struct SoundSettingsView: View {
                 }
             }
             Section {
+                Toggle("Lier vitesse et tonalité", isOn: Binding(get: { library.settings.usesLinkedSpeedAndPitch }, set: { library.settings.setSpeedPitchLinked($0) }))
                 VStack(alignment: .leading, spacing: 12) {
                     HStack { Label("Vitesse", systemImage: "speedometer"); Spacer(); Text(String(format: "%.2f×", library.settings.playbackRate)).monospacedDigit().foregroundStyle(library.settings.color) }
-                    Slider(value: Binding(get: { Double(library.settings.playbackRate) }, set: { library.settings.playbackRate = Float($0) }), in: 0.5...2, step: 0.05).accessibilityLabel("Vitesse")
-                    HStack { ForEach([0.75, 1, 1.25, 1.5], id: \.self) { rate in Button(String(format: "%g×", rate)) { library.settings.playbackRate = Float(rate) }.buttonStyle(.bordered).frame(maxWidth: .infinity) } }.font(.caption)
+                    Slider(value: Binding(get: { Double(library.settings.playbackRate) }, set: { library.settings.setPlaybackRate(Float($0)) }), in: 0.5...2, step: 0.01).accessibilityLabel("Vitesse")
+                    HStack { ForEach([0.75, 1, 1.25, 1.5], id: \.self) { rate in Button(String(format: "%g×", rate)) { library.settings.setPlaybackRate(Float(rate)) }.buttonStyle(.bordered).frame(maxWidth: .infinity) } }.font(.caption)
                 }.padding(.vertical, 8)
                 VStack(alignment: .leading, spacing: 12) {
-                    HStack { Label("Tonalité", systemImage: "pianokeys"); Spacer(); Text(String(format: "%+.0f demi-tons", library.settings.pitch)).font(.subheadline.monospacedDigit()).foregroundStyle(library.settings.color) }
-                    Slider(value: Binding(get: { Double(library.settings.pitch) }, set: { library.settings.pitch = Float($0) }), in: -12...12, step: 1).accessibilityLabel("Tonalité en demi-tons")
+                    HStack { Label("Tonalité", systemImage: "pianokeys"); Spacer(); Text(String(format: "%+.1f demi-tons", library.settings.effectiveSemitones)).font(.subheadline.monospacedDigit()).foregroundStyle(library.settings.color) }
+                    Slider(value: Binding(get: { Double(library.settings.effectiveSemitones) }, set: { library.settings.setSemitones(Float($0)) }), in: -12...12, step: 1).accessibilityLabel("Tonalité en demi-tons")
                 }.padding(.vertical, 8)
-                Button("Réinitialiser la vitesse et la tonalité") { library.settings.playbackRate = 1; library.settings.pitch = 0 }
-            } header: { Text("À ta façon") } footer: { Text("Vitesse et hauteur indépendantes, appliquées au moteur audio natif. Ces réglages ne s’appliquent pas au lecteur YouTube.") }
+                Button("Réinitialiser la vitesse et la tonalité") { library.settings.setPlaybackRate(1); library.settings.setSemitones(0) }
+            } header: { Text("À ta façon") } footer: { Text("Mode lié : vitesse = 2^(demi-tons/12). +12 = ×2, −12 = ×0,5. Le signal est rééchantillonné, sans nouvel encodage AAC ni étirement temporel. Le mode indépendant utilise un traitement spectral de haute qualité ; il peut modifier le timbre aux réglages extrêmes. Le format et le débit de la source ne sont pas augmentés artificiellement.") }
 
             Section {
                 Toggle("Égaliseur 10 bandes", isOn: $library.settings.equalizerEnabled)

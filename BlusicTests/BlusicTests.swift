@@ -346,6 +346,127 @@ final class BlusicTests: XCTestCase {
         config.protocolClasses = [InvidiousStubProtocol.self]
         return URLSession(configuration: config)
     }
+
+    func testPlaybackDurationRejectsDoubleContainerDuration() {
+        XCTAssertEqual(PlaybackDuration.effective(declared: 171, measured: 342), 171)
+        XCTAssertEqual(PlaybackDuration.effective(declared: 171, measured: .nan), 171)
+        XCTAssertEqual(PlaybackDuration.effective(declared: 171, measured: 30), 171)
+        XCTAssertEqual(PlaybackDuration.effective(declared: 0, measured: 170.25), 170.25)
+        XCTAssertEqual(PlaybackDuration.effective(declared: 171, measured: 170.25), 170.25)
+    }
+
+    @MainActor
+    func testNativeSegmentStopsAtDeclaredEndWithoutSilentTail() async throws {
+        let store = LibraryStore(inMemory: true)
+        store.tracks = []
+        let player = AudioPlayer(library: store)
+        let short = Track(title: "Duration boundary fixture", artist: "Test", duration: 0.4, source: .bundled, location: "bleu-nuit.wav")
+        defer { player.forget(short.id) }
+        player.play(short, in: [short])
+        try await Task.sleep(for: .seconds(1.2))
+        XCTAssertEqual(player.duration, 0.4, accuracy: 0.01)
+        XCTAssertFalse(player.isPlaying, "The 48-second file must stop at its declared test boundary, not append a silent tail")
+        XCTAssertEqual(player.position, 0.4, accuracy: 0.05)
+    }
+
+    func testSpeedAndSemitoneRelationship() {
+        XCTAssertEqual(AppSettings.rate(for: 12), 2, accuracy: 0.0001)
+        XCTAssertEqual(AppSettings.rate(for: -12), 0.5, accuracy: 0.0001)
+        XCTAssertEqual(AppSettings.rate(for: 1), 1.059463, accuracy: 0.0001)
+        XCTAssertEqual(AppSettings.semitones(for: 2), 12, accuracy: 0.0001)
+        XCTAssertEqual(AppSettings.semitones(for: 0.5), -12, accuracy: 0.0001)
+    }
+
+    func testLinkedAndIndependentSpeedSettings() {
+        var settings = AppSettings()
+        settings.setSemitones(7)
+        XCTAssertEqual(settings.playbackRate, 1.498307, accuracy: 0.0001)
+        settings.setPlaybackRate(1.25)
+        XCTAssertEqual(settings.effectiveSemitones, 3.863137, accuracy: 0.0001)
+        settings.setSpeedPitchLinked(false)
+        settings.setSemitones(-3)
+        XCTAssertEqual(settings.playbackRate, 1.25)
+        settings.setSpeedPitchLinked(true)
+        XCTAssertEqual(settings.effectiveSemitones, 3.863137, accuracy: 0.0001)
+    }
+
+    func testPlaylistMatchingRejectsCoversAndDifferentVersions() {
+        let original = Track(title: "Salé", artist: "Niska", duration: 171, source: .catalogReference, location: "")
+        var match = Track(title: "Salé", artist: "Niska", duration: 171, source: .invidious, location: "abcdefghijk")
+        XCTAssertGreaterThanOrEqual(MusicCatalogService.matchScore(original, match), 85)
+        match.artist = "Another Singer"
+        XCTAssertLessThan(MusicCatalogService.matchScore(original, match), 85)
+        match.artist = "Niska"; match.title = "Salé (Live)"
+        XCTAssertEqual(MusicCatalogService.matchScore(original, match), 0)
+        match.title = "Salé"; match.duration = 300
+        XCTAssertLessThan(MusicCatalogService.matchScore(original, match), 85)
+    }
+
+    func testArtistSearchParsesProfileNotSongArtistLinks() throws {
+        let data = Data(#"{"contents":[{"musicResponsiveListItemRenderer":{"navigationEndpoint":{"browseEndpoint":{"browseId":"UC_artist_profile"}},"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"Niska"}]}}}]}},{"musicResponsiveListItemRenderer":{"playlistItemData":{"videoId":"abcdefghijk"},"navigationEndpoint":{"browseEndpoint":{"browseId":"UC_wrong_song"}},"flexColumns":[{"musicResponsiveListItemFlexColumnRenderer":{"text":{"runs":[{"text":"A song, not a profile"}]}}}]}}]}"#.utf8)
+        let artists = try MusicCatalogService.parseArtists(data)
+        XCTAssertEqual(artists.map(\.name), ["Niska"])
+        XCTAssertEqual(artists.first?.id, "UC_artist_profile")
+    }
+
+    func testDeezerImportKeepsMetadataAndNeverUsesPreviewAudio() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        InvidiousStubProtocol.handler = { request in
+            if request.url?.path.hasSuffix("/tracks") == true {
+                return (200, Data(#"{"data":[{"title":"Salé","duration":171,"artist":{"name":"Niska"},"album":{"title":"Commando"},"preview":"https://example.org/only-30-seconds.mp3"}]}"#.utf8))
+            }
+            return (200, Data(#"{"title":"Test playlist","public":true}"#.utf8))
+        }
+        let imported = try await PlatformPlaylistService(session: session).deezer(URL(string: "https://www.deezer.com/fr/playlist/123")!)
+        XCTAssertEqual(imported.name, "Test playlist")
+        XCTAssertEqual(imported.tracks.first?.source, .catalogReference)
+        XCTAssertEqual(imported.tracks.first?.location, "")
+        XCTAssertEqual(imported.tracks.first?.duration, 171)
+    }
+
+    @MainActor
+    func testFollowedArtistsAreIncludedInBackup() throws {
+        let store = LibraryStore(inMemory: true)
+        let artist = MusicArtist(id: "UC_artist_profile", name: "Niska")
+        store.toggleFollow(artist)
+        let data = try Data(contentsOf: store.exportBackup())
+        let decoded = try JSONDecoder().decode(LibrarySnapshot.self, from: data)
+        XCTAssertEqual(decoded.followedArtists, [artist])
+        store.toggleFollow(artist)
+        XCTAssertTrue(store.followedArtists.isEmpty)
+    }
+
+    func testLiveArtistProfileLoadsPublicTracks() async throws {
+        let service = MusicCatalogService()
+        let artists = try await service.searchArtists("Niska")
+        let found = try XCTUnwrap(artists.first { $0.name.lowercased() == "niska" })
+        let profile = try await service.artist(found)
+        XCTAssertTrue(profile.artist.name.localizedCaseInsensitiveContains("Niska"))
+        XCTAssertFalse(profile.tracks.isEmpty)
+        XCTAssertTrue(profile.tracks.allSatisfy { $0.musicCatalog == "youtube-music" })
+    }
+
+    @MainActor
+    func testLivePrefetchedStreamingStartsWithinTwoSeconds() async throws {
+        let page = try await MusicCatalogService().search("Niska Réseaux")
+        let track = try XCTUnwrap(page.tracks.first { $0.title.localizedCaseInsensitiveContains("Réseaux") })
+        let store = LibraryStore(inMemory: true)
+        await InvidiousAudioLoader.prefetch([track], settings: store.settings)
+        let player = AudioPlayer(library: store)
+        defer { player.forget(track.id) }
+        let began = Date()
+        player.play(track, in: [track])
+        for _ in 0..<50 {
+            if !player.isLoading { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertTrue(player.isPlaying, player.error ?? "Playback has not started")
+        let latency = try XCTUnwrap(player.firstAudioLatency)
+        XCTAssertLessThan(latency, 2)
+        XCTAssertLessThan(Date().timeIntervalSince(began), 2.5)
+        print("PREFETCHED START: first-audio clock=\(latency)s, title=\(track.title), id=\(track.location)")
+    }
 }
 
 private actor LoadCallCounter {

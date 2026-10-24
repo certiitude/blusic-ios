@@ -2,7 +2,7 @@ import Foundation
 import SwiftUI
 
 enum AudioSource: String, Codable, CaseIterable, Sendable {
-    case bundled, local, remote, youtube, invidious, unresolved
+    case bundled, local, remote, youtube, invidious, catalogReference, unresolved
 }
 
 struct Track: Identifiable, Codable, Equatable, Hashable, Sendable {
@@ -22,6 +22,7 @@ struct Track: Identifiable, Codable, Equatable, Hashable, Sendable {
     /// Discovery origin only. Expiring audio URLs are never saved in the library.
     var originInstance: URL?
     var musicCatalog: String?
+    var artistID: String?
 
     var isNative: Bool { [.bundled, .local, .remote, .invidious].contains(source) }
     var isYouTubeContent: Bool { source == .youtube || source == .invidious }
@@ -34,6 +35,7 @@ struct Track: Identifiable, Codable, Equatable, Hashable, Sendable {
         case .remote: return "Source HTTPS"
         case .youtube: return "YouTube"
         case .invidious: return musicCatalog == "youtube-music" ? "YouTube Music · Invidious" : "Invidious · YouTube"
+        case .catalogReference: return "À associer à YouTube Music"
         case .unresolved: return "Source à associer"
         }
     }
@@ -46,6 +48,29 @@ struct Playlist: Identifiable, Codable, Equatable {
     var trackIDs: [UUID] = []
     var createdAt = Date()
     var symbol = "music.note.list"
+}
+
+struct MusicArtist: Identifiable, Codable, Equatable, Hashable, Sendable {
+    var id: String
+    var name: String
+    var artworkURL: URL?
+}
+
+struct ArtistProfile {
+    var artist: MusicArtist
+    var biography: String
+    var tracks: [Track]
+}
+
+enum PlaybackDuration {
+    /// Public catalogue duration bounds unreliable AAC/container estimates.
+    static func effective(declared: Double, measured: Double) -> Double {
+        let known = declared.isFinite && declared > 0
+        let valid = measured.isFinite && measured > 0
+        guard known else { return valid ? measured : 0 }
+        guard valid, abs(measured - declared) <= max(2, declared * 0.02) else { return declared }
+        return measured
+    }
 }
 
 struct ListeningEvent: Identifiable, Codable {
@@ -78,9 +103,28 @@ struct AppSettings: Codable, Equatable, Sendable {
     // Optional fields keep v1.0 Codable snapshots readable without resetting the library.
     var invidiousInstance: String?
     var invidiousAutomaticFallback: Bool?
+    var linkSpeedAndPitch: Bool?
 
     var usesInvidiousFallback: Bool { invidiousAutomaticFallback ?? true }
     var invidiousAddress: String { invidiousInstance ?? InvidiousService.defaultInstance }
+    var usesLinkedSpeedAndPitch: Bool { linkSpeedAndPitch ?? true }
+    var effectiveSemitones: Float { usesLinkedSpeedAndPitch ? Self.semitones(for: playbackRate) : pitch }
+    var needsPreparedEffects: Bool { equalizerEnabled || (!usesLinkedSpeedAndPitch && abs(pitch) > 0.001) }
+    static func rate(for semitones: Float) -> Float { Float(pow(2, Double(min(12, max(-12, semitones))) / 12)) }
+    static func semitones(for rate: Float) -> Float { Float(12 * log2(Double(min(2, max(0.5, rate))))) }
+    mutating func setPlaybackRate(_ rate: Float) {
+        playbackRate = min(2, max(0.5, rate))
+        if usesLinkedSpeedAndPitch { pitch = Self.semitones(for: playbackRate) }
+    }
+    mutating func setSemitones(_ semitones: Float) {
+        pitch = min(12, max(-12, semitones))
+        if usesLinkedSpeedAndPitch { playbackRate = Self.rate(for: pitch) }
+    }
+    mutating func setSpeedPitchLinked(_ linked: Bool) {
+        let oldSemitones = effectiveSemitones
+        linkSpeedAndPitch = linked
+        pitch = linked ? Self.semitones(for: playbackRate) : oldSemitones
+    }
 
     var color: Color {
         switch accent {
@@ -103,6 +147,7 @@ struct LibrarySnapshot: Codable {
     var settings: AppSettings
     var queue: [UUID]
     var currentTrackID: UUID?
+    var followedArtists: [MusicArtist]?
 }
 
 struct LyricLine: Identifiable, Equatable {

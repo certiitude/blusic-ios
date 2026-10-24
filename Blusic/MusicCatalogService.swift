@@ -13,13 +13,65 @@ struct MusicCatalogService {
     var session: URLSession = .shared
 
     func search(_ query: String, continuation: String? = nil) async throws -> MusicSearchPage {
-        var components = URLComponents(string: "https://music.youtube.com/youtubei/v1/search")!
+        try Self.parse(await call("search", payload: ["query": query, "params": Self.songsFilter], continuation: continuation))
+    }
+
+    func searchArtists(_ query: String) async throws -> [MusicArtist] {
+        let data = try await call("search", payload: ["query": query, "params": "EgWKAQIgAWoMEA4QChADEAQQCRAF"])
+        return try Self.parseArtists(data)
+    }
+
+    func match(_ reference: Track) async throws -> Track {
+        let page = try await search("\(reference.title) \(reference.artist)")
+        let ranked = page.tracks.map { ($0, Self.matchScore(reference, $0)) }.sorted { $0.1 > $1.1 }
+        guard let best = ranked.first, best.1 >= 85 else {
+            throw BlusicError.message("Aucune correspondance suffisamment sûre pour « \(reference.title) ». Choisis le bon titre manuellement.")
+        }
+        return best.0
+    }
+
+    static func matchScore(_ reference: Track, _ candidate: Track) -> Int {
+        let title = PlaylistImporter.normalize(reference.title), found = PlaylistImporter.normalize(candidate.title)
+        let artist = PlaylistImporter.normalize(reference.artist), singer = PlaylistImporter.normalize(candidate.artist)
+        guard !title.isEmpty, !artist.isEmpty else { return 0 }
+        let versionWords: Set<String> = ["live", "remix", "acoustic", "acoustique", "instrumental", "karaoke", "slowed", "sped", "nightcore"]
+        let originalWords = Set(reference.title.lowercased().split { !$0.isLetter }.map(String.init))
+        let candidateWords = Set(candidate.title.lowercased().split { !$0.isLetter }.map(String.init))
+        guard originalWords.intersection(versionWords) == candidateWords.intersection(versionWords) else { return 0 }
+        var score = title == found ? 60 : (title.count >= 4 && (found.contains(title) || title.contains(found)) ? 40 : 0)
+        if singer.contains(artist) || artist.contains(singer), !singer.isEmpty { score += 35 }
+        if reference.duration > 0 {
+            let difference = abs(reference.duration - candidate.duration)
+            if difference <= 4 { score += 10 }
+            else if difference > max(12, reference.duration * 0.1) { score -= 30 }
+        }
+        if reference.isExplicit && !candidate.isExplicit { score -= 20 }
+        if !reference.album.isEmpty, PlaylistImporter.normalize(reference.album) == PlaylistImporter.normalize(candidate.album) { score += 5 }
+        return score
+    }
+
+    func artist(_ known: MusicArtist) async throws -> ArtistProfile {
+        guard known.id.hasPrefix("UC") || known.id.hasPrefix("MPLA") else { throw BlusicError.message("Identifiant d’artiste invalide.") }
+        let data = try await call("browse", payload: ["browseId": known.id])
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any], root["error"] == nil else {
+            throw BlusicError.message("Le profil de cet artiste est indisponible.")
+        }
+        let header = (Self.dictionaries(named: "musicImmersiveHeaderRenderer", in: root) + Self.dictionaries(named: "musicVisualHeaderRenderer", in: root)).first ?? [:]
+        let name = Self.text(header["title"])
+        let biography = Self.text(header["description"])
+        var artist = known
+        if !name.isEmpty { artist.name = name }
+        artist.artworkURL = Self.artwork(in: header) ?? known.artworkURL
+        let page = try Self.parse(data)
+        return ArtistProfile(artist: artist, biography: biography, tracks: page.tracks)
+    }
+
+    private func call(_ endpoint: String, payload: [String: Any], continuation: String? = nil) async throws -> Data {
+        var components = URLComponents(string: "https://music.youtube.com/youtubei/v1/" + endpoint)!
         components.queryItems = [URLQueryItem(name: "prettyPrint", value: "false")]
         if let continuation { components.queryItems?.append(URLQueryItem(name: "continuation", value: continuation)) }
-        let body: [String: Any] = [
-            "context": ["client": ["clientName": "WEB_REMIX", "clientVersion": Self.clientVersion, "hl": "fr", "gl": "FR"]],
-            "query": query, "params": Self.songsFilter
-        ]
+        var body = payload
+        body["context"] = ["client": ["clientName": "WEB_REMIX", "clientVersion": Self.clientVersion, "hl": "fr", "gl": "FR"]]
         var request = URLRequest(url: components.url!)
         request.httpMethod = "POST"
         request.timeoutInterval = 12
@@ -35,7 +87,7 @@ struct MusicCatalogService {
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw BlusicError.message("La recherche YouTube Music est indisponible. Réessaie dans quelques instants.")
         }
-        return try Self.parse(data)
+        return data
     }
 
     static func parse(_ data: Data) throws -> MusicSearchPage {
@@ -59,12 +111,13 @@ struct MusicCatalogService {
             guard let id, InvidiousService.isVideoID(id), !title.isEmpty, seen.insert(id).inserted else { return nil }
             let runs = Array(columns.dropFirst()).flatMap { $0 }
             var artists: [String] = []
+            var artistID: String?
             var album = ""
             for run in runs {
                 guard let text = run["text"] as? String,
                       let endpoint = run["navigationEndpoint"] as? [String: Any],
                       let browse = endpoint["browseEndpoint"] as? [String: Any], let browseID = browse["browseId"] as? String else { continue }
-                if browseID.hasPrefix("UC"), !artists.contains(text) { artists.append(text) }
+                if browseID.hasPrefix("UC"), !artists.contains(text) { artists.append(text); if artistID == nil { artistID = browseID } }
                 if browseID.hasPrefix("MPRE"), album.isEmpty { album = text }
             }
             let duration = runs.compactMap { ($0["text"] as? String).flatMap(parseDuration) }.first ?? 0
@@ -77,11 +130,44 @@ struct MusicCatalogService {
             let explicit = strings(named: "iconType", in: row).contains("MUSIC_EXPLICIT_BADGE")
             return Track(title: title, artist: artists.joined(separator: ", "), album: album, duration: duration,
                          source: .invidious, location: id, artworkURL: artwork?.scheme == "https" ? artwork : nil,
-                         isExplicit: explicit, musicCatalog: "youtube-music")
+                         isExplicit: explicit, musicCatalog: "youtube-music", artistID: artistID)
         }
         let continuation = dictionaries(named: "nextContinuationData", in: root).compactMap { $0["continuation"] as? String }.first
             ?? dictionaries(named: "continuationCommand", in: root).compactMap { $0["token"] as? String }.first
         return MusicSearchPage(tracks: tracks, continuation: continuation)
+    }
+
+    static func parseArtists(_ data: Data) throws -> [MusicArtist] {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any], root["error"] == nil else {
+            throw BlusicError.message("La recherche d’artistes est indisponible.")
+        }
+        var seen = Set<String>()
+        return dictionaries(named: "musicResponsiveListItemRenderer", in: root).compactMap { row in
+            guard (row["playlistItemData"] as? [String: Any])?["videoId"] == nil else { return nil }
+            let columns = row["flexColumns"] as? [[String: Any]] ?? []
+            let renderer = columns.first?["musicResponsiveListItemFlexColumnRenderer"] as? [String: Any] ?? [:]
+            let endpoints = dictionaries(named: "browseEndpoint", in: row["navigationEndpoint"] ?? [:])
+                + dictionaries(named: "browseEndpoint", in: renderer["text"] ?? [:])
+            guard let endpoint = endpoints.first(where: {
+                ($0["browseId"] as? String)?.hasPrefix("UC") == true || ($0["browseId"] as? String)?.hasPrefix("MPLA") == true
+            }), let id = endpoint["browseId"] as? String, seen.insert(id).inserted else { return nil }
+            let name = text(renderer["text"])
+            guard !name.isEmpty else { return nil }
+            return MusicArtist(id: id, name: name, artworkURL: artwork(in: row))
+        }
+    }
+
+    private static func text(_ value: Any?) -> String {
+        guard let value = value as? [String: Any] else { return "" }
+        return (value["runs"] as? [[String: Any]])?.compactMap { $0["text"] as? String }.joined() ?? value["simpleText"] as? String ?? ""
+    }
+    private static func artwork(in value: Any) -> URL? {
+        let thumbnails = dictionaries(named: "musicThumbnailRenderer", in: value)
+            .flatMap { dictionaries(named: "thumbnail", in: $0) }.flatMap { $0["thumbnails"] as? [[String: Any]] ?? [] }
+        let sorted = thumbnails.sorted { ($0["width"] as? Int ?? 0) > ($1["width"] as? Int ?? 0) }
+        let cover = sorted.first { ($0["width"] as? Int ?? 0) <= 640 } ?? sorted.first
+        guard let string = cover?["url"] as? String, let url = URL(string: string), url.scheme == "https" else { return nil }
+        return url
     }
 
     private static func parseDuration(_ input: String) -> Double? {

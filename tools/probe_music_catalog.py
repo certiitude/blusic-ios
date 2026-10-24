@@ -19,6 +19,7 @@ def walk(value, key):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--query", default="Niska Salé")
+    parser.add_argument("--artist-id")
     args = parser.parse_args()
     version = "1.20261021.01.00"
     try:
@@ -31,7 +32,11 @@ def main():
         pass
     body = {"context": {"client": {"clientName": "WEB_REMIX", "clientVersion": version, "hl": "fr", "gl": "FR"}},
             "query": args.query, "params": "EgWKAQIIAWoMEA4QChADEAQQCRAF"}
-    request = urllib.request.Request("https://music.youtube.com/youtubei/v1/search?prettyPrint=false",
+    endpoint = "search"
+    if args.artist_id:
+        endpoint = "browse"
+        body.pop("query"); body.pop("params"); body["browseId"] = args.artist_id
+    request = urllib.request.Request("https://music.youtube.com/youtubei/v1/" + endpoint + "?prettyPrint=false",
         data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "Origin": "https://music.youtube.com",
             "Referer": "https://music.youtube.com/", "X-YouTube-Client-Name": "67", "X-YouTube-Client-Version": version,
             "User-Agent": "Blusic/1.2 (YouTube Music catalog client)"})
@@ -39,6 +44,8 @@ def main():
         result = json.load(response)
     rows = list(walk(result, "musicResponsiveListItemRenderer"))
     print("Client version:", version, "song rows:", len(rows))
+    if args.artist_id:
+        print("Artist header keys:", list(result.get("header", {}).keys()))
     for row in rows[:5]:
         columns = [col.get("musicResponsiveListItemFlexColumnRenderer", {}).get("text", {}).get("runs", []) for col in row.get("flexColumns", [])]
         print(json.dumps({"columns": columns, "playlistItemData": row.get("playlistItemData"),

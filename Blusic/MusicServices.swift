@@ -229,6 +229,75 @@ enum PlaylistImporter {
     }
 }
 
+/// Deezer public metadata only. Preview URLs are intentionally never used as audio.
+struct PlatformPlaylistService {
+    var session: URLSession = .shared
+    private struct Artist: Decodable { var name: String }
+    private struct Album: Decodable { var title: String; var cover_medium: URL? }
+    private struct Song: Decodable {
+        var title: String; var duration: Double; var artist: Artist; var album: Album; var explicit_lyrics: Bool?
+    }
+    private struct Page: Decodable { var data: [Song]; var next: URL? }
+    private struct PlaylistInfo: Decodable {
+        var title: String; var isPublic: Bool?
+        enum CodingKeys: String, CodingKey { case title; case isPublic = "public" }
+    }
+
+    func deezer(_ url: URL) async throws -> PlaylistImporter.Result {
+        let hosts = ["deezer.com", "www.deezer.com", "link.deezer.com", "deezer.page.link"]
+        guard url.scheme == "https", hosts.contains(url.host?.lowercased() ?? "") else {
+            throw BlusicError.message("Utilise un lien HTTPS de playlist Deezer publique.")
+        }
+        var canonical = url
+        if ["link.deezer.com", "deezer.page.link"].contains(url.host?.lowercased() ?? "") {
+            let (_, response) = try await session.data(from: url)
+            guard let final = response.url, ["www.deezer.com", "deezer.com"].contains(final.host?.lowercased() ?? "") else {
+                throw BlusicError.message("Le lien court Deezer n’a pas pu être résolu.")
+            }
+            canonical = final
+        }
+        let parts = canonical.pathComponents
+        guard let marker = parts.firstIndex(of: "playlist"), parts.indices.contains(marker + 1),
+              parts[marker + 1].allSatisfy(\.isNumber), !parts[marker + 1].isEmpty else {
+            throw BlusicError.message("Le lien ne contient pas d’identifiant de playlist Deezer.")
+        }
+        let id = parts[marker + 1]
+        let info: PlaylistInfo = try await get(URL(string: "https://api.deezer.com/playlist/\(id)")!)
+        guard info.isPublic != false else { throw BlusicError.message("Cette playlist Deezer est privée. Utilise un export CSV depuis ton compte.") }
+        var next: URL? = URL(string: "https://api.deezer.com/playlist/\(id)/tracks?limit=100")!
+        var tracks: [Track] = []
+        var pages = Set<URL>()
+        while let url = next {
+            try Task.checkCancellation()
+            guard url.host == "api.deezer.com", url.path == "/playlist/\(id)/tracks", pages.insert(url).inserted else {
+                throw BlusicError.message("Pagination Deezer invalide ou répétée.")
+            }
+            let page: Page = try await get(url)
+            tracks.append(contentsOf: page.data.map {
+                Track(title: $0.title, artist: $0.artist.name, album: $0.album.title, duration: $0.duration,
+                      source: .catalogReference, location: "", artworkURL: $0.album.cover_medium, isExplicit: $0.explicit_lyrics ?? false)
+            })
+            guard tracks.count <= 2000 else { throw BlusicError.message("L’import est limité à 2 000 titres.") }
+            if let value = page.next {
+                var components = URLComponents(url: value, resolvingAgainstBaseURL: false)
+                components?.scheme = "https"; next = components?.url
+            } else { next = nil }
+        }
+        guard !tracks.isEmpty else { throw BlusicError.message("La playlist Deezer ne contient aucun titre accessible.") }
+        return PlaylistImporter.Result(name: info.title, tracks: tracks)
+    }
+
+    private func get<T: Decodable>(_ url: URL) async throws -> T {
+        var request = URLRequest(url: url); request.timeoutInterval = 15
+        let (data, response) = try await session.data(for: request)
+        guard (response as? HTTPURLResponse)?.statusCode == 200 else { throw BlusicError.message("Deezer ne répond pas. Réessaie plus tard.") }
+        if let object = try JSONSerialization.jsonObject(with: data) as? [String: Any], object["error"] != nil {
+            throw BlusicError.message("Playlist Deezer introuvable, privée ou momentanément inaccessible.")
+        }
+        return try JSONDecoder().decode(T.self, from: data)
+    }
+}
+
 private extension String {
     var htmlDecoded: String {
         replacingOccurrences(of: "&amp;", with: "&").replacingOccurrences(of: "&#39;", with: "’")

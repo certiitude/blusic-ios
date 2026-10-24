@@ -40,6 +40,7 @@ final class AudioPlayer: ObservableObject {
     private let library: LibraryStore
     private let engine = AVAudioEngine()
     private let node = AVAudioPlayerNode()
+    private let varispeed = AVAudioUnitVarispeed()
     private let pitch = AVAudioUnitTimePitch()
     private let equalizer = AVAudioUnitEQ(numberOfBands: 10)
     private var audioFile: AVAudioFile?
@@ -61,6 +62,7 @@ final class AudioPlayer: ObservableObject {
     private var tryingAlternate = false
     private var beganLoading = Date()
     private var requestedEffects = false
+    private var declaredDuration = 0.0
     private var timer: Timer?
     private var lastTick = Date()
     private var sessionID = UUID()
@@ -76,12 +78,13 @@ final class AudioPlayer: ObservableObject {
         self.library = library
         self.loadingTimeout = loadingTimeout
         self.onlineLoader = onlineLoader
-        engine.attach(node); engine.attach(pitch); engine.attach(equalizer)
+        engine.attach(node); engine.attach(varispeed); engine.attach(pitch); engine.attach(equalizer)
         for (index, band) in equalizer.bands.enumerated() {
             band.filterType = .parametric; band.frequency = equalizerFrequencies[index]
             band.bandwidth = 1; band.bypass = false
         }
-        engine.connect(node, to: pitch, format: nil)
+        engine.connect(node, to: varispeed, format: nil)
+        engine.connect(varispeed, to: pitch, format: nil)
         engine.connect(pitch, to: equalizer, format: nil)
         engine.connect(equalizer, to: engine.mainMixerNode, format: nil)
         apply(library.settings)
@@ -117,6 +120,7 @@ final class AudioPlayer: ObservableObject {
         firstAudioLatency = nil; beganLoading = Date(); wantsPlayback = true; usedDirectFallback = false; tryingAlternate = false
         preparingEffects = false; effectsMessage = nil; requestedEffects = false
         current = track; position = 0; duration = track.duration
+        declaredDuration = track.duration
         formatLabel = ""; loopA = nil; loopB = nil
         sessionID = UUID(); lastTick = Date()
         playedIDs.insert(track.id)
@@ -125,7 +129,7 @@ final class AudioPlayer: ObservableObject {
         if track.source == .youtube { youtubeTrack = track; return }
         if track.source == .unresolved { unresolvedTrack = track; return }
         let nativeURL = library.nativeURL(for: track)
-        guard track.source == .invidious || nativeURL != nil else {
+        guard track.source == .invidious || track.source == .catalogReference || nativeURL != nil else {
             error = "Ce fichier est introuvable. Réassocie une source dans la bibliothèque."
             return
         }
@@ -144,22 +148,41 @@ final class AudioPlayer: ObservableObject {
         loadTask = Task { [weak self] in
             guard let self else { return }
             do {
+                var playingTrack = track
+                if track.source == .catalogReference {
+                    loadingMessage = "Association au catalogue YouTube Music…"
+                    do {
+                        let matched = try await MusicCatalogService().match(track)
+                        try Task.checkCancellation()
+                        guard generation == token else { return }
+                        library.replaceSource(of: track.id, with: matched)
+                        playingTrack = library.track(track.id) ?? matched
+                        current = playingTrack; declaredDuration = playingTrack.duration; duration = playingTrack.duration
+                        queue = queue.map { $0.id == track.id ? playingTrack : $0 }
+                    } catch {
+                        guard generation == token, !Task.isCancelled else { return }
+                        isLoading = false; loadingWatchdog?.cancel(); unresolvedTrack = track
+                        return
+                    }
+                }
                 let fileURL: URL
                 var reportedBitrate: Int?
-                if track.source == .invidious {
+                if playingTrack.source == .invidious {
                     if let streaming = onlineLoader as? any StreamingAudioLoading {
                         loadingMessage = "Connexion au flux audio…"
-                        let resource = try await streaming.playback(track, settings: library.settings, direct: false)
+                        let resource = try await streaming.playback(playingTrack, settings: library.settings, direct: false)
                         try Task.checkCancellation()
                         guard generation == token else { return }
                         switch resource {
                         case .stream(let stream):
                             try startStreaming(stream, token: token)
                             return
-                        case .file(let audio): fileURL = audio.fileURL; reportedBitrate = audio.bitrate
+                        case .file(let audio):
+                            fileURL = audio.fileURL; reportedBitrate = audio.bitrate
+                            if declaredDuration <= 0, let seconds = audio.duration, seconds > 0 { declaredDuration = seconds }
                         }
                     } else {
-                        let audio = try await onlineLoader.load(track, settings: library.settings, progress: { [weak self] update in
+                        let audio = try await onlineLoader.load(playingTrack, settings: library.settings, progress: { [weak self] update in
                             Task { @MainActor [weak self] in
                                 guard let self, generation == token, isLoading else { return }
                                 loadingMessage = update.message; loadingProgress = update.fraction
@@ -173,7 +196,7 @@ final class AudioPlayer: ObservableObject {
                 else { throw BlusicError.message("Source audio introuvable.") }
                 try Task.checkCancellation()
                 guard generation == token else { return }
-                try startNativeFile(fileURL, track: track, bitrate: reportedBitrate, at: 0, autoplay: true)
+                try startNativeFile(fileURL, track: playingTrack, bitrate: reportedBitrate, at: 0, autoplay: true)
             } catch is CancellationError {
                 if generation == token { isLoading = false; loadingWatchdog?.cancel(); loadingMessage = ""; loadingProgress = nil }
             } catch {
@@ -191,6 +214,9 @@ final class AudioPlayer: ObservableObject {
         guard let current else { if let first = queue.first ?? library.tracks.first { play(first) }; return }
         if current.source == .youtube { youtubeTrack = current; return }
         if let streamPlayer {
+            if position >= duration - 0.1 {
+                streamPlayer.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero); position = 0
+            }
             wantsPlayback = true; streamPlayer.playImmediately(atRate: library.settings.playbackRate)
             return
         }
@@ -274,8 +300,13 @@ final class AudioPlayer: ObservableObject {
         stopAtEnd = false
     }
     func apply(_ settings: AppSettings) {
-        pitch.rate = min(2, max(0.5, settings.playbackRate))
-        pitch.pitch = min(1200, max(-1200, settings.pitch * 100))
+        let rate = min(2, max(0.5, settings.playbackRate))
+        varispeed.bypass = !settings.usesLinkedSpeedAndPitch || abs(rate - 1) < 0.0001
+        varispeed.rate = settings.usesLinkedSpeedAndPitch ? rate : 1
+        pitch.bypass = settings.usesLinkedSpeedAndPitch
+        pitch.rate = settings.usesLinkedSpeedAndPitch ? 1 : rate
+        pitch.pitch = settings.usesLinkedSpeedAndPitch ? 0 : min(1200, max(-1200, settings.pitch * 100))
+        pitch.overlap = 16
         equalizer.bypass = !settings.equalizerEnabled
         for index in equalizer.bands.indices {
             equalizer.bands[index].gain = settings.equalizer.indices.contains(index) ? min(12, max(-12, settings.equalizer[index])) : 0
@@ -286,7 +317,9 @@ final class AudioPlayer: ObservableObject {
         engine.mainMixerNode.outputVolume = min(1, max(0, settings.volume))
         streamPlayer?.volume = min(1, max(0, settings.volume))
         if let streamPlayer, wantsPlayback, abs(streamPlayer.rate - settings.playbackRate) > 0.001 { streamPlayer.rate = settings.playbackRate }
-        if isStreaming, settings.equalizerEnabled || settings.pitch != 0 { prepareNativeEffects() }
+        let algorithm: AVAudioTimePitchAlgorithm = settings.usesLinkedSpeedAndPitch ? .varispeed : .spectral
+        if let item = streamPlayer?.currentItem, item.audioTimePitchAlgorithm != algorithm { item.audioTimePitchAlgorithm = algorithm }
+        if isStreaming, settings.needsPreparedEffects { prepareNativeEffects() }
         updateNowPlaying()
     }
 
@@ -294,7 +327,7 @@ final class AudioPlayer: ObservableObject {
         let file = try AVAudioFile(forReading: url)
         guard file.length > 0 else { throw BlusicError.message("Le fichier audio est vide.") }
         audioFile = file
-        duration = Double(file.length) / file.processingFormat.sampleRate
+        duration = PlaybackDuration.effective(declared: declaredDuration, measured: Double(file.length) / file.processingFormat.sampleRate)
         let codec: String
         switch file.fileFormat.streamDescription.pointee.mFormatID {
         case kAudioFormatLinearPCM: codec = "PCM · sans perte"
@@ -307,8 +340,9 @@ final class AudioPlayer: ObservableObject {
         let rate = String(format: "%g", file.fileFormat.sampleRate / 1000)
         let quality = bitrate.flatMap { $0 > 0 ? " · \(Int((Double($0) / 1000).rounded())) kbit/s" : nil } ?? ""
         formatLabel = track.source == .invidious ? "\(codec)\(quality) · Invidious" : "\(codec) · \(rate) kHz"
-        engine.disconnectNodeOutput(node); engine.disconnectNodeOutput(pitch); engine.disconnectNodeOutput(equalizer)
-        engine.connect(node, to: pitch, format: file.processingFormat)
+        engine.disconnectNodeOutput(node); engine.disconnectNodeOutput(varispeed); engine.disconnectNodeOutput(pitch); engine.disconnectNodeOutput(equalizer)
+        engine.connect(node, to: varispeed, format: file.processingFormat)
+        engine.connect(varispeed, to: pitch, format: file.processingFormat)
         engine.connect(pitch, to: equalizer, format: file.processingFormat)
         engine.connect(equalizer, to: engine.mainMixerNode, format: file.processingFormat)
         try activateSession(); try engine.start()
@@ -325,12 +359,13 @@ final class AudioPlayer: ObservableObject {
         try activateSession()
         let item = AVPlayerItem(url: source.url)
         item.preferredForwardBufferDuration = 0.5
-        item.audioTimePitchAlgorithm = .spectral
+        item.audioTimePitchAlgorithm = library.settings.usesLinkedSpeedAndPitch ? .varispeed : .spectral
         let player = AVPlayer(playerItem: item)
         player.automaticallyWaitsToMinimizeStalling = false
         player.volume = library.settings.volume
         streamPlayer = player; streamSource = source; isStreaming = true; wantsPlayback = true
-        duration = source.duration > 0 ? source.duration : duration
+        if declaredDuration <= 0, source.duration > 0 { declaredDuration = source.duration }
+        duration = PlaybackDuration.effective(declared: declaredDuration, measured: source.duration)
         formatLabel = "AAC · \(Int((Double(source.bitrate) / 1000).rounded())) kbit/s · progressif"
         loadingMessage = "Mise en tampon du flux…"
         streamObservations = [
@@ -427,7 +462,7 @@ final class AudioPlayer: ObservableObject {
                 let file = try await AudioCache.shared.localCopy(of: source.url,
                     cacheKey: "invidious:\(current.location):aac:\(source.bitrate)", fileExtension: "m4a", expectedDuration: source.duration,
                     session: InvidiousService.mediaSession)
-                await AudioCache.shared.storeInvidiousInfo(track: current, bitrate: source.bitrate, instance: source.instance)
+                await AudioCache.shared.storeInvidiousInfo(track: current, bitrate: source.bitrate, instance: source.instance, duration: source.duration)
                 try Task.checkCancellation()
                 guard generation == token, isStreaming else { return }
                 let seconds = streamPlayer?.currentTime().seconds ?? position
@@ -451,8 +486,9 @@ final class AudioPlayer: ObservableObject {
         generation = UUID()
         let token = generation
         node.stop()
-        let start = min(file.length - 1, AVAudioFramePosition(seconds * file.processingFormat.sampleRate))
-        let frames = AVAudioFrameCount(min(Int64(UInt32.max), file.length - start))
+        let end = min(file.length, AVAudioFramePosition((duration > 0 ? duration : Double(file.length) / file.processingFormat.sampleRate) * file.processingFormat.sampleRate))
+        let start = max(0, min(end - 1, AVAudioFramePosition(seconds * file.processingFormat.sampleRate)))
+        let frames = AVAudioFrameCount(min(Int64(UInt32.max), max(1, end - start)))
         scheduledOffset = Double(start) / file.processingFormat.sampleRate
         position = scheduledOffset
         node.scheduleSegment(file, startingFrame: start, frameCount: frames, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
@@ -471,16 +507,19 @@ final class AudioPlayer: ObservableObject {
         if let streamPlayer {
             let seconds = streamPlayer.currentTime().seconds
             if seconds.isFinite { position = seconds }
-            if let itemDuration = streamPlayer.currentItem?.duration.seconds, itemDuration.isFinite, itemDuration > 0 { duration = itemDuration }
+            if let itemDuration = streamPlayer.currentItem?.duration.seconds {
+                duration = PlaybackDuration.effective(declared: declaredDuration, measured: itemDuration)
+            }
         } else if let render = node.lastRenderTime, let time = node.playerTime(forNodeTime: render) {
             position = min(duration, scheduledOffset + Double(time.sampleTime) / time.sampleRate)
         }
         if firstAudioLatency == nil, position > 0.05 {
             firstAudioLatency = Date().timeIntervalSince(beganLoading)
             finishLoading()
-            if isStreaming, requestedEffects || library.settings.equalizerEnabled || library.settings.pitch != 0 { prepareNativeEffects() }
+            if isStreaming, requestedEffects || library.settings.needsPreparedEffects { prepareNativeEffects() }
         }
         flushListening(force: false)
+        if isStreaming, duration > 0, position >= duration - 0.03 { position = duration; next(userInitiated: false); return }
         if let a = loopA, let b = loopB, b > a, position >= b { seek(to: a) }
     }
     private func flushListening(force: Bool = true) {
@@ -584,6 +623,7 @@ actor AudioCache {
         var bitrate: Int
         var instance: URL
         var expires: Date
+        var duration: Double?
     }
     private var directory: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("BlusicAudio")
@@ -597,14 +637,16 @@ actor AudioCache {
         guard let data = try? Data(contentsOf: metadata), let source = try? JSONDecoder().decode(CachedSource.self, from: data),
               source.expires > Date() else { return nil }
         let file = destination(key: "invidious:\(track.location):aac:\(source.bitrate)", ext: "m4a")
+        let expected = track.duration > 0 ? track.duration : source.duration ?? 0
+        guard expected > 0 else { return nil }
         do {
-            try validate(file, expectedDuration: track.duration)
-            return InvidiousAudio(fileURL: file, bitrate: source.bitrate, instance: source.instance)
+            try validate(file, expectedDuration: expected)
+            return InvidiousAudio(fileURL: file, bitrate: source.bitrate, instance: source.instance, duration: expected)
         } catch { return nil }
     }
-    func storeInvidiousInfo(track: Track, bitrate: Int, instance: URL) {
+    func storeInvidiousInfo(track: Track, bitrate: Int, instance: URL, duration: Double? = nil) {
         let metadata = destination(key: "invidious:\(track.location):aac", ext: "json")
-        let source = CachedSource(bitrate: bitrate, instance: instance, expires: Date().addingTimeInterval(bitrate >= 90000 ? 86400 : 600))
+        let source = CachedSource(bitrate: bitrate, instance: instance, expires: Date().addingTimeInterval(bitrate >= 90000 ? 86400 : 600), duration: duration ?? track.duration)
         if let data = try? JSONEncoder().encode(source) { try? data.write(to: metadata, options: .atomic) }
     }
     func localCopy(of url: URL, cacheKey: String? = nil, fileExtension: String? = nil,

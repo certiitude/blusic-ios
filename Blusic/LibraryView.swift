@@ -106,6 +106,15 @@ struct LibraryView: View {
     private var artists: some View {
         let names = Array(Set(library.tracks.map(\.subtitle))).sorted()
         return VStack(spacing: 20) {
+            ForEach(library.followedArtists) { artist in
+                NavigationLink { ArtistView(name: artist.name, artistID: artist.id, initialArtworkURL: artist.artworkURL) } label: {
+                    HStack(spacing: 14) {
+                        ArtworkView(track: nil, size: 64, radius: 32, artworkURL: artist.artworkURL)
+                        VStack(alignment: .leading, spacing: 5) { Text(artist.name).font(.headline); Text("Suivi dans Blusic").font(.caption).foregroundStyle(.secondary) }
+                        Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                    }
+                }.buttonStyle(.plain)
+            }
             ForEach(names, id: \.self) { name in
                 NavigationLink { ArtistView(name: name) } label: {
                     HStack(spacing: 14) {
@@ -274,7 +283,7 @@ struct TrackCollectionView: View {
     private func exportCSV() {
         func quote(_ s: String) -> String { "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
         let rows = tracks.map { track -> String in
-            let link = track.isYouTubeContent ? "https://www.youtube.com/watch?v=\(track.location)" : track.source == .remote ? track.location : ""
+            let link = track.isYouTubeContent ? "https://\(track.musicCatalog == "youtube-music" ? "music.youtube.com" : "www.youtube.com")/watch?v=\(track.location)" : track.source == .remote ? track.location : ""
             return [track.title, track.artist, track.album, link].map(quote).joined(separator: ",")
         }
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("Blusic-playlist.csv")
@@ -289,24 +298,57 @@ struct ArtistView: View {
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var player: AudioPlayer
     var name: String
-    private var tracks: [Track] { library.tracks.filter { $0.subtitle == name } }
+    var artistID: String? = nil
+    var initialArtworkURL: URL? = nil
+    @State private var profile: ArtistProfile?
+    @State private var loading = false
+    @State private var error: String?
+    private var tracks: [Track] { profile?.tracks ?? library.tracks.filter { $0.subtitle == name } }
+    private var artist: MusicArtist { profile?.artist ?? MusicArtist(id: artistID ?? "", name: name, artworkURL: initialArtworkURL) }
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 ZStack(alignment: .bottomLeading) {
-                    ArtworkView(track: tracks.first, radius: 0).frame(height: 300).clipped()
+                    ArtworkView(track: tracks.first, radius: 0, artworkURL: artist.artworkURL).frame(height: 300).clipped()
                     LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .top, endPoint: .bottom)
                     VStack(alignment: .leading, spacing: 10) {
-                        Label("DANS TA BIBLIOTHÈQUE", systemImage: "checkmark.seal.fill").font(.system(size: 10, weight: .bold)).tracking(1)
-                        Text(name).font(.system(size: 36, weight: .bold, design: .rounded)).tracking(-1)
+                        Label(profile == nil ? "TA BIBLIOTHÈQUE" : "YOUTUBE MUSIC", systemImage: "music.note").font(.system(size: 10, weight: .bold)).tracking(1)
+                        Text(artist.name).font(.system(size: 36, weight: .bold)).tracking(-1)
                     }.padding(23).foregroundStyle(.white)
                 }.frame(height: 300).clipShape(RoundedRectangle(cornerRadius: 24))
-                Button { if let track = tracks.first { player.play(track, in: tracks) } } label: {
-                    Label("Écouter", systemImage: "play.fill").font(.headline).frame(maxWidth: .infinity).padding(16)
-                }.buttonStyle(.borderedProminent).tint(library.settings.color)
-                SectionHeading(title: "Titres", subtitle: "\(tracks.count) titres dans ta collection")
+                HStack {
+                    Button { if let track = tracks.first { player.play(track, in: tracks) } } label: {
+                        Label("Écouter", systemImage: "play.fill").font(.headline).frame(maxWidth: .infinity).padding(.vertical, 9)
+                    }.buttonStyle(.borderedProminent).tint(library.settings.color).disabled(tracks.isEmpty)
+                    if !artist.id.isEmpty {
+                        Button { library.toggleFollow(artist) } label: {
+                            Label(library.followedArtists.contains(where: { $0.id == artist.id }) ? "Suivi" : "Suivre", systemImage: "person.badge.plus")
+                        }.buttonStyle(.bordered)
+                    }
+                }
+                if loading { ProgressView("Chargement du profil…") }
+                if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
+                if let bio = profile?.biography, !bio.isEmpty {
+                    VStack(alignment: .leading, spacing: 9) { Text("À propos").font(.headline); Text(bio).font(.subheadline).foregroundStyle(.secondary).lineLimit(8) }.padding(16).surface(radius: 12)
+                }
+                SectionHeading(title: "Titres", subtitle: profile == nil ? "Dans ta collection" : "Chansons du catalogue")
                 ForEach(tracks) { TrackRow(track: $0, context: tracks) }
             }.pagePadding().padding(.bottom, 24)
         }.background(Palette.background).navigationBarTitleDisplayMode(.inline).toolbar(.visible, for: .navigationBar)
+        .task(id: artistID ?? name) {
+            loading = true; error = nil
+            defer { loading = false }
+            do {
+                let service = MusicCatalogService()
+                let target: MusicArtist
+                if let artistID { target = MusicArtist(id: artistID, name: name, artworkURL: initialArtworkURL) }
+                else {
+                    let found = try await service.searchArtists(name)
+                    guard let match = found.first(where: { $0.name.localizedCaseInsensitiveCompare(name) == .orderedSame }) ?? found.first else { return }
+                    target = match
+                }
+                profile = try await service.artist(target)
+            } catch { if !Task.isCancelled { self.error = error.localizedDescription } }
+        }
     }
 }

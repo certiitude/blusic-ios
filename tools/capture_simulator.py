@@ -45,11 +45,16 @@ def main():
         run("bootstatus", device, "-b")
         run("install", device, str(args.app))
         run("status_bar", device, "override", "--time", "9:41", "--batteryLevel", "100", "--batteryState", "charged", "--wifiMode", "active", "--wifiBars", "3")
-        for screen, launch_args, wait in [
+        screens = [
             ("home", ["--blusic-preview-mini"], 13),
             ("search", ["--blusic-screen=search", "--blusic-query=Niska", "--blusic-preview-mini"], 13),
             ("player", ["--blusic-preview-player"], 4),
-        ]:
+        ]
+        if label == "large":
+            screens += [("artists", ["--blusic-screen=search", "--blusic-query=Niska", "--blusic-kind=artists"], 13),
+                        ("artist-profile", ["--blusic-preview-artist"], 13),
+                        ("sound", ["--blusic-preview-sound"], 4)]
+        for screen, launch_args, wait in screens:
             run("launch", "--terminate-running-process", device, "app.blusic.ios", *launch_args)
             time.sleep(wait)
             path = args.output / f"{label}-{screen}.png"

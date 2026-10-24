@@ -14,6 +14,13 @@ struct SearchView: View {
     }()
     @State private var scope = "Catalogue"
     @State private var results: [Track] = []
+    @State private var artistResults: [MusicArtist] = []
+    @State private var kind = {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--blusic-kind=artists") { return "Artistes" }
+        #endif
+        return "Titres"
+    }()
     @State private var loading = false
     @State private var error: String?
     @State private var continuation: String?
@@ -21,7 +28,7 @@ struct SearchView: View {
     @State private var retry = 0
     @State private var pageTask: Task<Void, Never>?
     @State private var prefetchTask: Task<Void, Never>?
-    private var searchKey: String { "\(scope)|\(query)|\(library.settings.invidiousAddress)|\(library.settings.usesInvidiousFallback)|\(retry)" }
+    private var searchKey: String { "\(scope)|\(kind)|\(query)|\(library.settings.invidiousAddress)|\(library.settings.usesInvidiousFallback)|\(retry)" }
     private var localResults: [Track] {
         library.tracks.filter { "\($0.title) \($0.subtitle) \($0.album)".localizedStandardContains(query) }
     }
@@ -43,6 +50,16 @@ struct SearchView: View {
                     Text("Catalogue").tag("Catalogue")
                     Text("Bibliothèque").tag("Bibliothèque")
                 }.pickerStyle(.segmented)
+                if scope == "Catalogue" {
+                    HStack(spacing: 8) {
+                        ForEach(["Titres", "Artistes"], id: \.self) { value in
+                            Button { kind = value } label: {
+                                Text(value).font(.system(size: 12, weight: .semibold)).padding(.horizontal, 15).padding(.vertical, 9)
+                                    .background(kind == value ? Color.primary.opacity(0.12) : .clear, in: Capsule())
+                            }.buttonStyle(.plain)
+                        }
+                    }
+                }
 
                 if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     VStack(alignment: .leading, spacing: 18) {
@@ -69,6 +86,22 @@ struct SearchView: View {
                     Button("Réessayer") { retry += 1 }.buttonStyle(.bordered).frame(maxWidth: .infinity)
                 }
                 else {
+                    if scope == "Catalogue", kind == "Artistes" {
+                        if artistResults.isEmpty { EmptyState(symbol: "person.crop.circle", title: "Aucun artiste trouvé", message: "Essaie un autre nom.") }
+                        ForEach(artistResults) { artist in
+                            NavigationLink { ArtistView(name: artist.name, artistID: artist.id, initialArtworkURL: artist.artworkURL) } label: {
+                                HStack(spacing: 14) {
+                                    ArtworkView(track: nil, size: 54, radius: 27, artworkURL: artist.artworkURL)
+                                    VStack(alignment: .leading, spacing: 5) {
+                                        Text(artist.name).font(.system(size: 16, weight: .semibold))
+                                        Text("Artiste · YouTube Music").font(.caption).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                                }.padding(.vertical, 4)
+                            }.buttonStyle(.plain)
+                        }
+                    } else {
                     let tracks = scope == "Catalogue" ? results : localResults
                     if tracks.isEmpty { EmptyState(symbol: "magnifyingglass", title: "Pas encore trouvé", message: "Essaie un autre titre ou un autre artiste.") }
                     else {
@@ -89,6 +122,7 @@ struct SearchView: View {
                             }.buttonStyle(.bordered).disabled(loadingMore)
                         }
                     }
+                    }
                 }
             }.pagePadding().padding(.bottom, 24)
         }
@@ -98,11 +132,16 @@ struct SearchView: View {
     }
     private func search() async {
         prefetchTask?.cancel()
-        error = nil; loading = false; results = []; continuation = nil; loadingMore = false
+        error = nil; loading = false; results = []; artistResults = []; continuation = nil; loadingMore = false
         guard scope == "Catalogue", !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         loading = true
         do {
             try await Task.sleep(for: .milliseconds(650))
+            if kind == "Artistes" {
+                let artists = try await MusicCatalogService().searchArtists(query)
+                try Task.checkCancellation()
+                artistResults = artists; loading = false; return
+            }
             let found = try await MusicCatalogService().search(query)
             try Task.checkCancellation()
             results = found.tracks; loading = false; continuation = found.continuation
