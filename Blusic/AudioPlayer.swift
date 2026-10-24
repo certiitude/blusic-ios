@@ -20,6 +20,9 @@ final class AudioPlayer: ObservableObject {
     @Published private(set) var preparingEffects = false
     @Published private(set) var effectsMessage: String?
     @Published private(set) var firstAudioLatency: Double?
+    #if DEBUG
+    private(set) var artworkFetchCount = 0
+    #endif
     @Published private(set) var position = 0.0
     @Published private(set) var duration = 0.0
     @Published private(set) var formatLabel = ""
@@ -282,7 +285,7 @@ final class AudioPlayer: ObservableObject {
         equalizer.globalGain = -headroom
         engine.mainMixerNode.outputVolume = min(1, max(0, settings.volume))
         streamPlayer?.volume = min(1, max(0, settings.volume))
-        if let streamPlayer, isPlaying { streamPlayer.rate = settings.playbackRate }
+        if let streamPlayer, wantsPlayback, abs(streamPlayer.rate - settings.playbackRate) > 0.001 { streamPlayer.rate = settings.playbackRate }
         if isStreaming, settings.equalizerEnabled || settings.pitch != 0 { prepareNativeEffects() }
         updateNowPlaying()
     }
@@ -336,9 +339,8 @@ final class AudioPlayer: ObservableObject {
                     guard let self, streamPlayer === observed, generation == token else { return }
                     if observed.timeControlStatus == .playing {
                         isPlaying = true; lastTick = Date()
-                        observed.rate = library.settings.playbackRate
                         if firstAudioLatency != nil { finishLoading() }
-                        updateNowPlaying(loadArtwork: true)
+                        updateNowPlaying()
                     } else if observed.timeControlStatus == .waitingToPlayAtSpecifiedRate, wantsPlayback {
                         flushListening(); isPlaying = false; isLoading = true
                         loadingMessage = "Mise en tampon du flux…"
@@ -364,6 +366,7 @@ final class AudioPlayer: ObservableObject {
             }
         }
         if seconds > 0 { player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
+        updateNowPlaying(loadArtwork: true)
         player.playImmediately(atRate: library.settings.playbackRate)
         bufferWatchdog?.cancel()
         bufferWatchdog = Task { @MainActor [weak self] in
@@ -510,6 +513,10 @@ final class AudioPlayer: ObservableObject {
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
         if loadArtwork, let url = current.artworkURL {
+            artworkTask?.cancel()
+            #if DEBUG
+            artworkFetchCount += 1
+            #endif
             let id = current.id
             artworkTask = Task { [weak self] in
                 let data: Data?

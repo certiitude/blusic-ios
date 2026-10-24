@@ -213,13 +213,15 @@ final class BlusicTests: XCTestCase {
             if !player.isLoading { break }
             try await Task.sleep(for: .milliseconds(250))
         }
-        XCTAssertNil(player.error, player.error ?? "")
-        XCTAssertTrue(player.isPlaying, "Cold loading must finish within the public loading deadline")
-        XCTAssertTrue(player.isStreaming, "Cold playback must start progressively, not wait for a complete cached file")
+        guard player.error == nil, player.isPlaying, player.isStreaming else {
+            XCTFail(player.error ?? "Cold progressive playback did not start")
+            return
+        }
         let startup = Date().timeIntervalSince(began)
-        XCTAssertLessThan(startup, 12, "Cold first playback should not wait for a complete song download")
+        guard startup < 12 else { XCTFail("Cold progressive startup too slow: \(startup) s"); return }
         XCTAssertNotNil(player.firstAudioLatency)
-        let loaded = try await service.audio(for: track) // Must now use the validated local cache.
+        XCTAssertLessThanOrEqual(player.artworkFetchCount, 2, "Playback status observations must not trigger an artwork request loop")
+        let loaded = try await service.audio(for: track) // Fetch the full file only after progressive startup was measured.
         let file = try AVAudioFile(forReading: loaded.fileURL)
         let duration = Double(file.length) / file.processingFormat.sampleRate
         XCTAssertGreaterThan(duration, 60, "Expected a complete track, not a short preview")
@@ -234,6 +236,7 @@ final class BlusicTests: XCTestCase {
         let start = player.position
         try await Task.sleep(for: .seconds(2))
         XCTAssertGreaterThan(player.position, start + 0.5)
+        XCTAssertLessThanOrEqual(player.artworkFetchCount, 2)
         player.prepareNativeEffects()
         for _ in 0..<50 {
             if !player.isStreaming { break }
