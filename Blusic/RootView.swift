@@ -27,22 +27,7 @@ struct RootView: View {
     @State private var preparedScreenshot = false
 
     var body: some View {
-        NavigationStack {
-            VStack(spacing: 0) {
-                header
-                Group {
-                    switch tab {
-                    case .home: HomeView()
-                    case .search: SearchView()
-                    case .library: LibraryView()
-                    }
-                }.frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
-                bottomBar.fixedSize(horizontal: false, vertical: true)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Palette.background)
-            .toolbar(.hidden, for: .navigationBar)
-        }
+        navigationTabs
         .background(Palette.background.ignoresSafeArea())
         .sheet(item: $sheet, onDismiss: { player.youtubeTrack = nil; library.requestedArtist = nil }) { item in
             switch item {
@@ -107,6 +92,53 @@ struct RootView: View {
         }
     }
 
+    @ViewBuilder private var navigationTabs: some View {
+        #if compiler(>=6.2)
+        if #available(iOS 26.1, *) {
+            systemTabs.tabViewBottomAccessory(isEnabled: player.current != nil) {
+                if let current = player.current { miniPlayer(current) }
+            }
+        } else if #available(iOS 26.0, *) {
+            systemTabs.tabViewBottomAccessory {
+                if let current = player.current { miniPlayer(current) }
+            }
+        } else { systemTabs }
+        #else
+        systemTabs
+        #endif
+    }
+
+    private var systemTabs: some View {
+        TabView(selection: $tab) {
+            tabPage(.home).tabItem { Label("Accueil", systemImage: "house.fill") }.tag(AppTab.home)
+            tabPage(.search).tabItem { Label("Recherche", systemImage: "magnifyingglass") }.tag(AppTab.search)
+            tabPage(.library).tabItem { Label("Bibliothèque", systemImage: "square.stack.fill") }.tag(AppTab.library)
+        }
+    }
+
+    private func tabPage(_ selected: AppTab) -> some View {
+        NavigationStack {
+            VStack(spacing: 0) {
+                header
+                Group {
+                    switch selected {
+                    case .home: HomeView()
+                    case .search: SearchView()
+                    case .library: LibraryView()
+                    }
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .background(Palette.background)
+            .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .bottom, spacing: 0) { legacyAccessory }
+        }
+    }
+
+    @ViewBuilder private var legacyAccessory: some View {
+        if #available(iOS 26.0, *) { EmptyView() }
+        else if let current = player.current { miniPlayer(current).padding(8).background(Palette.background) }
+    }
+
     private var header: some View {
         HStack(spacing: 9) {
             BlusicMark().fill(.primary, style: FillStyle(eoFill: true)).frame(width: 25, height: 25)
@@ -117,13 +149,11 @@ struct RootView: View {
         }.padding(.leading, 20).padding(.trailing, 10).frame(height: 48).background(Palette.background)
     }
 
-    private var bottomBar: some View {
-        VStack(spacing: 7) {
-            if let current = player.current {
+    private func miniPlayer(_ current: Track) -> some View {
                 HStack(spacing: 12) {
                     Button { sheet = current.source == .youtube ? .youtube : .player } label: {
                         HStack(spacing: 12) {
-                            ArtworkView(track: current, size: 40, radius: 6)
+                            ArtworkView(track: current, size: 36, radius: 6)
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(current.title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                                 Text(player.isLoading ? player.loadingMessage : player.isTransitioning ? "Fondu en cours…" : current.subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
@@ -138,32 +168,7 @@ struct RootView: View {
                     else { IconButton(symbol: player.isPlaying ? "pause.fill" : "play.fill", label: player.isPlaying ? "Pause" : "Lire") { player.toggle() } }
                     IconButton(symbol: "forward.end.fill", label: "Titre suivant") { player.next() }
                 }
-                .padding(.leading, 8).padding(.trailing, 3).padding(.vertical, 6)
-                .blusicGlass(radius: 14)
-                .overlay(alignment: .bottomLeading) {
-                    GeometryReader { geometry in
-                        Capsule().fill(library.settings.color.opacity(0.8))
-                            .frame(width: geometry.size.width * min(1, max(0, player.position / max(1, player.duration))), height: 2)
-                    }.frame(height: 2).padding(.horizontal, 20).padding(.bottom, 1)
-                }
+                .padding(.horizontal, 12).padding(.vertical, 4)
                 .accessibilityElement(children: .contain)
-            }
-            HStack(spacing: 0) {
-                ForEach(AppTab.allCases, id: \.self) { item in
-                    Button {
-                        library.haptic()
-                        tab = item
-                    } label: {
-                        VStack(spacing: 5) {
-                            Image(systemName: item.symbol).font(.system(size: 18, weight: .semibold))
-                            Text(item.rawValue).font(.system(size: 10, weight: .medium))
-                        }.frame(maxWidth: .infinity).frame(height: 46)
-                            .foregroundStyle(tab == item ? Color.primary : Color.secondary)
-                    }.buttonStyle(.plain).accessibilityAddTraits(tab == item ? .isSelected : [])
-                }
-            }.padding(.vertical, 3).blusicGlass(radius: 16)
-        }
-        .padding(.horizontal, 14).padding(.top, 7).padding(.bottom, 3)
-        .background(Palette.background)
     }
 }

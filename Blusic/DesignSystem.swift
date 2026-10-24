@@ -10,6 +10,26 @@ enum Palette {
     static let line = Color.primary.opacity(0.07)
 }
 
+enum ArtworkURL {
+    /// Resize only the documented-size suffix on trusted Google image hosts.
+    /// Other providers' signed image URLs are kept intact.
+    static func highResolution(_ url: URL, pixels: Int = 1024, square: Bool = true) -> URL {
+        let hosts = ["lh3.googleusercontent.com", "yt3.googleusercontent.com", "lh3.ggpht.com", "yt3.ggpht.com"]
+        guard hosts.contains(url.host?.lowercased() ?? ""), url.query == nil,
+              let equal = url.absoluteString.lastIndex(of: "=") else { return url }
+        let suffix = String(url.absoluteString[url.absoluteString.index(after: equal)...])
+        guard suffix.range(of: #"^(w\d+|s\d+)"#, options: .regularExpression) != nil else { return url }
+        var height = pixels
+        if !square, let regex = try? NSRegularExpression(pattern: #"w(\d+)-h(\d+)"#),
+           let match = regex.firstMatch(in: suffix, range: NSRange(suffix.startIndex..., in: suffix)),
+           let wr = Range(match.range(at: 1), in: suffix), let hr = Range(match.range(at: 2), in: suffix),
+           let width = Double(suffix[wr]), let originalHeight = Double(suffix[hr]), width > 0 {
+            height = max(1, Int((Double(pixels) * originalHeight / width).rounded()))
+        }
+        return URL(string: String(url.absoluteString[..<equal]) + "=w\(pixels)-h\(height)-l95-rj") ?? url
+    }
+}
+
 struct BlusicMark: Shape {
     func path(in rect: CGRect) -> Path {
         var p = Path()
@@ -80,9 +100,15 @@ struct ArtworkView: View {
                                 Image(uiImage: image).resizable().scaledToFill()
                                     .frame(width: geometry.size.width, height: geometry.size.height).clipped()
                             } else if !url.isFileURL {
-                                AsyncImage(url: url) { image in
-                                    image.resizable().scaledToFill().frame(width: geometry.size.width, height: geometry.size.height).clipped()
-                                } placeholder: { Color.clear }
+                                AsyncImage(url: ArtworkURL.highResolution(url, square: square)) { phase in
+                                    if let image = phase.image {
+                                        image.resizable().scaledToFill().frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                                    } else if phase.error != nil, ArtworkURL.highResolution(url, square: square) != url {
+                                        AsyncImage(url: url) { image in
+                                            image.resizable().scaledToFill().frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                                        } placeholder: { Color.clear }
+                                    } else { Color.clear }
+                                }
                             }
                         }
                     }.frame(width: geometry.size.width, height: geometry.size.height).clipped()
@@ -164,7 +190,7 @@ struct TrackActions: View {
     var track: Track
     var body: some View {
         Button { library.toggleFavorite(track) } label: {
-            Label(library.favorites.contains(track.id) ? "Retirer des favoris" : "Ajouter aux favoris", systemImage: "heart")
+            Label(library.isFavorite(track) ? "Retirer des favoris" : "Ajouter aux favoris", systemImage: "heart")
         }
         Button { player.enqueue(track, next: true) } label: { Label("Écouter ensuite", systemImage: "text.line.first.and.arrowtriangle.forward") }
         Button { player.enqueue(track) } label: { Label("Ajouter à la file", systemImage: "text.badge.plus") }

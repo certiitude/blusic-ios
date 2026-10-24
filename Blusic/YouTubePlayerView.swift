@@ -17,7 +17,7 @@ struct YouTubePlayerView: View {
                     Text(track.subtitle).foregroundStyle(.secondary)
                 }
                 HStack {
-                    Button { library.toggleFavorite(track) } label: { Label("Favori", systemImage: library.favorites.contains(track.id) ? "heart.fill" : "heart") }.buttonStyle(.bordered)
+                    Button { library.toggleFavorite(track) } label: { Label("Favori", systemImage: library.isFavorite(track) ? "heart.fill" : "heart") }.buttonStyle(.bordered)
                     Menu { TrackActions(track: track) } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
                 }
                 Text("La lecture utilise le lecteur officiel YouTube. Lance la vidéo avec son bouton de lecture. Les publicités, la disponibilité et les restrictions sont définies par YouTube. L’audio YouTube n’est pas extrait et ne passe pas par l’égaliseur natif.")

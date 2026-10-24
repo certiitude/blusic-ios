@@ -20,7 +20,7 @@ struct HomeView: View {
                     heading("Accès rapide", symbol: "bolt.circle.fill")
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
                         NavigationLink { TrackCollectionView(title: "Titres favoris", subtitle: "Tes morceaux favoris", trackIDs: [], kind: .favorites) } label: {
-                            quickCard("Titres favoris", detail: "\(library.favorites.count) titre\(library.favorites.count > 1 ? "s" : "")", symbol: "heart.fill")
+                            quickCard("Titres favoris", detail: "\(library.likedTracks.count) titre\(library.likedTracks.count > 1 ? "s" : "")", symbol: "heart.fill")
                         }
                         NavigationLink { TrackCollectionView(title: "Récemment écoutés", subtitle: "Ton historique", trackIDs: [], kind: .recent) } label: {
                             quickCard("Récents", detail: "Ton historique", symbol: "clock")

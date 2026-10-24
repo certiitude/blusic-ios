@@ -245,6 +245,7 @@ enum PlaylistImporter {
         let artistIndex = column(["artist", "artists", "artistname", "artistnames", "artiste", "author"])
         let albumIndex = column(["album", "albumname", "albumtitle"])
         let urlIndex = column(["url", "trackurl", "link", "tracklink", "uri", "trackuri"])
+        let durationIndex = column(["duration", "durationms", "trackdurationms", "length", "duree", "durationseconds"])
         var tracks: [Track] = []
         for row in rows.dropFirst() {
             func value(_ index: Int?) -> String { index.flatMap { row.indices.contains($0) ? row[$0].trimmingCharacters(in: .whitespacesAndNewlines) : nil } ?? "" }
@@ -252,9 +253,14 @@ enum PlaylistImporter {
             guard !title.isEmpty else { continue }
             let link = value(urlIndex)
             let id = YouTubeService.videoID(from: link)
+            let durationValue = value(durationIndex)
+            var duration = Double(durationValue) ?? 0
+            if durationValue.contains(":") {
+                duration = durationValue.split(separator: ":").reduce(0.0) { $0 * 60 + (Double($1) ?? 0) }
+            } else if let durationIndex, columns[durationIndex].hasSuffix("ms") { duration /= 1000 }
             let audioURL = URL(string: link)
             let remote = audioURL?.scheme == "https" && ["mp3", "m4a", "flac", "wav", "aac", "aiff"].contains(audioURL?.pathExtension.lowercased() ?? "")
-            tracks.append(Track(title: title, artist: value(artistIndex), album: value(albumIndex),
+            tracks.append(Track(title: title, artist: value(artistIndex), album: value(albumIndex), duration: duration,
                                 source: id != nil ? .invidious : remote ? .remote : .unresolved, location: id ?? (remote ? link : "")))
         }
         guard !tracks.isEmpty else { throw BlusicError.message("Aucun titre trouvé dans cet export.") }

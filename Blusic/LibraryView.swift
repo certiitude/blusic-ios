@@ -29,7 +29,7 @@ struct LibraryView: View {
 
                 HStack(spacing: 12) {
                     NavigationLink { TrackCollectionView(title: "Titres favoris", subtitle: "Garde le meilleur, tout simplement.", trackIDs: [], kind: .favorites) } label: {
-                        smartCard("Favoris", count: library.favorites.count, symbol: "heart.fill", colors: [.pink.opacity(0.8), .purple.opacity(0.6)])
+                        smartCard("Favoris", count: library.likedTracks.count, symbol: "heart.fill", colors: [.pink.opacity(0.8), .purple.opacity(0.6)])
                     }
                     NavigationLink { TrackCollectionView(title: "Récemment ajoutés", subtitle: "Du nouveau dans tes oreilles.", trackIDs: [], kind: .added) } label: {
                         smartCard("Ajouts récents", count: library.tracks.count, symbol: "sparkles", colors: [.blue.opacity(0.8), .cyan.opacity(0.5)])

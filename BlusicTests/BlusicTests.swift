@@ -566,6 +566,101 @@ final class BlusicTests: XCTestCase {
         XCTAssertGreaterThan(lines.count, 10)
         print("LIVE LYRICS: matched title/artist, synced lines=\(lines.count)")
     }
+
+    @MainActor
+    func testFavoritingASearchResultSavesItsTrack() {
+        let store = LibraryStore(inMemory: true); store.tracks = []
+        let result = Track(title: "Search fixture", artist: "Artist", source: .invidious, location: "abcdefghijk")
+        store.toggleFavorite(result)
+        XCTAssertEqual(store.likedTracks.count, 1)
+        XCTAssertEqual(store.likedTracks.first?.location, "abcdefghijk")
+        XCTAssertTrue(store.isFavorite(result))
+    }
+
+    @MainActor
+    func testFavoritesUseCanonicalIdentityAcrossRepeatedSearches() {
+        let store = LibraryStore(inMemory: true); store.tracks = []
+        let first = Track(title: "Search fixture", artist: "Artist", source: .invidious, location: "abcdefghijk")
+        let refreshed = Track(title: "Search fixture", artist: "Artist", source: .invidious, location: "abcdefghijk")
+        XCTAssertNotEqual(first.id, refreshed.id)
+        store.toggleFavorite(first)
+        XCTAssertTrue(store.isFavorite(refreshed))
+        store.toggleFavorite(refreshed)
+        XCTAssertTrue(store.likedTracks.isEmpty)
+        XCTAssertEqual(store.tracks.count, 1)
+    }
+
+    func testGoogleArtworkRequestsHighResolution() throws {
+        let original = try XCTUnwrap(URL(string: "https://lh3.googleusercontent.com/image-id=w120-h120-l90-rj"))
+        let upgraded = ArtworkURL.highResolution(original)
+        XCTAssertTrue(upgraded.absoluteString.hasSuffix("=w1024-h1024-l95-rj"))
+        XCTAssertEqual(upgraded.host, original.host)
+        let wide = URL(string: "https://yt3.googleusercontent.com/image-id=w600-h300-l90-rj")!
+        XCTAssertTrue(ArtworkURL.highResolution(wide, square: false).absoluteString.hasSuffix("=w1024-h512-l95-rj"))
+    }
+
+    func testOtherProvidersSignedArtworkURLsAreNotModified() {
+        let signed = URL(string: "https://example.org/cover.jpg?width=120&signature=abc")!
+        XCTAssertEqual(ArtworkURL.highResolution(signed), signed)
+    }
+
+    func testImportedCollaborationAndFeaturingMatchAutomatically() {
+        let reference = Track(title: "Alpha (feat. Kalash)", artist: "Damso;Kalash", duration: 180, source: .catalogReference, location: "")
+        let song = Track(title: "Alpha (avec Kalash)", artist: "Kalash, Damso", duration: 181, source: .invidious, location: "abcdefghijk")
+        XCTAssertGreaterThanOrEqual(MusicCatalogService.matchScore(reference, song), 85)
+    }
+
+    func testSpotifyCSVNamesResolveToActualMusicIDs() async throws {
+        let csv = Data("Track Name,Artist Name(s),Album Name,Duration (ms),Track URI\nSalé,Niska,Commando,171000,spotify:track:fixture".utf8)
+        let imported = try PlaylistImporter.parse(csv, filename: "Spotify.csv")
+        let reference = try XCTUnwrap(imported.tracks.first)
+        XCTAssertEqual(reference.duration, 171)
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        let fixture = try musicFixture()
+        InvidiousStubProtocol.handler = { _ in (200, fixture) }
+        let resolved = try await MusicCatalogService(session: session).match(reference)
+        XCTAssertEqual(resolved.source, .invidious)
+        XCTAssertEqual(resolved.musicCatalog, "youtube-music")
+        XCTAssertEqual(resolved.location, "abcdefghijk")
+        XCTAssertFalse(resolved.location.hasPrefix("spotify:"))
+    }
+
+    @MainActor
+    func testNativeTabViewContainsASystemTabBar() async throws {
+        let store = LibraryStore(inMemory: true)
+        let player = AudioPlayer(library: store)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let host = UIHostingController(rootView: RootView().environmentObject(store).environmentObject(player))
+        let window = UIWindow(windowScene: scene); window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKeyAndVisible() }
+        try await Task.sleep(for: .milliseconds(700))
+        window.layoutIfNeeded()
+        func containsTabBar(_ view: UIView) -> Bool { view is UITabBar || view.subviews.contains(where: containsTabBar) }
+        XCTAssertTrue(containsTabBar(host.view), "Bottom navigation must be the actual system TabView/UITabBar, not custom buttons")
+    }
+
+    @MainActor
+    func testLiveLyricsViewAutomaticallyFetchesAndCachesWords() async throws {
+        let store = LibraryStore(inMemory: true)
+        let track = Track(title: "Salé", artist: "Niska", album: "Commando", duration: 171, source: .invidious, location: "zka6uW2aurU", musicCatalog: "youtube-music")
+        _ = store.add(track)
+        let player = AudioPlayer(library: store)
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let host = UIHostingController(rootView: LyricsView(track: track).environmentObject(store).environmentObject(player))
+        let window = UIWindow(windowScene: scene); window.rootViewController = host; window.makeKeyAndVisible()
+        defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKeyAndVisible() }
+        for _ in 0..<120 {
+            if !(store.track(track.id)?.lyrics ?? "").isEmpty { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        let words = store.track(track.id)?.lyrics ?? ""
+        XCTAssertGreaterThan(words.count, 100, "Opening the real SwiftUI lyrics view must fetch words without pressing a second search button")
+        XCTAssertGreaterThan(LRCParser.parse(words).count, 10)
+        print("LYRICS UI AUTO-FETCH: synced lines=\(LRCParser.parse(words).count), cache populated by the view")
+    }
 }
 
 private actor LoadCallCounter {

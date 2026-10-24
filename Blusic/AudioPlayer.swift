@@ -670,7 +670,7 @@ final class AudioPlayer: ObservableObject {
             artworkTask = Task { [weak self] in
                 let data: Data?
                 if url.isFileURL { data = try? Data(contentsOf: url) }
-                else { data = try? await URLSession.shared.data(from: url).0 }
+                else { data = try? await URLSession.shared.data(from: ArtworkURL.highResolution(url)).0 }
                 guard let self, self.current?.id == id, let data, let image = UIImage(data: data) else { return }
                 var updated = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
                 updated[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }

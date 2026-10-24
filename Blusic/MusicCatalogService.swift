@@ -22,7 +22,8 @@ struct MusicCatalogService {
     }
 
     func match(_ reference: Track) async throws -> Track {
-        let page = try await search("\(reference.title) \(reference.artist)")
+        let primary = reference.artist.components(separatedBy: CharacterSet(charactersIn: ";,")).first ?? reference.artist
+        let page = try await search("\(Self.matchTitle(reference.title)) \(primary)")
         let ranked = page.tracks.map { ($0, Self.matchScore(reference, $0)) }.sorted { $0.1 > $1.1 }
         guard let best = ranked.first, best.1 >= 85 else {
             throw BlusicError.message("Aucune correspondance suffisamment sûre pour « \(reference.title) ». Choisis le bon titre manuellement.")
@@ -31,15 +32,15 @@ struct MusicCatalogService {
     }
 
     static func matchScore(_ reference: Track, _ candidate: Track) -> Int {
-        let title = PlaylistImporter.normalize(reference.title), found = PlaylistImporter.normalize(candidate.title)
-        let artist = PlaylistImporter.normalize(reference.artist), singer = PlaylistImporter.normalize(candidate.artist)
-        guard !title.isEmpty, !artist.isEmpty else { return 0 }
+        let title = PlaylistImporter.normalize(matchTitle(reference.title)), found = PlaylistImporter.normalize(matchTitle(candidate.title))
+        let artists = artistKeys(reference.artist), singers = artistKeys(candidate.artist)
+        guard !title.isEmpty, !artists.isEmpty else { return 0 }
         let versionWords: Set<String> = ["live", "remix", "acoustic", "acoustique", "instrumental", "karaoke", "slowed", "sped", "nightcore"]
         let originalWords = Set(reference.title.lowercased().split { !$0.isLetter }.map(String.init))
         let candidateWords = Set(candidate.title.lowercased().split { !$0.isLetter }.map(String.init))
         guard originalWords.intersection(versionWords) == candidateWords.intersection(versionWords) else { return 0 }
         var score = title == found ? 60 : (title.count >= 4 && (found.contains(title) || title.contains(found)) ? 40 : 0)
-        if singer.contains(artist) || artist.contains(singer), !singer.isEmpty { score += 35 }
+        if !artists.intersection(singers).isEmpty { score += 35 }
         if reference.duration > 0 {
             let difference = abs(reference.duration - candidate.duration)
             if difference <= 4 { score += 10 }
@@ -48,6 +49,20 @@ struct MusicCatalogService {
         if reference.isExplicit && !candidate.isExplicit { score -= 20 }
         if !reference.album.isEmpty, PlaylistImporter.normalize(reference.album) == PlaylistImporter.normalize(candidate.album) { score += 5 }
         return score
+    }
+
+    static func matchTitle(_ value: String) -> String {
+        value.replacingOccurrences(of: #"(?i)\s*[\(\[](?:feat\.?|ft\.?|featuring|avec)[^\)\]]*[\)\]]"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"(?i)\s*[-–\(\[]\s*(?:\d{4}\s*)?remaster(?:ed)?[^\)\]]*[\)\]]?\s*$"#, with: "", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+    private static func artistKeys(_ value: String) -> Set<String> {
+        let names = [value] + value.components(separatedBy: CharacterSet(charactersIn: ";,"))
+        let ignored: Set<String> = ["and", "et", "feat", "ft", "featuring", "avec"]
+        return Set(names.map { name in
+            name.folding(options: [.diacriticInsensitive, .caseInsensitive], locale: Locale(identifier: "fr_FR"))
+                .split { !$0.isLetter && !$0.isNumber }.map(String.init).filter { !ignored.contains($0) }.joined()
+        }.filter { !$0.isEmpty })
     }
 
     func artist(_ known: MusicArtist) async throws -> ArtistProfile {

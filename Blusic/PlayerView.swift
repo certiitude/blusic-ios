@@ -132,8 +132,8 @@ struct PlayerView: View {
                 }
             }
             Spacer(minLength: 0)
-            IconButton(symbol: library.favorites.contains(track.id) ? "heart.fill" : "heart", label: "Favori") { library.toggleFavorite(track) }
-                .foregroundStyle(library.favorites.contains(track.id) ? library.settings.color : .white.opacity(0.8))
+            IconButton(symbol: library.isFavorite(track) ? "heart.fill" : "heart", label: "Favori") { library.toggleFavorite(track) }
+                .foregroundStyle(library.isFavorite(track) ? library.settings.color : .white.opacity(0.8))
         }
     }
     private var progress: some View {

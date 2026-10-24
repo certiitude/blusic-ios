@@ -58,6 +58,11 @@ final class LibraryStore: ObservableObject {
     }
 
     var likedTracks: [Track] { tracks.filter { favorites.contains($0.id) } }
+    func isFavorite(_ track: Track) -> Bool {
+        if favorites.contains(track.id) { return true }
+        guard !track.location.isEmpty, let stored = tracks.first(where: { $0.source == track.source && $0.location == track.location }) else { return false }
+        return favorites.contains(stored.id)
+    }
     var recentTracks: [Track] {
         var seen = Set<UUID>()
         return history.reversed().compactMap { event in
@@ -68,7 +73,8 @@ final class LibraryStore: ObservableObject {
     func track(_ id: UUID) -> Track? { tracks.first { $0.id == id } }
     func tracks(in playlist: Playlist) -> [Track] { playlist.trackIDs.compactMap { track($0) } }
     func toggleFavorite(_ track: Track) {
-        if favorites.contains(track.id) { favorites.remove(track.id) } else { favorites.insert(track.id) }
+        let stored = add(track)
+        if favorites.contains(stored.id) { favorites.remove(stored.id) } else { favorites.insert(stored.id) }
         haptic()
     }
     func haptic() { if settings.haptics { UISelectionFeedbackGenerator().selectionChanged() } }

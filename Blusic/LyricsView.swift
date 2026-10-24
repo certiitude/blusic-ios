@@ -71,7 +71,7 @@ struct LyricsView: View {
         }
         .task(id: "\(track.id)|\(track.title)|\(track.artist)|\(track.album)") {
             fetchTask?.cancel()
-            raw = library.track(track.id)?.lyrics ?? track.lyrics ?? ""; message = nil
+            raw = (library.track(track.id)?.lyrics ?? track.lyrics ?? "").trimmingCharacters(in: .whitespacesAndNewlines); message = nil
             if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, track.source != .bundled { await fetch() }
         }
         .onDisappear { fetchTask?.cancel() }
@@ -92,6 +92,12 @@ struct LyricsView: View {
         defer { loading = false }
         do {
             var lookup = track
+            if lookup.musicCatalog != "youtube-music", lookup.isYouTubeContent || lookup.artist.isEmpty || lookup.artist == "Artiste inconnu" {
+                let parts = lookup.title.components(separatedBy: " - ")
+                if parts.count >= 2, !parts[0].isEmpty {
+                    lookup.artist = parts[0]; lookup.title = parts.dropFirst().joined(separator: " - "); lookup.album = ""
+                }
+            }
             if lookup.duration <= 0 { lookup.duration = player.duration }
             guard let result = try await LyricsService().fetch(for: lookup) else {
                 message = "Paroles introuvables.\nImporte ton fichier .lrc."; return

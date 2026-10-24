@@ -23,7 +23,7 @@ struct ImportPlaylistView: View {
             }.listRowBackground(Color.clear)
             Section("Depuis un fichier") {
                 Button { importingFile = true } label: { Label("Choisir un export CSV ou M3U", systemImage: "doc.badge.arrow.up") }.disabled(busy)
-                Text("Spotify, Apple Music et les autres plateformes : utilise un export CSV Soundiiz/TuneMyMusic. Les titres et artistes sont importés, puis peuvent être associés aux chansons YouTube Music avant l’ajout.")
+                Text("Spotify, Apple Music et les autres plateformes : utilise un export CSV Soundiiz/TuneMyMusic. Les titres sont automatiquement recherchés et associés à leurs chansons YouTube Music dès l’import.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Depuis un lien public") {
@@ -44,7 +44,9 @@ struct ImportPlaylistView: View {
                     TextField("Nom de la playlist", text: $name)
                     LabeledContent("Titres", value: "\(preview.count)")
                     LabeledContent("À associer au catalogue", value: "\(preview.filter { $0.source == .unresolved || $0.source == .catalogReference }.count)")
-                    Button("Associer les titres à YouTube Music") { associatePreview() }.disabled(busy)
+                    if preview.contains(where: { $0.source == .catalogReference || $0.source == .unresolved }) {
+                        Button("Réessayer les correspondances introuvables") { associatePreview() }.disabled(busy)
+                    }
                     Button("Ajouter à Blusic") {
                         library.createPlaylist(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Playlist importée" : name, tracks: matchedTracks())
                         library.notice = "Playlist importée · \(preview.count) titres"
@@ -75,6 +77,7 @@ struct ImportPlaylistView: View {
                 }
                 let parsed = try PlaylistImporter.parse(data, filename: url.lastPathComponent)
                 name = parsed.name; preview = references(parsed.tracks); matchProgress = nil
+                associatePreview()
             } catch { self.error = error.localizedDescription }
         }
     }
@@ -89,7 +92,7 @@ struct ImportPlaylistView: View {
                     try Task.checkCancellation()
                     preview = parsed.tracks
                     if name.isEmpty { name = parsed.name }
-                    matchProgress = "Clique sur Associer les titres pour préparer leur lecture sur YouTube Music."
+                    await performAssociation()
                     return
                 }
                 if (url.host ?? "").contains("spotify.com") || (url.host ?? "").contains("music.apple.com") {
@@ -125,19 +128,32 @@ struct ImportPlaylistView: View {
         busy = true; error = nil
         task = Task {
             defer { busy = false }
-            var matched = 0
-            let service = MusicCatalogService()
-            for index in preview.indices {
-                guard !Task.isCancelled else { return }
-                guard preview[index].source == .catalogReference || preview[index].source == .unresolved else { continue }
-                matchProgress = "Association \(index + 1)/\(preview.count) · \(preview[index].title)"
-                if let song = try? await service.match(preview[index]) { preview[index] = song; matched += 1 }
-                do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
-            }
-            let remaining = preview.filter { $0.source == .catalogReference || $0.source == .unresolved }.count
-            matchProgress = "\(matched) correspondances trouvées · \(remaining) titres à vérifier manuellement."
-            await InvidiousAudioLoader.prefetch(preview.filter { $0.source == .invidious }, settings: library.settings)
+            await performAssociation()
         }
+    }
+    private func performAssociation() async {
+        preview = matchedTracks()
+        var firstFailure: String?
+        let service = MusicCatalogService()
+        for index in preview.indices {
+            guard !Task.isCancelled else { return }
+            guard preview[index].source == .catalogReference || preview[index].source == .unresolved else { continue }
+            matchProgress = "Association automatique \(index + 1)/\(preview.count) · \(preview[index].title)"
+            do {
+                var song = try await service.match(preview[index])
+                guard !Task.isCancelled else { return }
+                song.id = preview[index].id
+                preview[index] = song
+            } catch {
+                if Task.isCancelled { return }
+                if firstFailure == nil { firstFailure = error.localizedDescription }
+            }
+            do { try await Task.sleep(for: .milliseconds(180)) } catch { return }
+        }
+        let remaining = preview.filter { $0.source == .catalogReference || $0.source == .unresolved }.count
+        matchProgress = "\(preview.count - remaining) titres associés automatiquement · \(remaining) introuvables ou ambigus."
+        if remaining == preview.count, let firstFailure { error = firstFailure }
+        await InvidiousAudioLoader.prefetch(preview.filter { $0.source == .invidious }, settings: library.settings)
     }
 }
 

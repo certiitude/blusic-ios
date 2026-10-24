@@ -2,6 +2,15 @@
 
 **Ta musique, simplement.** Application iPhone native en SwiftUI, pensée autour d’une interface sombre, de pochettes immersives et d’un lecteur en verre translucide. Identité adaptée de l’icône Blusic fournie ; ergonomie mobile inspirée des captures et d’Apple Music.
 
+## Version 1.5 — navigation système et imports automatiques
+
+- La barre de navigation personnalisée est remplacée par **la vraie `TabView` d’iOS**. Sur iOS 26, le système dessine sa barre Liquid Glass et son **`tabViewBottomAccessory`** pour le mini-lecteur. Sur iOS antérieur, la barre d’onglets native standard est conservée. Aucun faux fond de barre en verre n’est dessiné par un HStack.
+- **L’association CSV → YouTube Music démarre automatiquement** après lecture du fichier, avant l’ajout de la playlist. Même comportement pour les liens Deezer. Les collaborations séparées par point-virgule, les crédits « feat./avec » et les durées Spotify en millisecondes sont pris en compte ; les versions live/remix restent distinctes. Les absences ou ambiguïtés sont signalées.
+- **Favoris** : un résultat de recherche est sauvegardé avant d’être ajouté aux favoris. L’état du cœur est reconnu par l’identité musicale persistante même si une nouvelle recherche crée un autre UUID temporaire.
+- **Pochettes haute résolution** : demandes 1024 px sur les hôtes Google/YouTube reconnus, avec conservation du ratio des bannières et repli sur l’URL initiale si nécessaire. Les URL signées d’autres fournisseurs ne sont pas réécrites.
+- Les paroles sont également testées **dans la vraie vue SwiftUI attachée à une fenêtre iPhone**, pour vérifier le déclenchement automatique et leur mise en cache, en plus du test API. Les anciens titres vidéo « Artiste - Titre » sont normalisés pour la recherche de paroles.
+- `youtubei.js` n’est pas ajouté. Le catalogue continue d’utiliser le client public de métadonnées existant et Invidious pour l’audio.
+
 ## Version 1.4 — transitions et paroles automatiques
 
 - **Réglages → Écoute → Fondu entre les titres** : activable/désactivable, durée de **0,5 à 8 secondes**. Le lecteur conserve le titre sortant pendant la préparation du suivant puis croise leurs gains, sans nouvel encodage audio. Deux lecteurs progressifs ou deux graphes natifs peuvent se chevaucher. La pause arrête les deux.
