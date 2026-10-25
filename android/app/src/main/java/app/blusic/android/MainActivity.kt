@@ -10,10 +10,12 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.SystemBarStyle
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -37,6 +39,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -59,7 +62,8 @@ private val Muted = Color(0xFF9999A6)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
+        enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
+            navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Ink, surface = Panel, onSurface = Color.White)) {
                 BlusicApp()
@@ -87,7 +91,7 @@ fun BlusicApp(vm: BlusicViewModel = viewModel()) {
     BackHandler(showSettings || selection != null) { showSettings = false; selection = null }
     Scaffold(containerColor = Ink, snackbarHost = { SnackbarHost(snackbar) }, topBar = {
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 20.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text("●", color = Color.White, fontSize = 26.sp)
+            Image(painterResource(R.drawable.blusic_icon), "Logo Blusic", Modifier.size(36.dp))
             Text(" blusic", fontSize = 29.sp, fontWeight = FontWeight.Bold, letterSpacing = (-1).sp)
             Spacer(Modifier.weight(1f))
             Action(Icons.Rounded.Tune, "Réglages", { showSettings = !showSettings })
@@ -134,7 +138,9 @@ fun BlusicApp(vm: BlusicViewModel = viewModel()) {
     }
     if (showPlayer && playback.track != null) {
         Dialog(onDismissRequest = { showPlayer = false }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-            PlayerScreen(vm, playback, library) { showPlayer = false }
+            Surface(color = Ink, contentColor = Color.White, modifier = Modifier.fillMaxSize()) {
+                PlayerScreen(vm, playback, library) { showPlayer = false }
+            }
         }
     } else if (playback.error != null) {
         // Keep playback failures visible without a repeated blocking alert.
@@ -153,7 +159,7 @@ private fun HomeScreen(vm: BlusicViewModel, library: LibraryState) {
         item {
             Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    QuickCard("Titres favoris", "${library.favorites.size} titres", Icons.Rounded.Favorite, Modifier.weight(1f)) { library.tracks.firstOrNull { it.id in library.favorites }?.let { vm.play(it, library.tracks.filter { t -> t.id in library.favorites }) } }
+                    QuickCard("Titres favoris", "${library.favorites.size} titre${if (library.favorites.size > 1) "s" else ""}", Icons.Rounded.Favorite, Modifier.weight(1f)) { library.tracks.firstOrNull { it.id in library.favorites }?.let { vm.play(it, library.tracks.filter { t -> t.id in library.favorites }) } }
                     QuickCard("Récents", "Ton historique", Icons.Rounded.History, Modifier.weight(1f)) { recent.firstOrNull()?.let { vm.play(it, recent) } }
                 }
                 val quick = (recent.ifEmpty { online }).take(4)
@@ -377,7 +383,13 @@ private fun Favorite(track: Track, library: LibraryState, vm: BlusicViewModel) {
 @Composable
 private fun Cover(track: Track, modifier: Modifier, pixels: Int) {
     val context = LocalContext.current
-    val url = track.artworkUrl ?: "file:///android_asset/${track.artwork}.imageset/${track.artwork}.png"
+    val url = track.artworkUrl ?: if (track.source == "bundled") "file:///android_asset/${track.artwork}.imageset/${track.artwork}.png" else null
+    if (url == null) {
+        Box(modifier.clip(RoundedCornerShape(14.dp)).background(Panel), contentAlignment = Alignment.Center) {
+            Icon(Icons.Rounded.MusicNote, "Pochette indisponible", tint = Muted)
+        }
+        return
+    }
     AsyncImage(ImageRequest.Builder(context).data(url).size(pixels).crossfade(false).build(), contentDescription = "Pochette de ${track.title}",
         modifier = modifier.clip(RoundedCornerShape(14.dp)).background(Panel), contentScale = ContentScale.Crop)
 }
