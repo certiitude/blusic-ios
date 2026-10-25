@@ -3,6 +3,7 @@ import concurrent.futures
 import json
 import time
 import urllib.request
+import urllib.parse
 from probe_direct_ios import probe
 
 
@@ -26,7 +27,16 @@ def relay(video, local):
             payload = response.read(2_000_000)
             data = json.loads(payload)
         formats = [f for f in data.get("adaptiveFormats", []) if isinstance(f, dict) and f.get("url") and str(f.get("type", "")).startswith("audio/mp4")]
-        return {"local": local, "aac": len(formats), "keys": list(data.keys()), "seconds": round(time.monotonic() - began, 3)}
+        result = {"local": local, "aac": len(formats)}
+        if formats:
+            formats.sort(key=lambda f: int(f.get("bitrate", 0)), reverse=True)
+            url = urllib.parse.urljoin(path, formats[0]["url"])
+            media = urllib.request.Request(url, headers={"Range": "bytes=0-4095"})
+            with urllib.request.urlopen(media, timeout=6) as response:
+                header = response.read(64)
+                result.update(media_status=response.status, mime=response.headers.get_content_type(), header_hex=header[:16].hex(), mp4_ftyp=b"ftyp" in header)
+        result["seconds"] = round(time.monotonic() - began, 3)
+        return result
     except Exception as error:
         return {"local": local, "error": str(error), "seconds": round(time.monotonic() - began, 3)}
 
@@ -50,5 +60,5 @@ def diagnose(query):
 
 if __name__ == "__main__":
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        for result in pool.map(diagnose, ["Stéphanie Nafeesisboujee", "Ambre BLOU FEET", "Dieu ne ment jamais Damso"]):
+        for result in pool.map(diagnose, ["Stéphanie Nafeesisboujee", "Ambre BLOU FEET", "Dieu ne ment jamais Damso", "Salé Niska"]):
             print(json.dumps(result, ensure_ascii=True))

@@ -2,14 +2,14 @@
 
 **Ta musique, simplement.** Application iPhone native en SwiftUI, pensée autour d’une interface sombre, de pochettes immersives et d’un lecteur en verre translucide. Identité adaptée de l’icône Blusic fournie ; ergonomie mobile inspirée des captures et d’Apple Music.
 
-**Dernière livraison vérifiée : 1.5.0 — 51 tests passés.** [IPA, mesures réelles et rapport de vérification](docs/RESULTAT-1.5.md). Vérifie la version dans les réglages après installation : les anciennes IPA n’incluent pas tous ces correctifs.
+**Nouvelle IPA compilée : 1.7.0 — optimisations mesurées, 63 tests passés sur 65.** [IPA, comparaison avant/après et limites réseau restantes](docs/PERFORMANCES-1.7.md). Deux tests de source audio restent en échec ; la compilation réussie n’est pas présentée comme une validation de tout le catalogue. Vérifie la version dans les réglages après installation.
 
-## Version 1.7 — optimisation en cours de vérification
+## Version 1.7 — optimisation mesurée
 
-- Observation SwiftUI par propriété : les variations de l’horloge ne doivent plus reconstruire les écrans qui ne lisent pas la position.
+- Observation SwiftUI par propriété : la vue témoin affichant seulement le titre passe de 6 à 0 recalculs sur 1,5 s de lecture, tandis que la progression continue de s’actualiser.
 - Index de bibliothèque, ajout des grandes files en une mutation, sauvegarde hors du thread de l’interface, images adaptées à leur taille et mises en cache après décodage, longues listes paresseuses.
 - Nouvelle vérification de l’erreur HTTP 500 signalée et test de lecture du titre Stephanie ; nouvel essai borné des erreurs serveur transitoires et des modes de métadonnées.
-- [Mesures de référence, protocole et résultats après optimisation](docs/PERFORMANCES-1.7.md). Les mesures finales doivent provenir de la nouvelle compilation, pas d’une estimation.
+- [Mesures de référence, protocole et résultats après optimisation](docs/PERFORMANCES-1.7.md) : scénario de grande bibliothèque de 10 158,54 à 28,20 ms ; file de 2 500 titres de 1 058,98 à 3,68 ms. Lecture et déplacement sur Stephanie réussis, démarrage d’environ 2,5 s sur le simulateur.
 
 ## Version 1.6 — accès audio direct et paroles agrandies
 
