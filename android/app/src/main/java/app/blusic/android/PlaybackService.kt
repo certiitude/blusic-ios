@@ -20,7 +20,7 @@ class BlusicApplication : Application() {
     val api by lazy { MusicApi() }
 }
 
-@UnstableApi
+@androidx.annotation.OptIn(UnstableApi::class)
 class PlaybackService : MediaSessionService() {
     private var session: MediaSession? = null
     override fun onCreate() {

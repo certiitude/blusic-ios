@@ -95,7 +95,7 @@ fun BlusicApp(vm: BlusicViewModel = viewModel()) {
     }, bottomBar = {
         Column(Modifier.navigationBarsPadding().padding(horizontal = 12.dp)) {
             playback.track?.let { track ->
-                Surface(shape = RoundedCornerShape(22.dp), color = Color(0xFF24232F), modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).testTag("mini-player")) {
+                Surface(shape = RoundedCornerShape(22.dp), color = Color(0xFF24232F), modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).testTag("mini-player").clickable { showPlayer = true }) {
                     Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Row(Modifier.weight(1f).clickable { showPlayer = true }, verticalAlignment = Alignment.CenterVertically) {
                             Cover(track, Modifier.size(44.dp), 160)

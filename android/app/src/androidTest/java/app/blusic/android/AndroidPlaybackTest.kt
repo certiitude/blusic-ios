@@ -23,6 +23,7 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 
 @RunWith(AndroidJUnit4::class)
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class AndroidPlaybackTest {
     @get:Rule(order = 0) val permission: GrantPermissionRule = GrantPermissionRule.grant(android.Manifest.permission.POST_NOTIFICATIONS)
     @get:Rule(order = 1) val compose = createAndroidComposeRule<MainActivity>()
@@ -100,6 +101,26 @@ class AndroidPlaybackTest {
         val forbidden = OkHttpClient.Builder().addInterceptor { chain -> Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).message("Forbidden").code(403).body("Denied".toResponseBody()).build() }.build()
         try { FiniteHttpDataSource(forbidden).open(DataSpec(Uri.parse("https://fixture.invalid/denied"))); fail("403 must not become an audio file") }
         catch (e: IOException) { assertTrue(e.message.orEmpty().contains("403")) }
+    }
+
+    @Test fun liveStephanieStartsFromPublicSourceAndSeeks() {
+        lateinit var vm: BlusicViewModel
+        compose.runOnUiThread {
+            vm = ViewModelProvider(compose.activity)[BlusicViewModel::class.java]
+            vm.play(Track("live-stephanie", "Stephanie", "Nafeesisboujee", duration = 127_000, location = "RFzfXv9wzfo"))
+        }
+        compose.waitUntil(25_000) { vm.playback.value.playing || vm.playback.value.error != null }
+        compose.runOnUiThread {
+            assertNull(vm.playback.value.error)
+            assertTrue(vm.playback.value.playing)
+            vm.seek(30_000)
+        }
+        Thread.sleep(1500)
+        compose.runOnUiThread {
+            assertNull(vm.playback.value.error)
+            assertTrue((vm.controller?.currentPosition ?: 0) >= 29_000)
+            vm.controller?.pause()
+        }
     }
 
     private fun screenshot(name: String) {
