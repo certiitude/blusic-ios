@@ -18,6 +18,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Reserve disk space for the Android system image
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android/sdk/ndk
+          df -h /
       - uses: android-actions/setup-android@v3
         with:
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
