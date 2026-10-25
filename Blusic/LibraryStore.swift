@@ -101,7 +101,7 @@ final class LibraryStore {
         return tracks[index]
     }
     func tracks(in playlist: Playlist, limit: Int? = nil) -> [Track] {
-        Array(playlist.trackIDs.lazy.compactMap { track($0) }.prefix(limit ?? playlist.trackIDs.count))
+        Array(playlist.trackIDs.lazy.compactMap { self.track($0) }.prefix(limit ?? playlist.trackIDs.count))
     }
     func toggleFavorite(_ track: Track) {
         let stored = add(track)
