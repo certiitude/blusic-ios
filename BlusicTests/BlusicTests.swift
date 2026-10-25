@@ -758,6 +758,73 @@ final class BlusicTests: XCTestCase {
         XCTAssertGreaterThan(LRCParser.parse(words).count, 10)
         print("LYRICS UI AUTO-FETCH: synced lines=\(LRCParser.parse(words).count), cache populated by the view")
     }
+
+    @MainActor
+    func testPerformanceLargeLibraryLookupsAndQueuePreparation() {
+        let store = LibraryStore(inMemory: true)
+        let tracks = (0..<2500).map { Track(title: "Performance \($0)", artist: "Artist \($0 % 50)", source: .unresolved, location: "perf-\($0)") }
+        store.tracks = tracks
+        store.history = (0..<20000).map { ListeningEvent(trackID: tracks[$0 % tracks.count].id, date: Date(timeIntervalSince1970: Double($0)), seconds: 30) }
+        let playlist = Playlist(name: "Performance fixture", trackIDs: tracks.map(\.id))
+        let began = ProcessInfo.processInfo.systemUptime
+        var checksum = 0
+        for _ in 0..<5 {
+            checksum += store.tracks(in: playlist).count
+            checksum += store.recentTracks.count
+        }
+        let lookupMilliseconds = (ProcessInfo.processInfo.systemUptime - began) * 1000
+        XCTAssertEqual(checksum, 25000)
+        let player = AudioPlayer(library: store)
+        let queueBegan = ProcessInfo.processInfo.systemUptime
+        player.play(tracks[0], in: tracks)
+        let queueMilliseconds = (ProcessInfo.processInfo.systemUptime - queueBegan) * 1000
+        XCTAssertEqual(player.queue.count, tracks.count)
+        player.forget(tracks[0].id)
+        print("PERFORMANCE LIBRARY: tracks=2500 history=20000 repetitions=5 lookup_ms=\(lookupMilliseconds) queue_ms=\(queueMilliseconds)")
+    }
+
+    @MainActor
+    func testPerformanceStableUIInvalidationsDuringPlayback() async throws {
+        let store = LibraryStore(inMemory: true)
+        let player = AudioPlayer(library: store)
+        let stable = PerformanceRenderCounter(), clock = PerformanceRenderCounter()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let previous = scene.windows.first { $0.isKeyWindow }
+        let host = UIHostingController(rootView: VStack {
+            StablePlaybackProbe(counter: stable)
+            PlaybackClockProbe(counter: clock)
+        }.environmentObject(player))
+        let window = UIWindow(windowScene: scene); window.rootViewController = host; window.makeKeyAndVisible()
+        let track = try XCTUnwrap(store.tracks.first { $0.source == .bundled })
+        defer { player.forget(track.id); window.isHidden = true; window.rootViewController = nil; previous?.makeKeyAndVisible() }
+        player.play(track, in: [track])
+        try await Task.sleep(for: .seconds(1))
+        let stableBefore = stable.count, clockBefore = clock.count, position = player.position
+        try await Task.sleep(for: .milliseconds(1500))
+        XCTAssertGreaterThan(player.position, position + 0.5)
+        print("PERFORMANCE UI: interval=1.5s stable_body_updates=\(stable.count - stableBefore) clock_body_updates=\(clock.count - clockBefore)")
+    }
+}
+
+@MainActor
+private final class PerformanceRenderCounter { var count = 0 }
+
+private struct StablePlaybackProbe: View {
+    @EnvironmentObject private var player: AudioPlayer
+    let counter: PerformanceRenderCounter
+    var body: some View {
+        counter.count += 1
+        return Text(player.current?.title ?? "")
+    }
+}
+
+private struct PlaybackClockProbe: View {
+    @EnvironmentObject private var player: AudioPlayer
+    let counter: PerformanceRenderCounter
+    var body: some View {
+        counter.count += 1
+        return Text(player.position.clock)
+    }
 }
 
 private actor LoadCallCounter {
