@@ -2,7 +2,9 @@
 
 **Ta musique, simplement.** Application iPhone native en SwiftUI, pensée autour d’une interface sombre, de pochettes immersives et d’un lecteur en verre translucide. Identité adaptée de l’icône Blusic fournie ; ergonomie mobile inspirée des captures et d’Apple Music.
 
-**Nouvelle IPA compilée : 1.7.0 — optimisations mesurées, 63 tests passés sur 65.** [IPA, comparaison avant/après et limites réseau restantes](docs/PERFORMANCES-1.7.md). Deux tests de source audio restent en échec ; la compilation réussie n’est pas présentée comme une validation de tout le catalogue. Vérifie la version dans les réglages après installation.
+**Android natif est maintenant disponible dans [`android/`](android/README.md).** Kotlin/Compose, lecteur Media3 en arrière-plan, bibliothèque, favoris, playlists, import audio et paroles. Les tests JVM et émulateur Android 15 passent ; voir [le rapport de livraison et les limites réseau](docs/RELAIS-ET-ANDROID.md).
+
+**iOS : IPA 1.8.0 compilée — 69 tests passés sur 71.** Intégration d’un relais youtubei.js facultatif, protection de sa clé et validation renforcée des plages audio. **Les refus de certains titres restent non résolus**, y compris depuis le relais gratuit déployé. [État réel du relais, APK et IPA](docs/RELAIS-ET-ANDROID.md). [Mesures de performances de la version 1.7](docs/PERFORMANCES-1.7.md).
 
 ## Version 1.7 — optimisation mesurée
 

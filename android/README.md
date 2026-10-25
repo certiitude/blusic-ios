@@ -29,4 +29,6 @@ APK : `app/build/outputs/apk/debug/app-debug.apk`. Il s’agit d’un APK de tes
 
 Les tests unitaires couvrent les métadonnées musicales, l’exclusion des vidéos, les URLs, les plages HTTP, la persistance JSON et les paroles. Les tests sur émulateur Android lisent un vrai instrumental via le service, vérifient l’avancement et le déplacement à 30 s, la pause, les écrans et une restauration de favoris/playlist. Captures réelles extraites de l’émulateur.
 
-**La compilation et ces tests doivent être terminés avant de déclarer l’APK validé.** Un test local de lecture ne prouve pas la disponibilité du catalogue réseau. Les mêmes fournisseurs tiers peuvent refuser une lecture sur Android comme sur iOS.
+La livraison finale GitHub Actions [`40234869261`](https://github.com/certiitude/blusic-ios/actions/runs/40234869261) réussit : **7 tests unitaires JVM et 5 tests sur émulateur Android 15**, dont lecture réelle en ligne de Stephanie et déplacement à 30 s. La signature du paquet est vérifiée par `apksigner` et cinq captures réelles sont récupérées et inspectées. Le diagnostic, le chemin de l’APK et les résultats exacts sont dans [le rapport commun](../docs/RELAIS-ET-ANDROID.md).
+
+Un test de lecture ne prouve pas la disponibilité de tout le catalogue réseau. Les mêmes fournisseurs tiers peuvent refuser une lecture sur Android comme sur iOS ; le relais youtubei.js déployé reçoit encore des HTTP 403 de YouTube et n’est pas activé par défaut.

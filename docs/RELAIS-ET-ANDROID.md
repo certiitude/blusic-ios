@@ -22,6 +22,8 @@ L’offre Render gratuite se met en veille après inactivité et son réveil peu
 
 L’intégration du relais, la protection de sa clé, le repli vers un fichier validé, l’assemblage de plages et l’invalidation après HTTP 403 sont implémentés. Exécution `40219781332` : **69 tests passés et 2 échoués sur 71**, aucun ignoré ; échecs réseau Damso et Salé conservés. La nouvelle compilation 1.8.0 inclut la vérification d’une plage au milieu du fichier.
 
+Compilation iPhone **1.8.0, build 10**, du commit `d6e4c76c167caff68367f0111dd8325495517040` : https://github.com/certiitude/blusic-ios/actions/runs/40231578179 — paquet arm64 iPhoneOS vérifié, **69 tests réussis et les mêmes 2 échecs réseau sur 71**, aucun ignoré. IPA locale : `dist/github/40231578179/Blusic-unsigned.ipa`, **35 503 859 octets**, non signée. Cela n’est pas annoncé comme une correction complète des refus de lecture.
+
 ## Android
 
 Application native Kotlin/Compose et Media3 dans `android/`. APK de test Android 8+ compilé, signature vérifiée par `apksigner` dans GitHub Actions, ressources et manifeste contrôlés par `tools/verify_apk.py`.
@@ -29,3 +31,22 @@ Application native Kotlin/Compose et Media3 dans `android/`. APK de test Android
 Exécution `40222658806` : compilation, tests unitaires et lint réussis. L’émulateur Android 15 a démarré et exécuté 5 tests : **4 réussis, 1 échoué**. Réussites : vraie lecture d’un instrumental via le service, déplacement à 30 s, pause, écrans, persistance des favoris/playlists et assemblage HTTP sans octets manquants. Échec : lecture réseau Stephanie, délai de démarrage dépassé. Cet échec n’a pas été remplacé par un succès ou ignoré.
 
 Le script de collecte a été corrigé pour récupérer les captures et logcat même lorsqu’un test réseau échoue. Les fichiers de test ne sont pas inclus dans les données de l’APK livré.
+
+Exécutions suivantes `40231578184`, `40232577305` et `40233588171` : **succès global**, **7 tests JVM et 5 tests sur émulateur Android 15 réussis**, aucun échec ni test ignoré. Le test de lecture réseau de Stephanie passe, avec lecture puis déplacement à 30 secondes. La disponibilité reste variable : cela ne prouve pas la lecture des autres titres signalés.
+
+Les 5 PNG de `40233588171` ont été récupérés et examinés (accueil, recherche, lecteur, paroles, réglages). La vérification visuelle a révélé un titre noir sur fond sombre dans le lecteur plein écran : correction de la couleur locale du dialogue et du contraste de la barre système. Les titres sans illustration n’affichent plus la pochette d’un original Blusic à la place de leur propre image.
+
+## Livraison Android finale vérifiée
+
+- Exécution : https://github.com/certiitude/blusic-ios/actions/runs/40234869261 — **succès global**.
+- Commit de l’app : `5f953c5b5fb109f88541a62623a9d2cfe2de5ff7`.
+- **7 tests JVM et 5 tests sur émulateur Android 15 réussis**, 0 échec, 0 ignoré. Le scénario réseau lit Stephanie et se déplace à 30 s ; il ne couvre pas tout le catalogue.
+- Lint et vérification cryptographique `apksigner` réussis ; structure du paquet inspectée après téléchargement.
+- APK **1.0.0**, package `app.blusic.android`, Android **8.0 minimum**, cible API 35.
+- Fichier : `dist/github/android-40234869261/app-debug.apk`, **57 550 300 octets**.
+- SHA-256 : `f376f39c368d4c12d18255a5f88b144eabf68b1f5c61ee8b405a4be1ecca1e92`.
+- APK signé avec une **clé de test du runner**, installable directement ; pas une publication Play Store ni une clé de distribution durable.
+- Captures réelles finales récupérées et inspectées : `dist/tests/android-40234869261/screenshots/`. Le titre du lecteur et les icônes système sont lisibles ; logo Blusic, remplacement neutre des pochettes manquantes, lecteur, paroles, accueil et réglages contrôlés visuellement.
+- Les captures de paroles montrent un instrumental original sans texte, pas une preuve de disponibilité des paroles d’un autre artiste. Le parseur LRC et sa synchronisation sont testés séparément.
+
+**Le blocage restant n’est pas déclaré résolu** : les essais du relais Render sur FUTUR AMOUR renvoient encore un HTTP 502 expliquant les refus HTTP 403 de YouTube. Le compte et l’hébergement sont configurés, mais leur bon fonctionnement HTTP ne garantit pas que ce fournisseur autorise les morceaux demandés. Aucun paiement n’a été activé pour essayer de lever ces refus.
