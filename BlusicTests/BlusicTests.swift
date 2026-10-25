@@ -240,6 +240,20 @@ final class BlusicTests: XCTestCase {
         catch { XCTAssertTrue(error.localizedDescription.contains("401")) }
     }
 
+    func testInvidiousDistinguishesHTMLFromAnIncompatibleJSONSchema() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        let service = try InvidiousService(address: "https://fixture.invalid", automaticFallback: false, session: session)
+        for (body, expected) in [("<html><body>Service unavailable</body></html>", "page HTML"), ("{\"unexpected\":true}", "champs absents")] {
+            InvidiousStubProtocol.handler = { _ in (200, Data(body.utf8)) }
+            do { _ = try await service.search("test"); XCTFail("An invalid API response must not become empty results") }
+            catch {
+                XCTAssertTrue(error.localizedDescription.contains(expected), error.localizedDescription)
+                XCTAssertFalse(error.localizedDescription.contains("CAPTCHA"), "An API schema error does not prove a CAPTCHA")
+            }
+        }
+    }
+
     func testInvidiousCancellationDoesNotTryOtherInstances() async throws {
         let session = stubSession()
         defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }

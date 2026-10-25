@@ -82,7 +82,6 @@ struct OnlineStreamResolver: Sendable {
                         let service = try InvidiousService(address: settings.invidiousAddress,
                             automaticFallback: settings.usesInvidiousFallback, session: session)
                         let stream = try await service.stream(for: track, preferProxy: true)
-                        try await Self.validateMedia(stream, session: session)
                         return .success(stream)
                     } catch { return .failure(error) }
                 }

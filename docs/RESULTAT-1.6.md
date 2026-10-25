@@ -19,5 +19,8 @@
 ## Vérifications
 
 - Contrôles locaux de syntaxe et ressources : réussis, **21 fichiers Swift**, sans prétendre à une compilation Xcode.
-- Compilation iPhone arm64, tests de lecture réelle Damso, tests de secours/403, tests existants et captures : **à exécuter sur GitHub Actions**.
+- Première exécution : https://github.com/certiitude/blusic-ios/actions/runs/40206073868 — compilation iPhone arm64 réussie ; **54 tests passés et 2 tests échoués sur 56**, aucun ignoré. Les échecs de lecture concernent Damso et Salé : YouTube exige une confirmation anti-robot depuis le réseau du runner ; le relais renvoie HTTP 500. Le test préchargé Réseaux passe (premier avancement : environ 0,25 s). Les contrôles du secours HTTP 403 et du mode direct passent.
+- Paroles : captures grand iPhone et iPhone SE inspectées, grand texte lisible et commandes présentes ; test de la vue SwiftUI réelle récupérant automatiquement 46 lignes LRCLIB réussi.
+- L’IPA de cette première exécution conservait une étiquette de version 1.5.0 : correction du plist pour suivre les variables Xcode, avec contrôle statique empêchant cette divergence à l’avenir. **Ce fichier intermédiaire n’est pas la livraison finale.**
+- Nouvelle compilation avec version corrigée, validation des relais étendue aux octets audio et seconde position des paroles : à exécuter.
 - Aucun test sur l’iPhone physique de l’utilisateur réalisé depuis ce poste.

@@ -50,6 +50,7 @@ def main():
             ("search", ["--blusic-screen=search", "--blusic-query=Niska", "--blusic-preview-mini"], 13),
             ("player", ["--blusic-preview-player"], 4),
             ("lyrics", ["--blusic-preview-player", "--blusic-lyrics"], 4),
+            ("lyrics-later", ["--blusic-preview-player", "--blusic-lyrics"], 13),
         ]
         if label == "large":
             screens += [("artists", ["--blusic-screen=search", "--blusic-query=Niska", "--blusic-kind=artists"], 13),

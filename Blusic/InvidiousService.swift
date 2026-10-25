@@ -176,32 +176,47 @@ final class PreparedAudioCache {
 
 private actor InvidiousStreamCache {
     static let shared = InvidiousStreamCache()
+    private struct Pending {
+        var id = UUID()
+        var task: Task<InvidiousStream, Error>
+        var waiters: Set<UUID>
+    }
     private var values: [String: (Date, InvidiousStream)] = [:]
-    private var pending: [String: Task<InvidiousStream, Error>] = [:]
+    private var pending: [String: Pending] = [:]
     func resolve(_ track: Track, settings: AppSettings, direct: Bool) async throws -> InvidiousStream {
         let baseKey = "\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(track.location)"
         let key = "\(baseKey)|\(direct)"
         if let (expiry, value) = values[key], expiry > Date() { return value }
-        if let task = pending[key] { return try await wait(for: task) }
-        let previous = direct ? values["\(baseKey)|false"]?.1 : nil
-        let task = Task {
-            try await OnlineStreamResolver().resolve(track, settings: settings, avoiding: previous)
+        let waiter = UUID()
+        let work: Pending
+        if var existing = pending[key] {
+            existing.waiters.insert(waiter)
+            pending[key] = existing
+            work = existing
+        } else {
+            let previous = direct ? values["\(baseKey)|false"]?.1 : nil
+            work = Pending(task: Task {
+                try await OnlineStreamResolver().resolve(track, settings: settings, avoiding: previous)
+            }, waiters: [waiter])
+            pending[key] = work
         }
-        pending[key] = task
-        do {
-            let result = try await wait(for: task)
-            values[key] = (Date().addingTimeInterval(120), result)
-            pending[key] = nil
-            if values.count > 40 { values = values.filter { $0.value.0 > Date() } }
-            return result
-        } catch { pending[key] = nil; throw error }
-    }
-    private func wait(for task: Task<InvidiousStream, Error>) async throws -> InvidiousStream {
-        try await withTaskCancellationHandler {
-            let stream = try await task.value
+        defer { release(key: key, workID: work.id, waiter: waiter) }
+        let result = try await withTaskCancellationHandler {
+            let stream = try await work.task.value
             try Task.checkCancellation()
             return stream
-        } onCancel: { task.cancel() }
+        } onCancel: {
+            Task { await self.release(key: key, workID: work.id, waiter: waiter) }
+        }
+        values[key] = (Date().addingTimeInterval(120), result)
+        if values.count > 40 { values = values.filter { $0.value.0 > Date() } }
+        return result
+    }
+    private func release(key: String, workID: UUID, waiter: UUID) {
+        guard var work = pending[key], work.id == workID else { return }
+        work.waiters.remove(waiter)
+        if work.waiters.isEmpty { work.task.cancel(); pending[key] = nil }
+        else { pending[key] = work }
     }
 }
 
@@ -240,12 +255,29 @@ struct InvidiousService {
     /// Resolve a progressive AAC URL without downloading the whole song.
     func stream(for track: Track, preferProxy: Bool) async throws -> InvidiousStream {
         guard Self.isVideoID(track.location) else { throw BlusicError.message("Identifiant de chanson invalide.") }
-        let result: (InvidiousDetails, URL) = try await request("videos/\(track.location)", parameters: preferProxy ? ["local": "true"] : [:])
-        guard let format = result.0.compatibleFormats.first,
-              let url = URL(string: format.url, relativeTo: result.1)?.absoluteURL, url.scheme == "https" else {
-            throw BlusicError.message("Aucun flux AAC progressif n’est disponible pour ce titre sur cette instance.")
+        func usableStream(on server: URL) async throws -> InvidiousStream {
+            let details: InvidiousDetails = try await get("videos/\(track.location)", on: server,
+                parameters: preferProxy ? ["local": "true"] : [:])
+            var failure = "Aucun flux AAC progressif disponible sur cette instance."
+            for format in details.compatibleFormats.prefix(2) {
+                guard let url = URL(string: format.url, relativeTo: server)?.absoluteURL, url.scheme == "https" else { continue }
+                let stream = InvidiousStream(url: url, bitrate: format.bitrate, instance: server, duration: Double(details.lengthSeconds ?? 0))
+                do { try await OnlineStreamResolver.validateMedia(stream, session: session); return stream }
+                catch { try Self.rethrowCancellation(error); failure = error.localizedDescription }
+            }
+            throw BlusicError.message(failure)
         }
-        return InvidiousStream(url: url, bitrate: format.bitrate, instance: result.1, duration: Double(result.0.lengthSeconds ?? 0))
+        do { return try await usableStream(on: instance) }
+        catch {
+            try Self.rethrowCancellation(error)
+            guard automaticFallback else { throw error }
+            var failures = ["\(instance.host ?? "Instance") : \(error.localizedDescription)"]
+            for server in await InvidiousDirectory.shared.alternatives(excluding: [instance]) {
+                do { return try await usableStream(on: server) }
+                catch { try Self.rethrowCancellation(error); failures.append("\(server.host ?? "Instance") : \(error.localizedDescription)") }
+            }
+            throw BlusicError.message(failures.joined(separator: "\n"))
+        }
     }
 
     func search(_ query: String, page: Int = 1) async throws -> [Track] {
