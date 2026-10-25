@@ -37,13 +37,17 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
     private val connected = CompletableDeferred<MediaController>()
     private var searchJob: Job? = null
     private var loadingDeadline: Job? = null
+    private var recordedId: String? = null
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
             val track = player.currentMediaItem?.mediaMetadata?.extras?.getString("track")?.let { runCatching { Track.fromJson(JSONObject(it)) }.getOrNull() }
             val previous = mutablePlayback.value
             mutablePlayback.value = previous.copy(track = track, playing = player.isPlaying,
                 loading = player.playbackState == Player.STATE_BUFFERING, shuffle = player.shuffleModeEnabled, repeat = player.repeatMode)
-            if (player.isPlaying) { loadingDeadline?.cancel(); if (track != null && track.id != previous.track?.id) save { app.library.record(track) } }
+            if (player.isPlaying) {
+                loadingDeadline?.cancel()
+                if (track != null && track.id != recordedId) { recordedId = track.id; save { app.library.record(track) } }
+            }
         }
         override fun onPlayerError(error: PlaybackException) {
             loadingDeadline?.cancel()

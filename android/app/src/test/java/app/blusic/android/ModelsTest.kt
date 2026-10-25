@@ -35,11 +35,13 @@ class ModelsTest {
         for (value in listOf("bytes 4-3/10", "bytes 0-10/10", "bytes 0-3/*", "garbage", "bytes -1-3/10")) assertNull(ByteRange.parse(value))
     }
     @Test fun musicalSearchExcludesOfficialVideoAndDeduplicatesSongs() {
-        fun row(id: String, type: String): JSONObject = JSONObject().put("musicResponsiveListItemRenderer", JSONObject()
-            .put("playlistItemData", JSONObject().put("videoId", id)).put("musicVideoType", type)
-            .put("flexColumns", JSONArray().put(column(JSONArray().put(JSONObject().put("text", "Song"))))
-                .put(column(JSONArray().put(JSONObject().put("text", "Artist").put("navigationEndpoint", JSONObject().put("browseEndpoint", JSONObject().put("browseId", "UC_artist"))))
-                    .put(JSONObject().put("text", "2:23"))))))
+        fun row(id: String, type: String): JSONObject {
+            val artist = JSONObject().put("text", "Artist").put("navigationEndpoint", JSONObject().put("browseEndpoint", JSONObject().put("browseId", "UC_artist")))
+            val columns = JSONArray().put(column(JSONArray().put(JSONObject().put("text", "Song"))))
+                .put(column(JSONArray().put(artist).put(JSONObject().put("text", "2:23"))))
+            return JSONObject().put("musicResponsiveListItemRenderer", JSONObject()
+                .put("playlistItemData", JSONObject().put("videoId", id)).put("musicVideoType", type).put("flexColumns", columns))
+        }
         val root = JSONObject().put("contents", JSONArray().put(row("abcdefghijk", "MUSIC_VIDEO_TYPE_ATV"))
             .put(row("abcdefghijk", "MUSIC_VIDEO_TYPE_ATV")).put(row("bbbbbbbbbbb", "MUSIC_VIDEO_TYPE_OMV")))
         val tracks = MusicApi.parseSearch(root).tracks
