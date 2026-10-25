@@ -126,9 +126,11 @@ class AndroidPlaybackTest {
     private fun screenshot(name: String) {
         compose.waitForIdle()
         val instrumentation = InstrumentationRegistry.getInstrumentation()
-        val bitmap = instrumentation.uiAutomation.takeScreenshot()
-        val folder = File(instrumentation.targetContext.getExternalFilesDir(null), "screenshots").apply { mkdirs() }
-        File(folder, "$name.png").outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
-        bitmap.recycle()
+        require(name.matches(Regex("[a-z-]+")))
+        // AGP uninstalls the test application after the suite, removing its
+        // external files. Capture through the emulator's shell into a temporary
+        // test-only folder that survives this cleanup.
+        val command = "mkdir -p /data/local/tmp/blusic-screenshots && screencap -p /data/local/tmp/blusic-screenshots/$name.png"
+        android.os.ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(command)).use { it.readBytes() }
     }
 }

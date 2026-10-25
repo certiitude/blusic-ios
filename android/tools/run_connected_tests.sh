@@ -4,6 +4,8 @@
 set +e
 gradle --no-daemon :app:connectedDebugAndroidTest
 result=$?
-adb pull /sdcard/Android/data/app.blusic.android/files/screenshots app/build/screenshots
+adb pull /data/local/tmp/blusic-screenshots app/build/screenshots
+capture_result=$?
 adb logcat -d > app/build/logcat.txt
+if [ "$result" -eq 0 ] && [ "$capture_result" -ne 0 ]; then exit "$capture_result"; fi
 exit "$result"
