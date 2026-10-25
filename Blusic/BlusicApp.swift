@@ -2,21 +2,21 @@ import SwiftUI
 
 @main
 struct BlusicApp: App {
-    @StateObject private var library: LibraryStore
-    @StateObject private var player: AudioPlayer
+    @State private var library: LibraryStore
+    @State private var player: AudioPlayer
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
         let store = LibraryStore()
-        _library = StateObject(wrappedValue: store)
-        _player = StateObject(wrappedValue: AudioPlayer(library: store))
+        _library = State(initialValue: store)
+        _player = State(initialValue: AudioPlayer(library: store))
     }
 
     var body: some Scene {
         WindowGroup {
             RootView()
-                .environmentObject(library)
-                .environmentObject(player)
+                .environment(library)
+                .environment(player)
                 .tint(library.settings.color)
                 .preferredColorScheme(library.settings.appearance == "system" ? nil : library.settings.appearance == "light" ? .light : .dark)
                 .onChange(of: library.settings) { _, settings in player.apply(settings) }

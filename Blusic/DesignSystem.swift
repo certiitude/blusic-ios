@@ -1,5 +1,6 @@
 import SwiftUI
 import AVKit
+import ImageIO
 
 enum Palette {
     static let background = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark
@@ -79,11 +80,15 @@ extension View {
 }
 
 struct ArtworkView: View {
+    @Environment(\.displayScale) private var displayScale
+    @State private var loadedImage: UIImage?
+    @State private var loadedRequest: ArtworkRequest?
     var track: Track?
     var size: CGFloat? = nil
     var radius: CGFloat = 14
     var artworkURL: URL? = nil
     var square = true
+    var maximumPixels = 1024
     @ViewBuilder private var sizing: some View {
         if square { Color.clear.aspectRatio(1, contentMode: .fit) }
         else { Color.clear }
@@ -96,19 +101,17 @@ struct ArtworkView: View {
                         Image(track?.artwork ?? "cover-night").resizable().scaledToFill()
                             .frame(width: geometry.size.width, height: geometry.size.height).clipped()
                         if let url = artworkURL ?? track?.artworkURL {
-                            if url.isFileURL, let image = UIImage(contentsOfFile: url.path) {
-                                Image(uiImage: image).resizable().scaledToFill()
-                                    .frame(width: geometry.size.width, height: geometry.size.height).clipped()
-                            } else if !url.isFileURL {
-                                AsyncImage(url: ArtworkURL.highResolution(url, square: square)) { phase in
-                                    if let image = phase.image {
-                                        image.resizable().scaledToFill().frame(width: geometry.size.width, height: geometry.size.height).clipped()
-                                    } else if phase.error != nil, ArtworkURL.highResolution(url, square: square) != url {
-                                        AsyncImage(url: url) { image in
-                                            image.resizable().scaledToFill().frame(width: geometry.size.width, height: geometry.size.height).clipped()
-                                        } placeholder: { Color.clear }
-                                    } else { Color.clear }
-                                }
+                            let pixels = ArtworkRequest.pixelSize(points: max(geometry.size.width, geometry.size.height), scale: displayScale, maximum: maximumPixels)
+                            let request = ArtworkRequest(url: url, pixels: pixels, square: square)
+                            Group {
+                                if loadedRequest == request, let loadedImage {
+                                    Image(uiImage: loadedImage).resizable().scaledToFill()
+                                        .frame(width: geometry.size.width, height: geometry.size.height).clipped()
+                                } else { Color.clear }
+                            }.task(id: request) {
+                                let image = await ArtworkImageCache.shared.image(for: request)
+                                guard !Task.isCancelled else { return }
+                                loadedImage = image; loadedRequest = request
                             }
                         }
                     }.frame(width: geometry.size.width, height: geometry.size.height).clipped()
@@ -117,6 +120,74 @@ struct ArtworkView: View {
             .frame(width: size, height: size)
             .clipShape(RoundedRectangle(cornerRadius: radius, style: .continuous))
             .accessibilityHidden(true)
+    }
+}
+
+struct ArtworkRequest: Hashable, Sendable {
+    var url: URL
+    var pixels: Int
+    var square = true
+    static func pixelSize(points: CGFloat, scale: CGFloat, maximum: Int = 1024) -> Int {
+        let requested = max(1, Int(ceil(points * scale)))
+        return min(maximum, [128, 256, 512, 1024].first { $0 >= requested } ?? 1024)
+    }
+}
+
+/// Decode and downsample away from the UI; reuse decoded thumbnails between rows.
+actor ArtworkImageCache {
+    static let shared = ArtworkImageCache()
+    private let cache = NSCache<NSString, UIImage>()
+    private var pending: [ArtworkRequest: Task<UIImage?, Never>] = [:]
+    private let session: URLSession
+    init(session: URLSession? = nil) {
+        cache.totalCostLimit = 48 * 1024 * 1024
+        cache.countLimit = 160
+        if let session { self.session = session }
+        else {
+            let config = URLSessionConfiguration.default
+            config.timeoutIntervalForRequest = 7; config.timeoutIntervalForResource = 15
+            config.httpMaximumConnectionsPerHost = 4
+            config.urlCache = URLCache(memoryCapacity: 8 * 1024 * 1024, diskCapacity: 64 * 1024 * 1024, diskPath: "BlusicArtwork")
+            self.session = URLSession(configuration: config)
+        }
+    }
+    func image(for request: ArtworkRequest) async -> UIImage? {
+        let key = "\(request.url.absoluteString)|\(request.pixels)|\(request.square)" as NSString
+        if let image = cache.object(forKey: key) { return image }
+        if let work = pending[request] { return await work.value }
+        let session = session
+        let work = Task.detached(priority: .utility) { () -> UIImage? in
+            let preferred = request.url.isFileURL ? request.url : ArtworkURL.highResolution(request.url, pixels: request.pixels, square: request.square)
+            for url in preferred == request.url ? [preferred] : [preferred, request.url] {
+                do {
+                    let data: Data
+                    if url.isFileURL { data = try Data(contentsOf: url, options: .mappedIfSafe) }
+                    else {
+                        let result = try await session.data(from: url)
+                        guard let http = result.1 as? HTTPURLResponse, (200...299).contains(http.statusCode) else { continue }
+                        data = result.0
+                    }
+                    if let image = Self.downsample(data, pixels: request.pixels) { return image }
+                } catch { continue }
+            }
+            return nil
+        }
+        pending[request] = work
+        let image = await work.value
+        pending[request] = nil
+        if let image {
+            let cost = image.cgImage.map { $0.bytesPerRow * $0.height } ?? request.pixels * request.pixels * 4
+            cache.setObject(image, forKey: key, cost: cost)
+        }
+        return image
+    }
+    nonisolated static func downsample(_ data: Data, pixels: Int) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+              let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true, kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: max(1, pixels), kCGImageSourceShouldCacheImmediately: true
+              ] as CFDictionary) else { return nil }
+        return UIImage(cgImage: image)
     }
 }
 
@@ -146,8 +217,8 @@ struct SectionHeading: View {
 }
 
 struct TrackRow: View {
-    @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var player: AudioPlayer
+    @Environment(LibraryStore.self) private var library
+    @Environment(AudioPlayer.self) private var player
     var track: Track
     var context: [Track] = []
     var rank: Int? = nil
@@ -185,8 +256,8 @@ struct TrackRow: View {
 }
 
 struct TrackActions: View {
-    @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var player: AudioPlayer
+    @Environment(LibraryStore.self) private var library
+    @Environment(AudioPlayer.self) private var player
     var track: Track
     var body: some View {
         Button { library.toggleFavorite(track) } label: {

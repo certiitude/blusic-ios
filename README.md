@@ -4,6 +4,13 @@
 
 **Dernière livraison vérifiée : 1.5.0 — 51 tests passés.** [IPA, mesures réelles et rapport de vérification](docs/RESULTAT-1.5.md). Vérifie la version dans les réglages après installation : les anciennes IPA n’incluent pas tous ces correctifs.
 
+## Version 1.7 — optimisation en cours de vérification
+
+- Observation SwiftUI par propriété : les variations de l’horloge ne doivent plus reconstruire les écrans qui ne lisent pas la position.
+- Index de bibliothèque, ajout des grandes files en une mutation, sauvegarde hors du thread de l’interface, images adaptées à leur taille et mises en cache après décodage, longues listes paresseuses.
+- Nouvelle vérification de l’erreur HTTP 500 signalée et test de lecture du titre Stephanie ; nouvel essai borné des erreurs serveur transitoires et des modes de métadonnées.
+- [Mesures de référence, protocole et résultats après optimisation](docs/PERFORMANCES-1.7.md). Les mesures finales doivent provenir de la nouvelle compilation, pas d’une estimation.
+
 ## Version 1.6 — accès audio direct et paroles agrandies
 
 - **Réglages → Sources audio** : automatique, YouTube direct ou relais Invidious. L’accès direct reprend nativement le contexte iOS validé avec youtubei.js, sans ajouter de serveur Node ni de bibliothèque JavaScript à l’app.

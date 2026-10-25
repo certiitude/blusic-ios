@@ -2,7 +2,7 @@ import SwiftUI
 import Charts
 
 struct StatisticsView: View {
-    @EnvironmentObject private var library: LibraryStore
+    @Environment(LibraryStore.self) private var library
     @Environment(\.dismiss) private var dismiss
     @State private var period = 7
     private var startDate: Date { Calendar.current.date(byAdding: .day, value: -(period - 1), to: Calendar.current.startOfDay(for: Date()))! }

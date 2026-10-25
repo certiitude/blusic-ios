@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct SoundSettingsView: View {
-    @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var player: AudioPlayer
+    @Environment(LibraryStore.self) private var library
+    @Environment(AudioPlayer.self) private var player
     @Environment(\.dismiss) private var dismiss
     @State private var preset = "Personnel"
     private let presets: [String: [Float]] = [
@@ -13,6 +13,7 @@ struct SoundSettingsView: View {
         "Électronique": [4, 3, 1, -1, -2, 0, 2, 3, 4, 3]
     ]
     var body: some View {
+        @Bindable var library = library
         Form {
             if player.isStreaming {
                 Section {

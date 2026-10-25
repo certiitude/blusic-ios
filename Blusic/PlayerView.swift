@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct PlayerView: View {
-    @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var player: AudioPlayer
+    @Environment(LibraryStore.self) private var library
+    @Environment(AudioPlayer.self) private var player
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var mode = {
@@ -11,8 +11,6 @@ struct PlayerView: View {
         #endif
         return "artwork"
     }()
-    @State private var scrubbing = false
-    @State private var scrubPosition = 0.0
     @State private var showSound = false
     @State private var showSleep = false
 
@@ -116,8 +114,10 @@ struct PlayerView: View {
         GeometryReader { geometry in
             ZStack {
                 Color(red: 0.04, green: 0.09, blue: 0.14)
-                ArtworkView(track: player.current, size: max(geometry.size.width, geometry.size.height), radius: 0)
-                    .frame(width: geometry.size.width, height: geometry.size.height).clipped().blur(radius: 70).opacity(0.5)
+                ArtworkView(track: player.current, size: 192, radius: 0, maximumPixels: 256)
+                    .blur(radius: 18, opaque: true)
+                    .scaleEffect(max(geometry.size.width, geometry.size.height) / 192 * 1.2)
+                    .frame(width: geometry.size.width, height: geometry.size.height).clipped().opacity(0.5)
                 LinearGradient(colors: [.black.opacity(0.1), .black.opacity(0.45)], startPoint: .top, endPoint: .bottom)
             }.clipped()
         }.ignoresSafeArea()
@@ -168,19 +168,7 @@ struct PlayerView: View {
         }
     }
     private var progress: some View {
-        VStack(spacing: 3) {
-            Slider(value: Binding(get: { scrubbing ? scrubPosition : min(player.position, max(0.01, player.duration)) }, set: { scrubPosition = $0 }),
-                   in: 0...max(0.01, player.duration), onEditingChanged: { editing in
-                if editing { scrubPosition = player.position; scrubbing = true }
-                else { scrubbing = false; player.seek(to: scrubPosition) }
-            }).tint(.white).disabled(player.current?.isNative != true)
-                .accessibilityLabel("Position de lecture")
-            HStack {
-                Text((scrubbing ? scrubPosition : player.position).clock)
-                Spacer()
-                Text("−" + max(0, player.duration - (scrubbing ? scrubPosition : player.position)).clock)
-            }.font(.system(size: 11, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.4))
-        }
+        PlaybackProgressView()
     }
     private var transport: some View {
         HStack {
@@ -232,8 +220,28 @@ struct PlayerView: View {
     }
 }
 
+private struct PlaybackProgressView: View {
+    @Environment(AudioPlayer.self) private var player
+    @State private var scrubbing = false
+    @State private var scrubPosition = 0.0
+    var body: some View {
+        VStack(spacing: 3) {
+            Slider(value: Binding(get: { scrubbing ? scrubPosition : min(player.position, max(0.01, player.duration)) }, set: { scrubPosition = $0 }),
+                   in: 0...max(0.01, player.duration), onEditingChanged: { editing in
+                if editing { scrubPosition = player.position; scrubbing = true }
+                else { scrubbing = false; player.seek(to: scrubPosition) }
+            }).tint(.white).disabled(player.current?.isNative != true).accessibilityLabel("Position de lecture")
+            HStack {
+                Text((scrubbing ? scrubPosition : player.position).clock)
+                Spacer()
+                Text("−" + max(0, player.duration - (scrubbing ? scrubPosition : player.position)).clock)
+            }.font(.system(size: 11, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.4))
+        }
+    }
+}
+
 struct SleepTimerView: View {
-    @EnvironmentObject private var player: AudioPlayer
+    @Environment(AudioPlayer.self) private var player
     @Environment(\.dismiss) private var dismiss
     var body: some View {
         VStack(spacing: 23) {

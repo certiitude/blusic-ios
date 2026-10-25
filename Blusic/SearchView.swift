@@ -1,8 +1,8 @@
 import SwiftUI
 
 struct SearchView: View {
-    @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var player: AudioPlayer
+    @Environment(LibraryStore.self) private var library
+    @Environment(AudioPlayer.self) private var player
     @FocusState private var focused: Bool
     @State private var query = {
         #if DEBUG
@@ -35,7 +35,7 @@ struct SearchView: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 23) {
+            LazyVStack(alignment: .leading, spacing: 23) {
                 VStack(alignment: .leading, spacing: 7) {
                     Text("Recherche").font(.system(size: 27, weight: .bold)).tracking(-0.8)
                 }.padding(.top, 14)
@@ -77,7 +77,7 @@ struct SearchView: View {
                                 }.buttonStyle(.plain)
                             }
                         }
-                        Text("Chansons du catalogue YouTube Music : artistes, albums et pochettes. Invidious est utilisé uniquement pour récupérer l’audio. Aucune clé API requise.")
+                        Text("Chansons du catalogue YouTube Music : artistes, albums et pochettes. Accès audio direct ou relais selon tes réglages. Aucune clé API requise.")
                             .font(.caption).foregroundStyle(.secondary).lineSpacing(4)
                     }
                 } else if loading { ProgressView("Recherche en cours…").frame(maxWidth: .infinity).padding(30) }

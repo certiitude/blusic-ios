@@ -41,7 +41,7 @@ struct Track: Identifiable, Codable, Equatable, Hashable, Sendable {
     }
 }
 
-struct Playlist: Identifiable, Codable, Equatable {
+struct Playlist: Identifiable, Codable, Equatable, Sendable {
     var id = UUID()
     var name: String
     var detail: String = "Ta sélection, ton univers."
@@ -73,7 +73,7 @@ enum PlaybackDuration {
     }
 }
 
-struct ListeningEvent: Identifiable, Codable {
+struct ListeningEvent: Identifiable, Codable, Sendable {
     var id = UUID()
     var trackID: UUID
     var date: Date
@@ -147,7 +147,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     }
 }
 
-struct LibrarySnapshot: Codable {
+struct LibrarySnapshot: Codable, Sendable {
     var version = 1
     var tracks: [Track]
     var playlists: [Playlist]

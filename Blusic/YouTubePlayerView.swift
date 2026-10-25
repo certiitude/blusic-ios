@@ -2,7 +2,7 @@ import SwiftUI
 import WebKit
 
 struct YouTubePlayerView: View {
-    @EnvironmentObject private var library: LibraryStore
+    @Environment(LibraryStore.self) private var library
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     var track: Track

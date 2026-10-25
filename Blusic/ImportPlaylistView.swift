@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct ImportPlaylistView: View {
-    @EnvironmentObject private var library: LibraryStore
+    @Environment(LibraryStore.self) private var library
     @Environment(\.dismiss) private var dismiss
     @State private var name = ""
     @State private var link = ""
@@ -158,8 +158,8 @@ struct ImportPlaylistView: View {
 }
 
 struct MatchReferenceView: View {
-    @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var player: AudioPlayer
+    @Environment(LibraryStore.self) private var library
+    @Environment(AudioPlayer.self) private var player
     @Environment(\.dismiss) private var dismiss
     var reference: Track
     @State private var results: [Track] = []

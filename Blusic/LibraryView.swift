@@ -2,7 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct LibraryView: View {
-    @EnvironmentObject private var library: LibraryStore
+    @Environment(LibraryStore.self) private var library
     @State private var showAudioImport = false
     @State private var showPlaylistImport = false
     @State private var showCreate = false
@@ -12,7 +12,7 @@ struct LibraryView: View {
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 24) {
+            LazyVStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 7) {
                     HStack {
                         Text("Bibliothèque").font(.system(size: 27, weight: .bold)).tracking(-0.8)
@@ -74,13 +74,13 @@ struct LibraryView: View {
         }
     }
     private var playlists: some View {
-        VStack(spacing: 16) {
+        LazyVStack(spacing: 16) {
             ForEach(library.playlists) { playlist in
                 NavigationLink {
                     TrackCollectionView(title: playlist.name, subtitle: playlist.detail, trackIDs: playlist.trackIDs, kind: .playlist(playlist.id))
                 } label: {
                     HStack(spacing: 15) {
-                        PlaylistArtwork(tracks: library.tracks(in: playlist)).frame(width: 72, height: 72)
+                        PlaylistArtwork(tracks: library.tracks(in: playlist, limit: 4)).frame(width: 72, height: 72)
                         VStack(alignment: .leading, spacing: 6) {
                             Text(playlist.name).font(.system(size: 16, weight: .semibold))
                             Text("\(playlist.trackIDs.count) titres · Playlist").font(.system(size: 12)).foregroundStyle(.secondary)
@@ -105,7 +105,7 @@ struct LibraryView: View {
     }
     private var artists: some View {
         let names = Array(Set(library.tracks.map(\.subtitle))).sorted()
-        return VStack(spacing: 20) {
+        return LazyVStack(spacing: 20) {
             ForEach(library.followedArtists) { artist in
                 NavigationLink { ArtistView(name: artist.name, artistID: artist.id, initialArtworkURL: artist.artworkURL) } label: {
                     HStack(spacing: 14) {
@@ -162,8 +162,8 @@ enum CollectionKind: Equatable {
 }
 
 struct TrackCollectionView: View {
-    @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var player: AudioPlayer
+    @Environment(LibraryStore.self) private var library
+    @Environment(AudioPlayer.self) private var player
     @Environment(\.dismiss) private var dismiss
     var title: String
     var subtitle: String
@@ -200,28 +200,29 @@ struct TrackCollectionView: View {
         return items
     }
     var body: some View {
+        let items = tracks
         List {
             Section {
                 VStack(spacing: 18) {
-                    PlaylistArtwork(tracks: tracks).frame(width: 180, height: 180).shadow(color: .black.opacity(0.2), radius: 20, y: 12)
+                    PlaylistArtwork(tracks: Array(items.prefix(4))).frame(width: 180, height: 180).shadow(color: .black.opacity(0.2), radius: 20, y: 12)
                     VStack(spacing: 7) {
                         Text(resolvedTitle).font(.system(size: 29, weight: .bold, design: .rounded)).multilineTextAlignment(.center)
                         Text(subtitle).font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                        Text("\(tracks.count) titres · \(Int(tracks.reduce(0) { $0 + $1.duration } / 60)) min").font(.caption).foregroundStyle(.tertiary)
+                        Text("\(items.count) titres · \(Int(items.reduce(0) { $0 + $1.duration } / 60)) min").font(.caption).foregroundStyle(.tertiary)
                     }
                     HStack(spacing: 12) {
-                        Button { if let first = tracks.first { player.shuffle = false; player.play(first, in: tracks) } } label: {
+                        Button { if let first = items.first { player.shuffle = false; player.play(first, in: items) } } label: {
                             Label("Écouter", systemImage: "play.fill").frame(maxWidth: .infinity).padding(.vertical, 13)
                         }.buttonStyle(.plain).foregroundStyle(Palette.background).background(.primary, in: RoundedRectangle(cornerRadius: 14))
-                        Button { if let first = tracks.randomElement() { player.shuffle = true; player.play(first, in: tracks) } } label: {
+                        Button { if let first = items.randomElement() { player.shuffle = true; player.play(first, in: items) } } label: {
                             Label("Aléatoire", systemImage: "shuffle").frame(maxWidth: .infinity).padding(.vertical, 13)
                         }.buttonStyle(.plain).foregroundStyle(library.settings.color).surface(radius: 14)
-                    }.font(.system(size: 14, weight: .semibold)).disabled(tracks.isEmpty)
+                    }.font(.system(size: 14, weight: .semibold)).disabled(items.isEmpty)
                 }.padding(.vertical, 20)
             }.listRowBackground(Color.clear).listRowSeparator(.hidden)
             Section {
-                if tracks.isEmpty { EmptyState(symbol: "music.note", title: "Un espace à remplir", message: "Ajoute des morceaux depuis le menu d’un titre ou le bouton +.") }
-                ForEach(tracks) { TrackRow(track: $0, context: tracks).listRowBackground(Color.clear) }
+                if items.isEmpty { EmptyState(symbol: "music.note", title: "Un espace à remplir", message: "Ajoute des morceaux depuis le menu d’un titre ou le bouton +.") }
+                ForEach(items) { TrackRow(track: $0, context: items).listRowBackground(Color.clear) }
                     .onDelete(perform: playlist == nil ? nil : delete)
                     .onMove(perform: playlist == nil || sort != "Ordre original" || !query.isEmpty ? nil : move)
             } header: {
@@ -295,8 +296,8 @@ struct TrackCollectionView: View {
 }
 
 struct ArtistView: View {
-    @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var player: AudioPlayer
+    @Environment(LibraryStore.self) private var library
+    @Environment(AudioPlayer.self) private var player
     var name: String
     var artistID: String? = nil
     var initialArtworkURL: URL? = nil
@@ -307,7 +308,7 @@ struct ArtistView: View {
     private var artist: MusicArtist { profile?.artist ?? MusicArtist(id: artistID ?? "", name: name, artworkURL: initialArtworkURL) }
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            LazyVStack(alignment: .leading, spacing: 24) {
                 ZStack(alignment: .bottomLeading) {
                     ArtworkView(track: tracks.first, radius: 0, artworkURL: artist.artworkURL, square: false).frame(height: 300).clipped()
                     LinearGradient(colors: [.clear, .black.opacity(0.85)], startPoint: .top, endPoint: .bottom)

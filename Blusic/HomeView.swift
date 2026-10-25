@@ -1,21 +1,18 @@
 import SwiftUI
 
 struct HomeView: View {
-    @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var player: AudioPlayer
+    @Environment(LibraryStore.self) private var library
+    @Environment(AudioPlayer.self) private var player
     @State private var online: [Track] = []
     @State private var onlineError: String?
     @State private var loadingCatalogue = false
     @State private var retry = 0
     private var quickTracks: [Track] { Array((library.recentTracks.isEmpty ? online : library.recentTracks).prefix(4)) }
-    private var mostPlayed: [Track] {
-        let totals = Dictionary(grouping: library.history, by: \.trackID).mapValues { $0.reduce(0) { $0 + $1.seconds } }
-        return totals.sorted { $0.value > $1.value }.prefix(12).compactMap { library.track($0.key) }
-    }
+    private var mostPlayed: [Track] { library.mostPlayedTracks }
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 27) {
+            LazyVStack(alignment: .leading, spacing: 27) {
                 VStack(alignment: .leading, spacing: 13) {
                     heading("Accès rapide", symbol: "bolt.circle.fill")
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
@@ -94,7 +91,7 @@ struct HomeView: View {
                 Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary)
             }
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 14) {
+                LazyHStack(alignment: .top, spacing: 14) {
                     ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
                         Button { player.play(track, in: tracks) } label: {
                             VStack(alignment: .leading, spacing: 6) {
@@ -108,7 +105,7 @@ struct HomeView: View {
                         }.buttonStyle(.plain)
                     }
                 }
-            }
+            }.frame(height: 196)
         }
     }
     private func quickCard(_ title: String, detail: String, symbol: String) -> some View {

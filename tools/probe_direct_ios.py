@@ -7,9 +7,8 @@ import time
 import urllib.request
 
 
-def main():
+def probe(video="-WXpT4Ej2No"):
     began = time.monotonic()
-    video = "-WXpT4Ej2No"
     body = {"videoId": video, "context": {"client": {
         "clientName": "iOS", "clientVersion": "20.11.6", "deviceMake": "Apple", "deviceModel": "iPhone10,4",
         "osName": "iOS", "osVersion": "16.7.7.20H330", "hl": "fr", "gl": "FR", "platform": "MOBILE"
@@ -27,8 +26,8 @@ def main():
             chunk = response.read(4096)
             result.update(media_status=response.status, mp4_ftyp=b"ftyp" in chunk[:64], bytes=len(chunk))
     result["seconds"] = round(time.monotonic() - began, 3)
-    print(json.dumps(result))
+    return result
 
 
 if __name__ == "__main__":
-    main()
+    print(json.dumps(probe()))

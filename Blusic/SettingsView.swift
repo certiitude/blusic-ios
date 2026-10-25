@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct SettingsView: View {
-    @EnvironmentObject private var library: LibraryStore
+    @Environment(LibraryStore.self) private var library
     @Environment(\.dismiss) private var dismiss
     @State private var instanceAddress = ""
     @State private var exportURL: URL?
@@ -11,6 +11,7 @@ struct SettingsView: View {
     private let accents = ["blue", "violet", "rose", "mint", "orange", "white"]
 
     var body: some View {
+        @Bindable var library = library
         Form {
             Section {
                 HStack(spacing: 18) {
@@ -113,7 +114,7 @@ struct SettingsView: View {
             }
             Section("À propos") {
                 NavigationLink("Confidentialité et sources") { privacy }
-                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.6.0")
+                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.7.0")
                 Text("Fait pour écouter. Pas pour te distraire.").font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -142,8 +143,8 @@ struct SettingsView: View {
 }
 
 struct ManageFilesView: View {
-    @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var player: AudioPlayer
+    @Environment(LibraryStore.self) private var library
+    @Environment(AudioPlayer.self) private var player
     @State private var removing: Track?
     private var imported: [Track] { library.tracks.filter { $0.source == .local } }
     var body: some View {

@@ -729,7 +729,7 @@ final class BlusicTests: XCTestCase {
         let player = AudioPlayer(library: store)
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let previous = scene.windows.first { $0.isKeyWindow }
-        let host = UIHostingController(rootView: RootView().environmentObject(store).environmentObject(player))
+        let host = UIHostingController(rootView: RootView().environment(store).environment(player))
         let window = UIWindow(windowScene: scene); window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKeyAndVisible() }
         try await Task.sleep(for: .milliseconds(700))
@@ -746,7 +746,7 @@ final class BlusicTests: XCTestCase {
         let player = AudioPlayer(library: store)
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let previous = scene.windows.first { $0.isKeyWindow }
-        let host = UIHostingController(rootView: LyricsView(track: track).environmentObject(store).environmentObject(player))
+        let host = UIHostingController(rootView: LyricsView(track: track).environment(store).environment(player))
         let window = UIWindow(windowScene: scene); window.rootViewController = host; window.makeKeyAndVisible()
         defer { window.isHidden = true; window.rootViewController = nil; previous?.makeKeyAndVisible() }
         for _ in 0..<120 {
@@ -774,6 +774,7 @@ final class BlusicTests: XCTestCase {
         }
         let lookupMilliseconds = (ProcessInfo.processInfo.systemUptime - began) * 1000
         XCTAssertEqual(checksum, 25000)
+        XCTAssertLessThan(lookupMilliseconds, 1500, "Indexed library lookups must not stall the main thread for seconds")
         let player = AudioPlayer(library: store)
         let queueBegan = ProcessInfo.processInfo.systemUptime
         player.play(tracks[0], in: tracks)
@@ -793,7 +794,7 @@ final class BlusicTests: XCTestCase {
         let host = UIHostingController(rootView: VStack {
             StablePlaybackProbe(counter: stable)
             PlaybackClockProbe(counter: clock)
-        }.environmentObject(player))
+        }.environment(player))
         let window = UIWindow(windowScene: scene); window.rootViewController = host; window.makeKeyAndVisible()
         let track = try XCTUnwrap(store.tracks.first { $0.source == .bundled })
         defer { player.forget(track.id); window.isHidden = true; window.rootViewController = nil; previous?.makeKeyAndVisible() }
@@ -802,15 +803,141 @@ final class BlusicTests: XCTestCase {
         let stableBefore = stable.count, clockBefore = clock.count, position = player.position
         try await Task.sleep(for: .milliseconds(1500))
         XCTAssertGreaterThan(player.position, position + 0.5)
+        XCTAssertLessThanOrEqual(stable.count - stableBefore, 1, "The clock must not invalidate a title-only view")
+        XCTAssertGreaterThanOrEqual(clock.count - clockBefore, 2, "The progress view must still update")
         print("PERFORMANCE UI: interval=1.5s stable_body_updates=\(stable.count - stableBefore) clock_body_updates=\(clock.count - clockBefore)")
     }
+
+    @MainActor
+    func testArtworkCacheDownsamplesAndReusesDecodedImages() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 2048, height: 1024), format: format)
+        let image = renderer.image { context in UIColor.blue.setFill(); context.fill(CGRect(x: 0, y: 0, width: 2048, height: 1024)) }
+        let data = try XCTUnwrap(image.jpegData(compressionQuality: 0.8))
+        let calls = NetworkRequestCounter()
+        InvidiousStubProtocol.handler = { _ in calls.increment(); return (200, data) }
+        let cache = ArtworkImageCache(session: session)
+        let request = ArtworkRequest(url: URL(string: "https://images.fixture.invalid/cover.jpg")!, pixels: 128, square: false)
+        async let first = cache.image(for: request)
+        async let second = cache.image(for: request)
+        let (a, b) = await (first, second)
+        let thumbnail = try XCTUnwrap(a)
+        XCTAssertTrue(a === b)
+        let again = await cache.image(for: request)
+        XCTAssertTrue(a === again)
+        XCTAssertEqual(calls.count, 1)
+        let bitmap = try XCTUnwrap(thumbnail.cgImage)
+        XCTAssertEqual(bitmap.width, 128); XCTAssertEqual(bitmap.height, 64)
+        XCTAssertEqual(ArtworkRequest.pixelSize(points: 52, scale: 3), 256)
+        XCTAssertEqual(ArtworkRequest.pixelSize(points: 360, scale: 3), 1024, "Full player artwork must remain high resolution")
+        print("PERFORMANCE ARTWORK: original=2048x1024 thumbnail=\(bitmap.width)x\(bitmap.height) decoded_bytes=\(bitmap.bytesPerRow * bitmap.height) network_requests=\(calls.count)")
+    }
+
+    @MainActor
+    func testLibraryIndexesAndDerivedCollectionsStayCorrectAfterEdits() {
+        let store = LibraryStore(inMemory: true)
+        let original = Track(title: "Original", artist: "Artist", source: .invidious, location: "abcdefghijk")
+        store.tracks = [original]; store.favorites = [original.id]
+        store.history = [ListeningEvent(trackID: original.id, date: Date(), seconds: 20)]
+        XCTAssertEqual(store.recentTracks.first?.title, "Original")
+        XCTAssertEqual(store.mostPlayedTracks.first?.id, original.id)
+        XCTAssertEqual(store.likedTracks.count, 1)
+        store.tracks[0].title = "Updated"
+        XCTAssertEqual(store.track(original.id)?.title, "Updated")
+        XCTAssertEqual(store.recentTracks.first?.title, "Updated")
+        XCTAssertEqual(store.likedTracks.first?.title, "Updated")
+        let replacement = Track(title: "Replacement", artist: "Artist", source: .invidious, location: "bbbbbbbbbbb")
+        store.replaceSource(of: original.id, with: replacement)
+        XCTAssertTrue(store.isFavorite(replacement))
+        XCTAssertEqual(store.add([replacement, replacement]).map(\.id), [original.id, original.id])
+        XCTAssertEqual(store.tracks.count, 1)
+        store.tracks = []
+        XCTAssertNil(store.track(original.id)); XCTAssertTrue(store.recentTracks.isEmpty); XCTAssertTrue(store.likedTracks.isEmpty)
+    }
+
+    func testLibraryWritesRunOffMainAndRejectOlderSnapshots() async throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("blusic-write-test-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let worker = LibraryPersistenceWorker()
+        var settings = AppSettings(); settings.accent = "mint"
+        let latest = LibrarySnapshot(tracks: [], playlists: [], favorites: [], history: [], settings: settings, queue: [], currentTrackID: nil)
+        try await worker.write(latest, to: url, revision: 2)
+        var older = latest; older.settings.accent = "orange"
+        try await worker.write(older, to: url, revision: 1)
+        let saved = try JSONDecoder().decode(LibrarySnapshot.self, from: Data(contentsOf: url))
+        XCTAssertEqual(saved.settings.accent, "mint")
+        let mainThreadWrites = await worker.mainThreadWriteCount
+        XCTAssertEqual(mainThreadWrites, 0)
+    }
+
+    @MainActor
+    func testBackupMergeKeepsPlaylistAndFavoriteIDsForAnExistingSource() throws {
+        let store = LibraryStore(inMemory: true)
+        let existing = Track(title: "Same song", artist: "Artist", source: .invidious, location: "abcdefghijk")
+        let imported = Track(title: "Same song", artist: "Artist", source: .invidious, location: "abcdefghijk")
+        store.tracks = [existing]; store.playlists = []; store.favorites = []
+        let playlist = Playlist(name: "Backup fixture", trackIDs: [imported.id])
+        let backup = LibrarySnapshot(tracks: [imported], playlists: [playlist], favorites: [imported.id], history: [], settings: AppSettings(), queue: [], currentTrackID: nil)
+        try store.restoreBackup(JSONEncoder().encode(backup))
+        XCTAssertNotNil(store.track(imported.id))
+        XCTAssertEqual(store.tracks(in: playlist).map(\.id), [imported.id])
+        XCTAssertEqual(store.likedTracks.map(\.id), [imported.id])
+    }
+
+    func testRelayRetriesTransient500AndTriesUnproxiedMetadata() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        let calls = NetworkRequestCounter()
+        InvidiousStubProtocol.handler = { request in
+            if request.url?.path.hasPrefix("/api/v1/videos/") == true {
+                calls.increment()
+                if request.url?.query?.contains("local=true") == true { return (500, Data()) }
+                return (200, Data(#"{"lengthSeconds":171,"adaptiveFormats":[{"url":"/audio.m4a","type":"audio/mp4; codecs=mp4a.40.2","bitrate":131055}]}"#.utf8))
+            }
+            return (206, Data([0, 0, 0, 20]) + Data("ftypM4A ".utf8) + Data(repeating: 0, count: 64))
+        }
+        let service = try InvidiousService(address: "https://fixture.invalid", automaticFallback: false, session: session)
+        let track = Track(title: "Fixture", artist: "Artist", source: .invidious, location: "abcdefghijk")
+        let stream = try await service.stream(for: track, preferProxy: true)
+        XCTAssertEqual(stream.url.path, "/audio.m4a")
+        XCTAssertEqual(calls.count, 3, "One transient retry, then a real alternate metadata mode")
+    }
+
+    @MainActor
+    func testLiveStephanieFromUserReportStartsAndSeeks() async throws {
+        let track = Track(title: "Stephanie", artist: "Nafeesisboujee", source: .invidious, location: "RFzfXv9wzfo", musicCatalog: "youtube-music")
+        let store = LibraryStore(inMemory: true); store.settings.volume = 0.1
+        let player = AudioPlayer(library: store)
+        defer { player.forget(track.id) }
+        player.play(track, in: [track])
+        for _ in 0..<120 {
+            if player.firstAudioLatency != nil || player.error != nil { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertNil(player.error)
+        let latency = try XCTUnwrap(player.firstAudioLatency)
+        XCTAssertTrue(player.isPlaying); XCTAssertGreaterThan(player.duration, 60)
+        player.seek(to: 30)
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertGreaterThanOrEqual(player.position, 29)
+        print("STEPHANIE USER-REPORT PLAYBACK: first_audio=\(latency)s duration=\(player.duration)s source=\(player.formatLabel) seek=\(player.position)s")
+    }
+}
+
+private final class NetworkRequestCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.lock(); defer { lock.unlock() }; return value }
+    func increment() { lock.lock(); value += 1; lock.unlock() }
 }
 
 @MainActor
 private final class PerformanceRenderCounter { var count = 0 }
 
 private struct StablePlaybackProbe: View {
-    @EnvironmentObject private var player: AudioPlayer
+    @Environment(AudioPlayer.self) private var player
     let counter: PerformanceRenderCounter
     var body: some View {
         counter.count += 1
@@ -819,7 +946,7 @@ private struct StablePlaybackProbe: View {
 }
 
 private struct PlaybackClockProbe: View {
-    @EnvironmentObject private var player: AudioPlayer
+    @Environment(AudioPlayer.self) private var player
     let counter: PerformanceRenderCounter
     var body: some View {
         counter.count += 1

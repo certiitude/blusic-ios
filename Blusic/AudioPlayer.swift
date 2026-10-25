@@ -1,6 +1,6 @@
 import AVFoundation
 import AudioToolbox
-import Combine
+import Observation
 import CryptoKit
 import MediaPlayer
 import UIKit
@@ -9,33 +9,34 @@ import SwiftUI
 /// Progressive AVPlayer for immediate network playback, plus the full native
 /// effects graph for local/prepared audio. No web view is used for normal music.
 @MainActor
-final class AudioPlayer: ObservableObject {
-    @Published private(set) var current: Track?
-    @Published private(set) var queue: [Track] = []
-    @Published private(set) var isPlaying = false
-    @Published private(set) var isLoading = false
-    @Published private(set) var loadingMessage = ""
-    @Published private(set) var loadingProgress: Double?
-    @Published private(set) var isStreaming = false
-    @Published private(set) var preparingEffects = false
-    @Published private(set) var effectsMessage: String?
-    @Published private(set) var firstAudioLatency: Double?
-    @Published private(set) var isTransitioning = false
+@Observable
+final class AudioPlayer {
+    private(set) var current: Track?
+    private(set) var queue: [Track] = []
+    private(set) var isPlaying = false
+    private(set) var isLoading = false
+    private(set) var loadingMessage = ""
+    private(set) var loadingProgress: Double?
+    private(set) var isStreaming = false
+    private(set) var preparingEffects = false
+    private(set) var effectsMessage: String?
+    private(set) var firstAudioLatency: Double?
+    private(set) var isTransitioning = false
     #if DEBUG
     private(set) var artworkFetchCount = 0
     #endif
-    @Published private(set) var position = 0.0
-    @Published private(set) var duration = 0.0
-    @Published private(set) var formatLabel = ""
-    @Published var shuffle = false
-    @Published var repeatMode: RepeatMode = .off
-    @Published var sleepDeadline: Date?
-    @Published var stopAtEnd = false
-    @Published var loopA: Double?
-    @Published var loopB: Double?
-    @Published var youtubeTrack: Track?
-    @Published var unresolvedTrack: Track?
-    @Published var error: String?
+    private(set) var position = 0.0
+    private(set) var duration = 0.0
+    private(set) var formatLabel = ""
+    var shuffle = false
+    var repeatMode: RepeatMode = .off
+    var sleepDeadline: Date?
+    var stopAtEnd = false
+    var loopA: Double?
+    var loopB: Double?
+    var youtubeTrack: Track?
+    var unresolvedTrack: Track?
+    var error: String?
 
     let equalizerFrequencies: [Float] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
     private let library: LibraryStore
@@ -73,6 +74,7 @@ final class AudioPlayer: ObservableObject {
     private var wantsPlayback = false
     private var usedDirectFallback = false
     private var tryingAlternate = false
+    @ObservationIgnored private var lastStreamFailure: String?
     private var beganLoading = Date()
     private var requestedEffects = false
     private var declaredDuration = 0.0
@@ -99,7 +101,8 @@ final class AudioPlayer: ObservableObject {
         apply(library.settings)
         configureRemoteCommands()
         observeAudioSession()
-        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] _ in
+        let timer = Timer(timeInterval: 0.25, repeats: true) { [weak self] timer in
+            guard self != nil else { timer.invalidate(); return }
             Task { @MainActor [weak self] in self?.tick() }
         }
         RunLoop.main.add(timer, forMode: .common)
@@ -127,7 +130,7 @@ final class AudioPlayer: ObservableObject {
         let track = library.add(requested)
         if let tracks {
             var seen = Set<UUID>()
-            queue = tracks.map { library.add($0) }.filter { seen.insert($0.id).inserted }
+            queue = library.add(tracks).filter { seen.insert($0.id).inserted }
             playedIDs.removeAll()
         }
         if !queue.contains(where: { $0.id == track.id }) { queue.append(track) }
@@ -139,7 +142,7 @@ final class AudioPlayer: ObservableObject {
         node.stop(); engine.stop()
         audioFile = nil; isPlaying = false; isLoading = false
         error = nil; loadingMessage = ""; loadingProgress = nil
-        firstAudioLatency = nil; beganLoading = Date(); wantsPlayback = true; usedDirectFallback = false; tryingAlternate = false
+        firstAudioLatency = nil; beganLoading = Date(); wantsPlayback = true; usedDirectFallback = false; tryingAlternate = false; lastStreamFailure = nil
         preparingEffects = false; effectsMessage = nil; requestedEffects = false
         automaticFadeID = nil
         current = track; position = 0; duration = track.duration
@@ -484,7 +487,12 @@ final class AudioPlayer: ObservableObject {
             },
             item.observe(\.status, options: [.new]) { [weak self] observed, _ in
                 guard observed.status == .failed else { return }
-                Task { @MainActor [weak self] in self?.retryStreamOrFail(token: token) }
+                let message = observed.error?.localizedDescription ?? "Le lecteur n’a pas pu ouvrir le flux."
+                Task { @MainActor [weak self] in
+                    guard let self, generation == token else { return }
+                    lastStreamFailure = "\(source.providerLabel) : \(message)"
+                    retryStreamOrFail(token: token)
+                }
             }
         ]
         streamEndObservation = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: item, queue: .main) { [weak self] _ in
@@ -531,7 +539,7 @@ final class AudioPlayer: ObservableObject {
                 guard generation == token, !Task.isCancelled else { return }
                 stopStreaming(); isLoading = false; isPlaying = false; wantsPlayback = false; loadingWatchdog?.cancel()
                 cancelTransition()
-                self.error = "Lecture impossible : \(error.localizedDescription)"
+                self.error = "Lecture impossible : " + (lastStreamFailure.map { $0 + "\n" } ?? "") + error.localizedDescription
             }
         }
     }
@@ -604,7 +612,8 @@ final class AudioPlayer: ObservableObject {
             let seconds = streamPlayer.currentTime().seconds
             if seconds.isFinite { position = seconds }
             if let itemDuration = streamPlayer.currentItem?.duration.seconds {
-                duration = PlaybackDuration.effective(declared: declaredDuration, measured: itemDuration)
+                let seconds = PlaybackDuration.effective(declared: declaredDuration, measured: itemDuration)
+                if duration != seconds { duration = seconds }
             }
         } else if let render = node.lastRenderTime, let time = node.playerTime(forNodeTime: render) {
             position = min(duration, scheduledOffset + Double(time.sampleTime) / time.sampleRate)
@@ -668,10 +677,8 @@ final class AudioPlayer: ObservableObject {
             #endif
             let id = current.id
             artworkTask = Task { [weak self] in
-                let data: Data?
-                if url.isFileURL { data = try? Data(contentsOf: url) }
-                else { data = try? await URLSession.shared.data(from: ArtworkURL.highResolution(url)).0 }
-                guard let self, self.current?.id == id, let data, let image = UIImage(data: data) else { return }
+                let image = await ArtworkImageCache.shared.image(for: ArtworkRequest(url: url, pixels: 512))
+                guard !Task.isCancelled, let self, self.current?.id == id, let image else { return }
                 var updated = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
                 updated[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
                 MPNowPlayingInfoCenter.default().nowPlayingInfo = updated

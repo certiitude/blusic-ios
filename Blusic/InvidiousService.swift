@@ -256,14 +256,17 @@ struct InvidiousService {
     func stream(for track: Track, preferProxy: Bool) async throws -> InvidiousStream {
         guard Self.isVideoID(track.location) else { throw BlusicError.message("Identifiant de chanson invalide.") }
         func usableStream(on server: URL) async throws -> InvidiousStream {
-            let details: InvidiousDetails = try await get("videos/\(track.location)", on: server,
-                parameters: preferProxy ? ["local": "true"] : [:])
             var failure = "Aucun flux AAC progressif disponible sur cette instance."
-            for format in details.compatibleFormats.prefix(2) {
-                guard let url = URL(string: format.url, relativeTo: server)?.absoluteURL, url.scheme == "https" else { continue }
-                let stream = InvidiousStream(url: url, bitrate: format.bitrate, instance: server, duration: Double(details.lengthSeconds ?? 0))
-                do { try await OnlineStreamResolver.validateMedia(stream, session: session); return stream }
-                catch { try Self.rethrowCancellation(error); failure = error.localizedDescription }
+            for proxy in preferProxy ? [true, false] : [false, true] {
+                do {
+                    let details: InvidiousDetails = try await get("videos/\(track.location)", on: server, parameters: proxy ? ["local": "true"] : [:])
+                    for format in details.compatibleFormats.prefix(2) {
+                        guard let url = URL(string: format.url, relativeTo: server)?.absoluteURL, url.scheme == "https" else { continue }
+                        let stream = InvidiousStream(url: url, bitrate: format.bitrate, instance: server, duration: Double(details.lengthSeconds ?? 0))
+                        do { try await OnlineStreamResolver.validateMedia(stream, session: session); return stream }
+                        catch { try Self.rethrowCancellation(error); failure = error.localizedDescription }
+                    }
+                } catch { try Self.rethrowCancellation(error); failure = error.localizedDescription }
             }
             throw BlusicError.message(failure)
         }
@@ -405,7 +408,13 @@ struct InvidiousService {
         request.timeoutInterval = 5
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Blusic/1.1 (iOS; Invidious client)", forHTTPHeaderField: "User-Agent")
-        let (data, response) = try await session.data(for: request)
+        var result = try await session.data(for: request)
+        if let status = (result.1 as? HTTPURLResponse)?.statusCode, (500...599).contains(status) {
+            // Retry a transient server failure once; never retry access challenges.
+            try await Task.sleep(for: .milliseconds(250))
+            result = try await session.data(for: request)
+        }
+        let (data, response) = result
         guard let http = response as? HTTPURLResponse else { throw BlusicError.message("Réponse réseau invalide.") }
         guard (200...299).contains(http.statusCode) else {
             switch http.statusCode {

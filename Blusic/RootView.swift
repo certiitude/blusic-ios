@@ -11,8 +11,8 @@ private enum AppSheet: String, Identifiable {
 }
 
 struct RootView: View {
-    @EnvironmentObject private var library: LibraryStore
-    @EnvironmentObject private var player: AudioPlayer
+    @Environment(LibraryStore.self) private var library
+    @Environment(AudioPlayer.self) private var player
     @State private var tab: AppTab = {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--blusic-screen=search") { return .search }
@@ -60,6 +60,13 @@ struct RootView: View {
             } else if case let .failure(error) = result { library.error = error.localizedDescription }
         }
         .alert("Un petit contretemps", isPresented: Binding(get: { library.error != nil || player.error != nil }, set: { if !$0 { library.error = nil; player.error = nil } })) {
+            if player.error != nil, let current = player.current, current.isYouTubeContent {
+                Button("Réessayer") { player.error = nil; player.play(current) }
+                if library.settings.audioSourceMode != "auto" {
+                    Button("Essayer l’accès automatique") { library.settings.onlineAudioMode = "auto"; player.error = nil; player.play(current) }
+                }
+                Button("Ouvrir le lecteur officiel") { player.error = nil; player.openOfficialPlayer(for: current) }
+            }
             Button("Compris") { library.error = nil; player.error = nil }
         } message: { Text(library.error ?? player.error ?? "") }
         .overlay(alignment: .top) {
