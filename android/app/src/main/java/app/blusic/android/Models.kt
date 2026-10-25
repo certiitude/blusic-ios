@@ -31,11 +31,11 @@ data class Playlist(val id: String = UUID.randomUUID().toString(), val name: Str
 data class LibraryState(val tracks: List<Track> = Track.demos(), val favorites: Set<String> = emptySet(),
     val playlists: List<Playlist> = emptyList(), val recent: List<String> = emptyList(),
     val sourceMode: String = "auto", val instance: String = "https://yt.chocolatemoo53.com", val speed: Float = 1f,
-    val linkedPitch: Boolean = true) {
+    val linkedPitch: Boolean = true, val relayAddress: String = "") {
     fun json() = JSONObject().put("version", 1).put("tracks", JSONArray(tracks.map { it.json() }))
         .put("favorites", JSONArray(favorites.toList())).put("playlists", JSONArray(playlists.map { it.json() }))
         .put("recent", JSONArray(recent)).put("sourceMode", sourceMode).put("instance", instance)
-        .put("speed", speed.toDouble()).put("linkedPitch", linkedPitch)
+        .put("speed", speed.toDouble()).put("linkedPitch", linkedPitch).put("relayAddress", relayAddress)
     companion object {
         fun parse(text: String): LibraryState {
             val j = JSONObject(text)
@@ -44,7 +44,7 @@ data class LibraryState(val tracks: List<Track> = Track.demos(), val favorites: 
                 j.optJSONArray("favorites").strings().toSet(), j.optJSONArray("playlists").objects().map {
                     Playlist(it.getString("id"), it.getString("name"), it.optJSONArray("tracks").strings())
                 }, j.optJSONArray("recent").strings(), j.optString("sourceMode", "auto"),
-                j.optString("instance", "https://yt.chocolatemoo53.com"), j.optDouble("speed", 1.0).toFloat().coerceIn(.5f, 2f), j.optBoolean("linkedPitch", true))
+                j.optString("instance", "https://yt.chocolatemoo53.com"), j.optDouble("speed", 1.0).toFloat().coerceIn(.5f, 2f), j.optBoolean("linkedPitch", true), j.optString("relayAddress"))
         }
     }
 }

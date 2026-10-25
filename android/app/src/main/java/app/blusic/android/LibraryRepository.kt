@@ -12,6 +12,7 @@ import kotlinx.coroutines.sync.withLock
 import java.io.File
 
 class LibraryRepository(private val context: Context) {
+    val relayCredentials = RelayCredentials(context)
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lock = Mutex()
     private val file = AtomicFile(File(context.filesDir, "library.json"))

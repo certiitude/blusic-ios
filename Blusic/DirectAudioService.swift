@@ -1,4 +1,5 @@
 import Foundation
+import Security
 
 /// Anonymous iOS player request validated alongside youtubei.js's IOS client.
 /// Only ordinary HTTPS AAC URLs are used; no login or deciphering runtime.
@@ -65,6 +66,13 @@ struct OnlineStreamResolver: Sendable {
         let useDirect = mode != "invidious" && (previous == nil || previous?.isYouTubeDirect == false || mode == "direct")
         let useRelay = mode != "direct" && (previous == nil || previous?.isYouTubeDirect == true || mode == "invidious")
         return try await withThrowingTaskGroup(of: Result<InvidiousStream, Error>.self) { group in
+            if mode == "auto", previous?.provider != "youtubei.js", let address = settings.youtubeiRelayAddress,
+               let server = try? InvidiousService.instanceURL(address), let key = RelayKeychain.read(server: address) {
+                group.addTask {
+                    do { return .success(try await YouTubeRelayService(session: session).stream(for: track, server: server, key: key)) }
+                    catch { return .failure(error) }
+                }
+            }
             if useDirect {
                 group.addTask {
                     do {
@@ -112,5 +120,71 @@ struct OnlineStreamResolver: Sendable {
         guard header.range(of: Data("ftyp".utf8)) != nil else {
             throw BlusicError.message("Le serveur renvoie une page ou un fichier non AAC/M4A.")
         }
+        // A few cached opening bytes are not proof that the rest of the song
+        // is authorized. Probe a second finite range on the same signed URL.
+        if let value = http.value(forHTTPHeaderField: "Content-Range"), let range = AudioByteRange.parse(value), range.total > 4096 {
+            bytes.task.cancel()
+            var following = URLRequest(url: stream.url)
+            following.timeoutInterval = 4
+            following.setValue("bytes=4096-4159", forHTTPHeaderField: "Range")
+            let (rest, nextResponse) = try await session.bytes(for: following)
+            defer { rest.task.cancel() }
+            guard let next = nextResponse as? HTTPURLResponse, next.statusCode == 206 else {
+                throw BlusicError.message("\(stream.providerLabel) : début du fichier accessible, mais la suite est refusée (HTTP \((nextResponse as? HTTPURLResponse)?.statusCode ?? 0)).")
+            }
+            guard let raw = next.value(forHTTPHeaderField: "Content-Range"), let nextRange = AudioByteRange.parse(raw), nextRange.start == 4096,
+                  nextRange.total == range.total else { throw BlusicError.message("Le serveur ne respecte pas les plages du fichier audio.") }
+            var count = 0
+            for try await _ in rest.prefix(64) { count += 1 }
+            guard count > 0 else { throw BlusicError.message("La suite du fichier audio est vide.") }
+        }
+    }
+}
+
+struct YouTubeRelayService {
+    var session: URLSession = .shared
+    func stream(for track: Track, server: URL, key: String) async throws -> InvidiousStream {
+        guard InvidiousService.isVideoID(track.location) else { throw BlusicError.message("Identifiant musical invalide.") }
+        var request = URLRequest(url: server.appendingPathComponent("v1/streams/\(track.location)"))
+        request.timeoutInterval = 15
+        request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await session.data(for: request)
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            throw BlusicError.message("Relais youtubei.js indisponible (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)).")
+        }
+        let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard let path = payload?["url"] as? String, let url = URL(string: path, relativeTo: server)?.absoluteURL,
+              url.scheme == "https", url.host == server.host, url.port == server.port,
+              url.user == nil, url.password == nil, url.path.hasPrefix("/v1/audio/") else {
+            throw BlusicError.message("Le relais youtubei.js n’a pas renvoyé un lien audio du même serveur.")
+        }
+        let stream = InvidiousStream(url: url, bitrate: payload?["bitrate"] as? Int ?? 0, instance: server,
+            duration: payload?["duration"] as? Double ?? track.duration, provider: "youtubei.js")
+        try await OnlineStreamResolver.validateMedia(stream, session: session)
+        return stream
+    }
+}
+
+/// Relay access credentials stay out of exported library JSON snapshots.
+enum RelayKeychain {
+    private static func query(server: String) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "app.blusic.youtubei-relay", kSecAttrAccount as String: server]
+    }
+    static func read(server: String) -> String? {
+        var query = query(server: server)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess, let data = result as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+    static func save(_ key: String, server: String) throws {
+        let query = query(server: server)
+        let attributes: [String: Any] = [kSecValueData as String: Data(key.utf8), kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly]
+        let status = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if status == errSecItemNotFound {
+            let insert = query.merging(attributes) { _, new in new }
+            guard SecItemAdd(insert as CFDictionary, nil) == errSecSuccess else { throw BlusicError.message("Impossible d’enregistrer la clé du relais dans le trousseau.") }
+        } else if status != errSecSuccess { throw BlusicError.message("Impossible de mettre à jour la clé du relais.") }
     }
 }

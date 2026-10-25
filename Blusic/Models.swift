@@ -107,6 +107,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     var crossfadeEnabled: Bool?
     var crossfadeDuration: Double?
     var onlineAudioMode: String?
+    var youtubeiRelayAddress: String?
 
     var audioSourceMode: String {
         guard let mode = onlineAudioMode, ["auto", "direct", "invidious"].contains(mode) else { return "auto" }

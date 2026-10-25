@@ -86,8 +86,9 @@ struct InvidiousStream: Sendable {
     var bitrate: Int
     var instance: URL
     var duration: Double
+    var provider: String? = nil
     var isYouTubeDirect: Bool { instance.host == "www.youtube.com" }
-    var providerLabel: String { isYouTubeDirect ? "YouTube direct" : "Invidious" }
+    var providerLabel: String { provider ?? (isYouTubeDirect ? "YouTube direct" : "Invidious") }
 }
 
 enum OnlinePlaybackResource: Sendable {
@@ -212,11 +213,11 @@ actor InvidiousStreamCache {
     private var values: [String: (Date, InvidiousStream)] = [:]
     private var pending: [String: Pending] = [:]
     func invalidate(_ track: Track, settings: AppSettings) {
-        let prefix = "\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(track.location)|"
+        let prefix = "\(settings.youtubeiRelayAddress ?? "")|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(track.location)|"
         values = values.filter { !$0.key.hasPrefix(prefix) }
     }
     func resolve(_ track: Track, settings: AppSettings, direct: Bool) async throws -> InvidiousStream {
-        let baseKey = "\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(track.location)"
+        let baseKey = "\(settings.youtubeiRelayAddress ?? "")|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(track.location)"
         let key = "\(baseKey)|\(direct)"
         if let (expiry, value) = values[key], expiry > Date() { return value }
         let waiter = UUID()

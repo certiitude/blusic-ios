@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: blusic-audio-relay
+    runtime: docker
+    plan: free
+    dockerfilePath: ./relay/Dockerfile
+    dockerContext: ./relay
+    healthCheckPath: /health
+    envVars:
+      - key: BLUSIC_RELAY_KEY
+        generateValue: true
+      - key: YOUTUBEI_CLIENTS
+        value: IOS,ANDROID_VR
+      - key: PORT
+        value: '10000'

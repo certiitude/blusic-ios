@@ -30,7 +30,11 @@ class PlaybackService : MediaSessionService() {
         val resolving = ResolvingDataSource.Factory(network) { spec ->
             if (spec.uri.scheme == "blusic") {
                 val id = spec.uri.host ?: throw java.io.IOException("Identifiant absent")
-                val stream = runBlocking { app.library.ready.await(); app.api.resolve(id, app.library.state.value) }
+                val stream = runBlocking {
+                    app.library.ready.await()
+                    val settings = app.library.state.value
+                    app.api.resolve(id, settings, app.library.relayCredentials.read(settings.relayAddress))
+                }
                 spec.withUri(Uri.parse(stream.url))
             } else spec
         }

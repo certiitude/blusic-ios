@@ -1025,6 +1025,39 @@ final class BlusicTests: XCTestCase {
         XCTAssertEqual(calls.count, (data.count + 262143) / 262144)
         XCTAssertEqual(try AVAudioFile(forReading: result).length, 2116800)
     }
+
+    func testAccessibleOpeningBytesDoNotHide403OnNextRange() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil; InvidiousStubProtocol.headerProvider = nil }
+        InvidiousStubProtocol.handler = { request in
+            if request.value(forHTTPHeaderField: "Range") == "bytes=4096-4159" { return (403, Data()) }
+            return (206, Data([0, 0, 0, 20]) + Data("ftypM4A ".utf8) + Data(repeating: 0, count: 64))
+        }
+        InvidiousStubProtocol.headerProvider = { _ in ["Content-Type": "audio/mp4", "Content-Range": "bytes 0-4095/20000"] }
+        let stream = InvidiousStream(url: URL(string: "https://media.googlevideo.com/audio")!, bitrate: 131000, instance: URL(string: "https://www.youtube.com")!, duration: 143)
+        do { try await OnlineStreamResolver.validateMedia(stream, session: session); XCTFail("Opening bytes alone must not select a denied source") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("suite est refusée")); XCTAssertTrue(error.localizedDescription.contains("403")) }
+    }
+
+    func testYouTubeiRelayUsesAuthForResolutionAndOnlySameHostAudio() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        let track = Track(title: "Relay fixture", artist: "Test", source: .invidious, location: "abcdefghijk")
+        InvidiousStubProtocol.handler = { request in
+            if request.url?.path.hasPrefix("/v1/streams/") == true {
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture-key")
+                return (200, Data(#"{"url":"/v1/audio/abcdefghijk?ticket=fixture","bitrate":131000,"duration":143}"#.utf8))
+            }
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"), "Audio uses a temporary ticket rather than copying the private relay key")
+            return (206, Data([0, 0, 0, 20]) + Data("ftypM4A ".utf8) + Data(repeating: 0, count: 64))
+        }
+        let stream = try await YouTubeRelayService(session: session).stream(for: track, server: URL(string: "https://relay.fixture.invalid")!, key: "fixture-key")
+        XCTAssertEqual(stream.providerLabel, "youtubei.js")
+        XCTAssertEqual(stream.url.host, "relay.fixture.invalid")
+        InvidiousStubProtocol.handler = { _ in (200, Data(#"{"url":"https://other.invalid/v1/audio/abcdefghijk","bitrate":131000}"#.utf8)) }
+        do { _ = try await YouTubeRelayService(session: session).stream(for: track, server: URL(string: "https://relay.fixture.invalid")!, key: "fixture-key"); XCTFail("A relay must not redirect media to an unrelated host") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("même serveur")) }
+    }
 }
 
 private actor StreamRecoveryCounter {

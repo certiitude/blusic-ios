@@ -13,6 +13,14 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import androidx.media3.datasource.DataSpec
+import android.net.Uri
+import okhttp3.OkHttpClient
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okhttp3.Protocol
+import java.io.ByteArrayOutputStream
+import java.io.IOException
 
 @RunWith(AndroidJUnit4::class)
 class AndroidPlaybackTest {
@@ -66,6 +74,32 @@ class AndroidPlaybackTest {
         compose.onNodeWithContentDescription("Réglages").performClick()
         compose.onNodeWithText("Sources audio").assertExists()
         screenshot("android-settings")
+    }
+
+    @Test fun finiteHttpSourceAssemblesEveryByteAndRejectsForbiddenPages() {
+        val audio = ByteArray(700_000) { (it % 251).toByte() }
+        val ranges = mutableListOf<String>()
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val range = chain.request().header("Range")!!
+            ranges += range
+            val bounds = range.removePrefix("bytes=").split('-').map(String::toInt)
+            val start = bounds[0]; val end = minOf(bounds[1], audio.lastIndex)
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).message("Partial Content").code(206)
+                .header("Content-Type", "audio/mp4").header("Content-Range", "bytes $start-$end/${audio.size}")
+                .body(audio.copyOfRange(start, end + 1).toResponseBody()).build()
+        }.build()
+        val source = FiniteHttpDataSource(client)
+        assertEquals(audio.size.toLong(), source.open(DataSpec(Uri.parse("https://fixture.invalid/audio"))))
+        val out = ByteArrayOutputStream()
+        val buffer = ByteArray(8192)
+        while (true) { val n = source.read(buffer, 0, buffer.size); if (n < 0) break; out.write(buffer, 0, n) }
+        source.close()
+        assertArrayEquals(audio, out.toByteArray())
+        assertEquals(3, ranges.size)
+        assertEquals("bytes=262144-524287", ranges[1])
+        val forbidden = OkHttpClient.Builder().addInterceptor { chain -> Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).message("Forbidden").code(403).body("Denied".toResponseBody()).build() }.build()
+        try { FiniteHttpDataSource(forbidden).open(DataSpec(Uri.parse("https://fixture.invalid/denied"))); fail("403 must not become an audio file") }
+        catch (e: IOException) { assertTrue(e.message.orEmpty().contains("403")) }
     }
 
     private fun screenshot(name: String) {

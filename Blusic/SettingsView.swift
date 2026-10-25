@@ -8,6 +8,9 @@ struct SettingsView: View {
     @State private var sharing = false
     @State private var instanceStatus: String?
     @State private var checkingInstance = false
+    @State private var relayAddress = ""
+    @State private var relayKey = ""
+    @State private var relayStatus: String?
     private let accents = ["blue", "violet", "rose", "mint", "orange", "white"]
 
     var body: some View {
@@ -103,6 +106,22 @@ struct SettingsView: View {
                 Text("La recherche interroge les chansons de YouTube Music. Cette instance sert de relais AAC/M4A dans le mode automatique, ou de source principale en mode Invidious. Les appels d’API sont limités à 5 secondes par instance.")
                     .font(.caption).foregroundStyle(.secondary)
             } header: { Text("Invidious") } footer: { Text("Service communautaire non officiel : certaines instances bloquent l’API et certains titres sont indisponibles. La qualité AAC est compressée, pas lossless. Les serveurs de secours proviennent de l’annuaire public du projet et doivent annoncer leur API comme active.") }
+            Section("Relais youtubei.js") {
+                TextField("https://ton-relais.example", text: $relayAddress).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
+                SecureField("Clé d’accès au relais", text: $relayKey)
+                Button("Enregistrer le relais") {
+                    do {
+                        let server = try InvidiousService.instanceURL(relayAddress).absoluteString
+                        guard relayKey.count >= 24 else { throw BlusicError.message("La clé doit contenir au moins 24 caractères.") }
+                        try RelayKeychain.save(relayKey, server: server)
+                        library.settings.youtubeiRelayAddress = server
+                        relayStatus = "Relais configuré pour le mode automatique. Sa disponibilité audio dépend du fournisseur."
+                    } catch { relayStatus = error.localizedDescription }
+                }
+                Button("Désactiver ce relais") { library.settings.youtubeiRelayAddress = nil; relayAddress = ""; relayKey = ""; relayStatus = nil }
+                if let relayStatus { Text(relayStatus).font(.caption).foregroundStyle(.secondary) }
+                Text("Le serveur youtubei.js doit être déployé et vérifier le fichier complet avant de relayer l’audio. La clé reste dans le trousseau de cet iPhone et n’est pas exportée avec la bibliothèque. Aucun serveur actif n’est fourni tant que son hébergement et sa lecture réelle n’ont pas été validés.").font(.caption).foregroundStyle(.secondary)
+            }
             Section("Ta bibliothèque") {
                 NavigationLink { ManageFilesView() } label: { Label("Gérer les fichiers importés", systemImage: "internaldrive") }
                 Button {
@@ -120,7 +139,11 @@ struct SettingsView: View {
         }
         .navigationTitle("À ton image").navigationBarTitleDisplayMode(.inline)
         .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Terminé") { dismiss() } } }
-        .onAppear { instanceAddress = library.settings.invidiousAddress }
+        .onAppear {
+            instanceAddress = library.settings.invidiousAddress
+            relayAddress = library.settings.youtubeiRelayAddress ?? ""
+            relayKey = RelayKeychain.read(server: relayAddress) ?? ""
+        }
         .sheet(isPresented: $sharing) { if let exportURL { ShareSheet(items: [exportURL]) } }
     }
     private func color(_ accent: String) -> Color { var settings = AppSettings(); settings.accent = accent; return settings.color }

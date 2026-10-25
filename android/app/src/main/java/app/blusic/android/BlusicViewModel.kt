@@ -133,6 +133,16 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
         app.library.update { it.copy(sourceMode = mode, instance = validated) }
     }
     fun audio(speed: Float, linked: Boolean) = save { app.library.update { it.copy(speed = speed, linkedPitch = linked) }; withContext(Dispatchers.Main) { applyAudio() } }
+    fun relay(address: String, key: String) = save {
+        if (address.isBlank()) app.library.update { it.copy(relayAddress = "") }
+        else {
+            val server = MusicApi.validateInstance(address)
+            require(key.length >= 24) { "La clé doit contenir au moins 24 caractères" }
+            app.library.relayCredentials.save(key, server)
+            app.library.update { it.copy(relayAddress = server) }
+        }
+        message.value = "Réglage du relais enregistré"
+    }
     private fun applyAudio() { val s = library.value; controller?.playbackParameters = PlaybackParameters(s.speed, if (s.linkedPitch) s.speed else 1f) }
     suspend fun lyrics(track: Track): String? = withContext(Dispatchers.IO) {
         val text = app.api.lyrics(track)

@@ -39,6 +39,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -89,7 +90,7 @@ fun BlusicApp(vm: BlusicViewModel = viewModel()) {
             Text("●", color = Color.White, fontSize = 26.sp)
             Text(" blusic", fontSize = 29.sp, fontWeight = FontWeight.Bold, letterSpacing = (-1).sp)
             Spacer(Modifier.weight(1f))
-            Action(Icons.Rounded.Tune, "Réglages") { showSettings = !showSettings }
+            Action(Icons.Rounded.Tune, "Réglages", { showSettings = !showSettings })
         }
     }, bottomBar = {
         Column(Modifier.navigationBarsPadding().padding(horizontal = 12.dp)) {
@@ -205,7 +206,7 @@ private fun LibraryScreen(vm: BlusicViewModel, library: LibraryState, open: (Pla
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { vm.importAudio(it) }
     val tracks = remember(section, library.tracks, library.favorites) { when (section) { "Favoris" -> library.tracks.filter { it.id in library.favorites }; "Hors ligne" -> library.tracks.filter { it.source != "online" }; else -> library.tracks } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { Row(verticalAlignment = Alignment.CenterVertically) { Title("Bibliothèque"); Spacer(Modifier.weight(1f)); Action(Icons.Rounded.Add, "Importer des fichiers") { importer.launch(arrayOf("audio/*")) } } }
+        item { Row(verticalAlignment = Alignment.CenterVertically) { Title("Bibliothèque"); Spacer(Modifier.weight(1f)); Action(Icons.Rounded.Add, "Importer des fichiers", { importer.launch(arrayOf("audio/*")) }) } }
         item { Text("${library.tracks.size} titres · ta musique, simplement", color = Muted, fontSize = 13.sp) }
         item { LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(listOf("Titres", "Favoris", "Playlists", "Hors ligne")) { value -> FilterChip(section == value, { section = value }, { Text(value) }) } } }
         if (section == "Playlists") {
@@ -326,6 +327,8 @@ private fun SettingsScreen(vm: BlusicViewModel, library: LibraryState) {
     var mode by remember(library.sourceMode) { mutableStateOf(library.sourceMode) }
     var instance by remember(library.instance) { mutableStateOf(library.instance) }
     var speed by remember(library.speed) { mutableFloatStateOf(library.speed) }
+    var relay by remember(library.relayAddress) { mutableStateOf(library.relayAddress) }
+    var relayKey by remember { mutableStateOf("") }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item { Title("À ton image") }
         item { Text("Sources audio", fontWeight = FontWeight.Bold, fontSize = 19.sp) }
@@ -333,6 +336,11 @@ private fun SettingsScreen(vm: BlusicViewModel, library: LibraryState) {
         item { OutlinedTextField(instance, { instance = it }, label = { Text("Adresse HTTPS Invidious") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
         item { Button(onClick = { vm.source(mode, instance) }) { Text("Enregistrer les sources") } }
         item { Text("Les flux publics peuvent être indisponibles ou refusés par leur fournisseur. Blusic vérifie l’audio et utilise des plages HTTP bornées. Aucun compte Google n’est connecté.", color = Muted, fontSize = 13.sp) }
+        item { HorizontalDivider() }
+        item { Text("Relais youtubei.js", fontWeight = FontWeight.Bold, fontSize = 19.sp) }
+        item { OutlinedTextField(relay, { relay = it }, label = { Text("Adresse HTTPS du relais") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
+        item { OutlinedTextField(relayKey, { relayKey = it }, label = { Text("Clé du relais") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth()) }
+        item { Button(onClick = { vm.relay(relay, relayKey) }) { Text("Enregistrer le relais") }; Text("Nécessite le service Node déployé. La clé est protégée par Android Keystore ; aucun serveur n’est déclaré fonctionnel avant son test audio complet.", color = Muted, fontSize = 13.sp) }
         item { HorizontalDivider() }
         item { Text("Vitesse et tonalité", fontWeight = FontWeight.Bold, fontSize = 19.sp); Text("${"%.2f".format(speed)}×", color = Accent); Slider(speed, { speed = it }, valueRange = .5f..2f, onValueChangeFinished = { vm.audio(speed, library.linkedPitch) }) }
         item { Row(verticalAlignment = Alignment.CenterVertically) { Text("Lier vitesse et tonalité", Modifier.weight(1f)); Switch(library.linkedPitch, { vm.audio(speed, it) }) } }
@@ -353,7 +361,7 @@ private fun TrackRow(track: Track, vm: BlusicViewModel, library: LibraryState, p
         }
         Favorite(track, library, vm)
         Box {
-            Action(Icons.Rounded.MoreVert, "Options pour ${track.title}") { menu = true }
+            Action(Icons.Rounded.MoreVert, "Options pour ${track.title}", { menu = true })
             DropdownMenu(menu, { menu = false }) {
                 library.playlists.forEach { playlist -> DropdownMenuItem(text = { Text("Ajouter à ${playlist.name}") }, onClick = { vm.addToPlaylist(track, playlist); menu = false }) }
                 if (library.playlists.isEmpty()) DropdownMenuItem(text = { Text("Crée une playlist dans Bibliothèque") }, onClick = { menu = false })

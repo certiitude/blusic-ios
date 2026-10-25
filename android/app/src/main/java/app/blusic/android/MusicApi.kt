@@ -29,14 +29,17 @@ class MusicApi(val client: OkHttpClient = OkHttpClient.Builder().connectTimeout(
             .post(body.toString().toRequestBody(jsonType)).build()
         return parseSearch(json(request))
     }
-    suspend fun resolve(video: String, settings: LibraryState): AudioStream = withContext(Dispatchers.IO) {
+    suspend fun resolve(video: String, settings: LibraryState, relayKey: String? = null): AudioStream = withContext(Dispatchers.IO) {
         require(video.matches(Regex("[A-Za-z0-9_-]{11}"))) { "Identifiant musical invalide" }
-        val key = "${settings.sourceMode}|${settings.instance}|$video"
+        val key = "${settings.relayAddress}|${settings.sourceMode}|${settings.instance}|$video"
         resolved[key]?.takeIf { it.first > System.currentTimeMillis() }?.let { return@withContext it.second }
         withTimeout(18_000) {
             supervisorScope {
-                val outcomes = Channel<Result<AudioStream>>(2)
+                val outcomes = Channel<Result<AudioStream>>(3)
                 val jobs = mutableListOf<Job>()
+                if (settings.sourceMode == "auto" && settings.relayAddress.isNotBlank() && !relayKey.isNullOrBlank()) jobs += launch {
+                    outcomes.send(runCatching { relayService(video, settings.relayAddress, relayKey) })
+                }
                 if (settings.sourceMode != "invidious") jobs += launch {
                     outcomes.send(runCatching { direct(video).also { validate(it) } })
                 }
@@ -61,6 +64,14 @@ class MusicApi(val client: OkHttpClient = OkHttpClient.Builder().connectTimeout(
         }
     }
     fun invalidate(video: String) { resolved.keys.removeAll { it.endsWith("|$video") } }
+    private fun relayService(video: String, address: String, key: String): AudioStream {
+        val base = validateInstance(address)
+        val payload = json(Request.Builder().url("$base/v1/streams/$video").header("Authorization", "Bearer $key").build())
+        val server = URI(base)
+        val url = server.resolve(payload.getString("url"))
+        if (url.scheme != "https" || url.host != server.host || url.port != server.port || url.userInfo != null || !url.path.startsWith("/v1/audio/")) throw IOException("Lien audio du relais invalide")
+        return AudioStream(url.toString(), payload.optInt("bitrate"), "youtubei.js").also(::validate)
+    }
     private fun direct(video: String): AudioStream {
         // Compatibility context of the anonymous player endpoint validated by
         // Blusic iOS. This does not connect a Google account or solve challenges.
@@ -102,6 +113,15 @@ class MusicApi(val client: OkHttpClient = OkHttpClient.Builder().connectTimeout(
             if (!response.isSuccessful) throw IOException("${stream.provider} : HTTP ${response.code}")
             val bytes = response.body?.byteStream()?.readNBytesCompat(64) ?: byteArrayOf()
             if (!String(bytes, Charsets.ISO_8859_1).contains("ftyp")) throw IOException("${stream.provider} : la réponse n’est pas un fichier M4A")
+            val range = ByteRange.parse(response.header("Content-Range"))
+            if (range != null && range.total > 4160) {
+                response.close()
+                client.newCall(Request.Builder().url(stream.url).header("Range", "bytes=4096-4159").build()).execute().use { next ->
+                    if (next.code != 206) throw IOException("${stream.provider} : début accessible, suite refusée (HTTP ${next.code})")
+                    val span = ByteRange.parse(next.header("Content-Range"))
+                    if (span?.start != 4096L || span.total != range.total || next.body?.byteStream()?.readNBytesCompat(64)?.size != 64) throw IOException("Plage audio suivante invalide")
+                }
+            }
         }
     }
     fun lyrics(track: Track): String? {
