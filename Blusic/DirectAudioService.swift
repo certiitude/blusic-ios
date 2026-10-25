@@ -124,19 +124,21 @@ struct OnlineStreamResolver: Sendable {
         // is authorized. Probe a second finite range on the same signed URL.
         if let value = http.value(forHTTPHeaderField: "Content-Range"), let range = AudioByteRange.parse(value), range.total > 4096 {
             bytes.task.cancel()
+            let offset = max(4096, range.total / 2)
+            let end = min(offset + 63, range.total - 1)
             var following = URLRequest(url: stream.url)
             following.timeoutInterval = 4
-            following.setValue("bytes=4096-4159", forHTTPHeaderField: "Range")
+            following.setValue("bytes=\(offset)-\(end)", forHTTPHeaderField: "Range")
             let (rest, nextResponse) = try await session.bytes(for: following)
             defer { rest.task.cancel() }
             guard let next = nextResponse as? HTTPURLResponse, next.statusCode == 206 else {
                 throw BlusicError.message("\(stream.providerLabel) : début du fichier accessible, mais la suite est refusée (HTTP \((nextResponse as? HTTPURLResponse)?.statusCode ?? 0)).")
             }
-            guard let raw = next.value(forHTTPHeaderField: "Content-Range"), let nextRange = AudioByteRange.parse(raw), nextRange.start == 4096,
+            guard let raw = next.value(forHTTPHeaderField: "Content-Range"), let nextRange = AudioByteRange.parse(raw), nextRange.start == offset,
                   nextRange.total == range.total else { throw BlusicError.message("Le serveur ne respecte pas les plages du fichier audio.") }
             var count = 0
             for try await _ in rest.prefix(64) { count += 1 }
-            guard count > 0 else { throw BlusicError.message("La suite du fichier audio est vide.") }
+            guard count == end - offset + 1 else { throw BlusicError.message("La suite du fichier audio est vide ou tronquée.") }
         }
     }
 }

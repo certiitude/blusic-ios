@@ -1030,7 +1030,7 @@ final class BlusicTests: XCTestCase {
         let session = stubSession()
         defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil; InvidiousStubProtocol.headerProvider = nil }
         InvidiousStubProtocol.handler = { request in
-            if request.value(forHTTPHeaderField: "Range") == "bytes=4096-4159" { return (403, Data()) }
+            if request.value(forHTTPHeaderField: "Range") == "bytes=10000-10063" { return (403, Data()) }
             return (206, Data([0, 0, 0, 20]) + Data("ftypM4A ".utf8) + Data(repeating: 0, count: 64))
         }
         InvidiousStubProtocol.headerProvider = { _ in ["Content-Type": "audio/mp4", "Content-Range": "bytes 0-4095/20000"] }

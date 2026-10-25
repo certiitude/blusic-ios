@@ -62,13 +62,7 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -camera-back none
           working-directory: android
-          script: |
-            set +e
-            gradle --no-daemon :app:connectedDebugAndroidTest
-            result=$?
-            adb pull /sdcard/Android/data/app.blusic.android/files/screenshots app/build/screenshots
-            adb logcat -d > app/build/logcat.txt
-            exit $result
+          script: bash tools/run_connected_tests.sh
       - name: Upload test evidence
         if: always()
         uses: actions/upload-artifact@v4

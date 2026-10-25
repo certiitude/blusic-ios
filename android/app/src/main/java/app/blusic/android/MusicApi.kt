@@ -16,7 +16,7 @@ data class SearchPage(val tracks: List<Track>, val continuation: String?)
 data class AudioStream(val url: String, val bitrate: Int, val provider: String)
 
 class MusicApi(val client: OkHttpClient = OkHttpClient.Builder().connectTimeout(5, TimeUnit.SECONDS)
-    .readTimeout(7, TimeUnit.SECONDS).callTimeout(12, TimeUnit.SECONDS).build()) {
+    .readTimeout(6, TimeUnit.SECONDS).callTimeout(7, TimeUnit.SECONDS).build()) {
     private val resolved = ConcurrentHashMap<String, Pair<Long, AudioStream>>()
     private val jsonType = "application/json; charset=utf-8".toMediaType()
     fun search(query: String, continuation: String? = null): SearchPage {
@@ -37,15 +37,20 @@ class MusicApi(val client: OkHttpClient = OkHttpClient.Builder().connectTimeout(
             supervisorScope {
                 val outcomes = Channel<Result<AudioStream>>(3)
                 val jobs = mutableListOf<Job>()
+                suspend fun attempt(block: () -> AudioStream) {
+                    try { outcomes.send(Result.success(runInterruptible(Dispatchers.IO, block))) }
+                    catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { outcomes.send(Result.failure(e)) }
+                }
                 if (settings.sourceMode == "auto" && settings.relayAddress.isNotBlank() && !relayKey.isNullOrBlank()) jobs += launch {
-                    outcomes.send(runCatching { relayService(video, settings.relayAddress, relayKey) })
+                    attempt { relayService(video, settings.relayAddress, relayKey) }
                 }
                 if (settings.sourceMode != "invidious") jobs += launch {
-                    outcomes.send(runCatching { direct(video).also { validate(it) } })
+                    attempt { direct(video).also { validate(it) } }
                 }
                 if (settings.sourceMode != "direct") jobs += launch {
                     if (settings.sourceMode == "auto") delay(350)
-                    outcomes.send(runCatching { relay(video, settings.instance) })
+                    attempt { relay(video, settings.instance) }
                 }
                 try {
                     val errors = mutableListOf<String>()
@@ -93,6 +98,7 @@ class MusicApi(val client: OkHttpClient = OkHttpClient.Builder().connectTimeout(
         val base = validateInstance(address)
         val errors = mutableListOf<String>()
         for (suffix in listOf("?local=true", "")) {
+            if (Thread.currentThread().isInterrupted) throw IOException("Chargement annulé")
             try {
                 val root = json(Request.Builder().url("$base/api/v1/videos/$video$suffix").build())
                 root.stringOrNull("error")?.let { throw IOException(it.take(250)) }
@@ -116,10 +122,12 @@ class MusicApi(val client: OkHttpClient = OkHttpClient.Builder().connectTimeout(
             val range = ByteRange.parse(response.header("Content-Range"))
             if (range != null && range.total > 4160) {
                 response.close()
-                client.newCall(Request.Builder().url(stream.url).header("Range", "bytes=4096-4159").build()).execute().use { next ->
+                val offset = maxOf(4096L, range.total / 2)
+                val end = minOf(offset + 63, range.total - 1)
+                client.newCall(Request.Builder().url(stream.url).header("Range", "bytes=$offset-$end").build()).execute().use { next ->
                     if (next.code != 206) throw IOException("${stream.provider} : début accessible, suite refusée (HTTP ${next.code})")
                     val span = ByteRange.parse(next.header("Content-Range"))
-                    if (span?.start != 4096L || span.total != range.total || next.body?.byteStream()?.readNBytesCompat(64)?.size != 64) throw IOException("Plage audio suivante invalide")
+                    if (span?.start != offset || span.total != range.total || next.body?.byteStream()?.readNBytesCompat(64)?.size?.toLong() != end-offset+1) throw IOException("Plage audio suivante invalide")
                 }
             }
         }

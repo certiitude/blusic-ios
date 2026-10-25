@@ -133,7 +133,7 @@ struct SettingsView: View {
             }
             Section("À propos") {
                 NavigationLink("Confidentialité et sources") { privacy }
-                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.7.1")
+                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.8.0")
                 Text("Fait pour écouter. Pas pour te distraire.").font(.caption).foregroundStyle(.secondary)
             }
         }

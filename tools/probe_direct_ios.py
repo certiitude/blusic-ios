@@ -11,19 +11,24 @@ import re
 import hashlib
 
 
-def probe(video="-WXpT4Ej2No", full=False, query_range=False):
+def probe(video="-WXpT4Ej2No", full=False, query_range=False, metadata_only=False, native_host=False):
     began = time.monotonic()
     body = {"videoId": video, "context": {"client": {
         "clientName": "iOS", "clientVersion": "20.11.6", "deviceMake": "Apple", "deviceModel": "iPhone10,4",
         "osName": "iOS", "osVersion": "16.7.7.20H330", "hl": "fr", "gl": "FR", "platform": "MOBILE"
     }}, "contentCheckOk": True, "racyCheckOk": True}
-    request = urllib.request.Request("https://www.youtube.com/youtubei/v1/player?prettyPrint=false", data=json.dumps(body).encode(),
+    host = "youtubei.googleapis.com" if native_host else "www.youtube.com"
+    request = urllib.request.Request("https://" + host + "/youtubei/v1/player?prettyPrint=false", data=json.dumps(body).encode(),
         headers={"Content-Type": "application/json", "User-Agent": "Blusic/1.6 (iOS audio source)", "Origin": "https://www.youtube.com"})
     with urllib.request.urlopen(request, timeout=8) as response:
         data = json.load(response)
     formats = [f for f in data.get("streamingData", {}).get("adaptiveFormats", []) if f.get("url") and f.get("mimeType", "").startswith("audio/mp4")]
     formats.sort(key=lambda f: f.get("bitrate", 0), reverse=True)
-    result = {"id": video, "status": data.get("playabilityStatus", {}).get("status"), "aac": [{"itag": f.get("itag"), "bitrate": f.get("bitrate")} for f in formats]}
+    result = {"id": video, "status": data.get("playabilityStatus", {}).get("status"), "aac": [{"itag": f.get("itag"), "bitrate": f.get("bitrate")} for f in formats],
+              "hls_available": bool(data.get("streamingData", {}).get("hlsManifestUrl")), "streaming_keys": list(data.get("streamingData", {}).keys())}
+    if metadata_only:
+        result["seconds"] = round(time.monotonic() - began, 3)
+        return result
     if formats:
         result["n_parameter_present"] = "n" in urllib.parse.parse_qs(urllib.parse.urlsplit(formats[0]["url"]).query)
         address = formats[0]["url"]
@@ -62,4 +67,4 @@ def probe(video="-WXpT4Ej2No", full=False, query_range=False):
 
 if __name__ == "__main__":
     args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
-    print(json.dumps(probe(args[0] if args else "-WXpT4Ej2No", full="--full" in sys.argv, query_range="--query-range" in sys.argv)))
+    print(json.dumps(probe(args[0] if args else "-WXpT4Ej2No", full="--full" in sys.argv, query_range="--query-range" in sys.argv, metadata_only="--metadata" in sys.argv, native_host="--native-host" in sys.argv)))
