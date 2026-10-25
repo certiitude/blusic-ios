@@ -924,6 +924,134 @@ final class BlusicTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(player.position, 29)
         print("STEPHANIE USER-REPORT PLAYBACK: first_audio=\(latency)s duration=\(player.duration)s source=\(player.formatLabel) seek=\(player.position)s")
     }
+
+    @MainActor
+    func testFailedProgressiveStreamUsesVerifiedFileBeforeChangingProvider() async throws {
+        let store = LibraryStore(inMemory: true)
+        let url = try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "bleu-nuit", withExtension: "wav"))
+        let calls = StreamRecoveryCounter()
+        let loader = FileRecoveryLoader(file: url, calls: calls)
+        let player = AudioPlayer(library: store, loadingTimeout: 5, streamBufferTimeout: 0.15, onlineLoader: loader)
+        let track = Track(title: "Progressive recovery fixture", artist: "Test", duration: 4, source: .invidious, location: "abcdefghijk")
+        defer { player.forget(track.id) }
+        player.play(track, in: [track])
+        for _ in 0..<60 {
+            if player.firstAudioLatency != nil || player.error != nil { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNil(player.error)
+        XCTAssertTrue(player.isPlaying)
+        XCTAssertFalse(player.isStreaming, "The validated file must replace the failed remote AVPlayer")
+        XCTAssertNotNil(player.firstAudioLatency)
+        let counts = await calls.counts
+        XCTAssertEqual(counts.0, 1, "A failed relay must not replace the usable source before file recovery")
+        XCTAssertEqual(counts.1, 1)
+        player.seek(to: 2)
+        try await Task.sleep(for: .milliseconds(250))
+        XCTAssertGreaterThanOrEqual(player.position, 1.9)
+    }
+
+    @MainActor
+    func testCancellingFileRecoveryDoesNotRestartPlayback() async throws {
+        let store = LibraryStore(inMemory: true)
+        let url = try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "bleu-nuit", withExtension: "wav"))
+        let calls = StreamRecoveryCounter()
+        let loader = FileRecoveryLoader(file: url, calls: calls, delay: true)
+        let player = AudioPlayer(library: store, loadingTimeout: 5, streamBufferTimeout: 0.1, onlineLoader: loader)
+        let track = Track(title: "Cancelled recovery fixture", artist: "Test", duration: 4, source: .invidious, location: "bbbbbbbbbbb")
+        defer { player.forget(track.id) }
+        player.play(track)
+        for _ in 0..<30 {
+            let counts = await calls.counts
+            if counts.1 > 0 { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        player.pause()
+        try await Task.sleep(for: .milliseconds(400))
+        XCTAssertFalse(player.isPlaying); XCTAssertFalse(player.isLoading); XCTAssertNil(player.error)
+        let counts = await calls.counts
+        XCTAssertEqual(counts.0, 1); XCTAssertEqual(counts.1, 1)
+    }
+
+    func testRejected403IsNotCachedAndNextAttemptResolvesFreshURL() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        let calls = NetworkRequestCounter()
+        InvidiousStubProtocol.handler = { request in
+            if request.url?.path == "/youtubei/v1/player" {
+                calls.increment()
+                let path = calls.count == 1 ? "expired" : "fresh"
+                let json = "{\"playabilityStatus\":{\"status\":\"OK\"},\"streamingData\":{\"adaptiveFormats\":[{\"url\":\"https://media.googlevideo.com/\(path)\",\"mimeType\":\"audio/mp4; codecs=mp4a.40.2\",\"bitrate\":131055}]}}"
+                return (200, Data(json.utf8))
+            }
+            if request.url?.path == "/expired" { return (403, Data()) }
+            return (206, Data([0, 0, 0, 20]) + Data("ftypM4A ".utf8) + Data(repeating: 0, count: 64))
+        }
+        let cache = InvidiousStreamCache(resolver: OnlineStreamResolver(session: session))
+        var settings = AppSettings(); settings.onlineAudioMode = "direct"
+        let track = Track(title: "Fresh URL fixture", artist: "Test", source: .invidious, location: "abcdefghijk")
+        do { _ = try await cache.resolve(track, settings: settings, direct: false); XCTFail("403 must remain a failure") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("403")) }
+        let stream = try await cache.resolve(track, settings: settings, direct: false)
+        XCTAssertEqual(stream.url.path, "/fresh"); XCTAssertEqual(calls.count, 2)
+        await cache.invalidate(track, settings: settings)
+        _ = try await cache.resolve(track, settings: settings, direct: false)
+        XCTAssertEqual(calls.count, 3, "Explicit invalidation must discard expiring URLs")
+    }
+
+    func testFiniteRangeAssemblyRejectsMissingAndOverlappingBytes() async throws {
+        XCTAssertNil(AudioByteRange.parse("bytes 1-0/20"))
+        XCTAssertNil(AudioByteRange.parse("bytes 0-20/20"))
+        XCTAssertNil(AudioByteRange.parse("bytes 0-10/*"))
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil; InvidiousStubProtocol.headerProvider = nil }
+        let data = try Data(contentsOf: XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "bleu-nuit", withExtension: "wav")))
+        let calls = NetworkRequestCounter()
+        InvidiousStubProtocol.handler = { request in
+            let header = request.value(forHTTPHeaderField: "Range") ?? ""
+            XCTAssertNotEqual(header, "bytes=0-", "The reported host rejects open-ended ranges")
+            let start = Int(header.dropFirst(6).split(separator: "-").first ?? "") ?? 0
+            calls.increment()
+            return (206, data.subdata(in: start..<min(start + 262144, data.count)))
+        }
+        InvidiousStubProtocol.headerProvider = { request in
+            let start = Int((request.value(forHTTPHeaderField: "Range") ?? "").dropFirst(6).split(separator: "-").first ?? "") ?? 0
+            return ["Content-Type": "audio/mp4", "Content-Range": "bytes \(start)-\(min(start + 262143, data.count - 1))/\(data.count)"]
+        }
+        let cache = AudioCache()
+        let result = try await cache.localCopy(of: URL(string: "https://fixture.invalid/audio.m4a")!,
+            cacheKey: UUID().uuidString, fileExtension: "m4a", expectedDuration: 48, session: session)
+        defer { try? FileManager.default.removeItem(at: result) }
+        XCTAssertEqual(calls.count, (data.count + 262143) / 262144)
+        XCTAssertEqual(try AVAudioFile(forReading: result).length, 2116800)
+    }
+}
+
+private actor StreamRecoveryCounter {
+    private var playback = 0, prepared = 0
+    var counts: (Int, Int) { (playback, prepared) }
+    func played() { playback += 1 }
+    func preparing() { prepared += 1 }
+}
+
+private struct FileRecoveryLoader: StreamingAudioLoading {
+    var file: URL
+    var calls: StreamRecoveryCounter
+    var delay = false
+    func load(_ track: Track, settings: AppSettings, progress: @escaping @Sendable (AudioLoadUpdate) -> Void) async throws -> InvidiousAudio {
+        throw BlusicError.message("The test must start through the progressive path")
+    }
+    func playback(_ track: Track, settings: AppSettings, direct: Bool) async throws -> OnlinePlaybackResource {
+        await calls.played()
+        if direct { throw BlusicError.message("The alternate provider is unavailable in this test") }
+        return .stream(InvidiousStream(url: URL(string: "https://fixture.invalid/audio.m4a")!, bitrate: 128000,
+            instance: URL(string: "https://www.youtube.com")!, duration: 4))
+    }
+    func prepareFile(_ stream: InvidiousStream, for track: Track) async throws -> InvidiousAudio {
+        await calls.preparing()
+        if delay { try await Task.sleep(for: .seconds(5)) }
+        return InvidiousAudio(fileURL: file, bitrate: 0, instance: stream.instance, duration: 4)
+    }
 }
 
 private final class NetworkRequestCounter: @unchecked Sendable {
@@ -970,13 +1098,14 @@ private struct HangingAudioLoader: OnlineAudioLoading {
 
 private final class InvidiousStubProtocol: URLProtocol {
     static var handler: ((URLRequest) throws -> (Int, Data))?
+    static var headerProvider: ((URLRequest) -> [String: String])?
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
         do {
             let handler = try XCTUnwrap(Self.handler)
             let (status, data) = try handler(request)
-            let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: ["Content-Type": "application/json"])!
+            let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: nil, headerFields: Self.headerProvider?(request) ?? ["Content-Type": "application/json"])!
             client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
             client?.urlProtocol(self, didLoad: data)
             client?.urlProtocolDidFinishLoading(self)

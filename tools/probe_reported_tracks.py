@@ -2,6 +2,7 @@
 import concurrent.futures
 import json
 import time
+import sys
 import urllib.request
 import urllib.parse
 from probe_direct_ios import probe
@@ -60,5 +61,5 @@ def diagnose(query):
 
 if __name__ == "__main__":
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-        for result in pool.map(diagnose, ["Stéphanie Nafeesisboujee", "Ambre BLOU FEET", "Dieu ne ment jamais Damso", "Salé Niska"]):
+        for result in pool.map(diagnose, sys.argv[1:] or ["Stéphanie Nafeesisboujee", "Ambre BLOU FEET", "Dieu ne ment jamais Damso", "Salé Niska"]):
             print(json.dumps(result, ensure_ascii=True))

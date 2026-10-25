@@ -63,6 +63,7 @@ final class AudioPlayer {
     private var loadTask: Task<Void, Never>?
     private var loadingWatchdog: Task<Void, Never>?
     private let loadingTimeout: TimeInterval
+    private let streamBufferTimeout: TimeInterval
     private let onlineLoader: any OnlineAudioLoading
     private var streamPlayer: AVPlayer?
     private var streamSource: InvidiousStream?
@@ -75,6 +76,7 @@ final class AudioPlayer {
     private var usedDirectFallback = false
     private var tryingAlternate = false
     @ObservationIgnored private var lastStreamFailure: String?
+    @ObservationIgnored private var fileFallbackURLs = Set<URL>()
     private var beganLoading = Date()
     private var requestedEffects = false
     private var declaredDuration = 0.0
@@ -93,9 +95,10 @@ final class AudioPlayer {
     var overlappingPlaybackCount: Int { (isPlaying ? 1 : 0) + (outgoing?.active() == true ? 1 : 0) }
     #endif
 
-    init(library: LibraryStore, loadingTimeout: TimeInterval = 20, onlineLoader: any OnlineAudioLoading = InvidiousAudioLoader()) {
+    init(library: LibraryStore, loadingTimeout: TimeInterval = 20, streamBufferTimeout: TimeInterval = 4, onlineLoader: any OnlineAudioLoading = InvidiousAudioLoader()) {
         self.library = library
         self.loadingTimeout = loadingTimeout
+        self.streamBufferTimeout = streamBufferTimeout
         self.onlineLoader = onlineLoader
         wireGraph()
         apply(library.settings)
@@ -143,6 +146,7 @@ final class AudioPlayer {
         audioFile = nil; isPlaying = false; isLoading = false
         error = nil; loadingMessage = ""; loadingProgress = nil
         firstAudioLatency = nil; beganLoading = Date(); wantsPlayback = true; usedDirectFallback = false; tryingAlternate = false; lastStreamFailure = nil
+        fileFallbackURLs.removeAll()
         preparingEffects = false; effectsMessage = nil; requestedEffects = false
         automaticFadeID = nil
         current = track; position = 0; duration = track.duration
@@ -477,7 +481,7 @@ final class AudioPlayer {
                         loadingMessage = "Mise en tampon du flux…"
                         if bufferWatchdog == nil {
                             bufferWatchdog = Task { @MainActor [weak self] in
-                                do { try await Task.sleep(for: .seconds(4)) } catch { return }
+                                do { try await Task.sleep(for: .seconds(self?.streamBufferTimeout ?? 4)) } catch { return }
                                 guard let self, generation == token, isLoading else { return }
                                 retryStreamOrFail(token: token)
                             }
@@ -487,7 +491,9 @@ final class AudioPlayer {
             },
             item.observe(\.status, options: [.new]) { [weak self] observed, _ in
                 guard observed.status == .failed else { return }
-                let message = observed.error?.localizedDescription ?? "Le lecteur n’a pas pu ouvrir le flux."
+                let failure = observed.error as NSError?
+                let code = failure.map { " (\($0.domain) \($0.code))" } ?? ""
+                let message = (failure?.localizedDescription ?? "Le lecteur n’a pas pu ouvrir le flux.") + code
                 Task { @MainActor [weak self] in
                     guard let self, generation == token else { return }
                     lastStreamFailure = "\(source.providerLabel) : \(message)"
@@ -506,7 +512,7 @@ final class AudioPlayer {
         player.playImmediately(atRate: library.settings.playbackRate)
         bufferWatchdog?.cancel()
         bufferWatchdog = Task { @MainActor [weak self] in
-            do { try await Task.sleep(for: .seconds(4)) } catch { return }
+            do { try await Task.sleep(for: .seconds(self?.streamBufferTimeout ?? 4)) } catch { return }
             guard let self, generation == token, isLoading else { return }
             retryStreamOrFail(token: token)
         }
@@ -514,7 +520,36 @@ final class AudioPlayer {
 
     private func retryStreamOrFail(token: UUID) {
         guard generation == token, wantsPlayback, !tryingAlternate, let current else { return }
+        // CFNetwork may fetch a valid signed AAC while AVPlayer's remote loader
+        // rejects it. Preserve this usable source and try a validated local file
+        // before replacing it with an unavailable community relay.
+        if let loader = onlineLoader as? any StreamingAudioLoading, let source = streamSource,
+           fileFallbackURLs.count < 2, fileFallbackURLs.insert(source.url).inserted {
+            tryingAlternate = true; bufferWatchdog?.cancel(); bufferWatchdog = nil
+            streamPlayer?.pause()
+            loadingMessage = "Préparation d’un accès compatible iOS…"
+            alternateTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    let audio = try await loader.prepareFile(source, for: current)
+                    try Task.checkCancellation()
+                    guard generation == token, wantsPlayback else { return }
+                    tryingAlternate = false; alternateTask = nil
+                    try startNativeFile(audio.fileURL, track: current, bitrate: audio.bitrate, at: position, autoplay: true)
+                } catch {
+                    guard generation == token, !Task.isCancelled, wantsPlayback else { return }
+                    tryingAlternate = false; alternateTask = nil
+                    lastStreamFailure = (lastStreamFailure.map { $0 + "\n" } ?? "") + "Fichier \(source.providerLabel) : \(error.localizedDescription)"
+                    retryStreamOrFail(token: token)
+                }
+            }
+            return
+        }
         guard !usedDirectFallback, let loader = onlineLoader as? any StreamingAudioLoading else {
+            if let loader = onlineLoader as? any StreamingAudioLoading {
+                let settings = library.settings
+                Task { await loader.invalidate(current, settings: settings) }
+            }
             stopStreaming(); isPlaying = false; isLoading = false; wantsPlayback = false
             cancelTransition()
             loadingWatchdog?.cancel(); bufferWatchdog?.cancel()
@@ -536,6 +571,8 @@ final class AudioPlayer {
                 case .file(let audio): try startNativeFile(audio.fileURL, track: current, bitrate: audio.bitrate, at: position, autoplay: true)
                 }
             } catch {
+                guard generation == token, !Task.isCancelled else { return }
+                await loader.invalidate(current, settings: library.settings)
                 guard generation == token, !Task.isCancelled else { return }
                 stopStreaming(); isLoading = false; isPlaying = false; wantsPlayback = false; loadingWatchdog?.cancel()
                 cancelTransition()
@@ -781,9 +818,11 @@ actor AudioCache {
         var request = URLRequest(url: url)
         request.timeoutInterval = 8
         request.cachePolicy = .reloadIgnoringLocalCacheData
-        if fileExtension == "m4a" { request.setValue("bytes=0-", forHTTPHeaderField: "Range") }
         request.setValue("Blusic/1.1 (iOS; Invidious client)", forHTTPHeaderField: "User-Agent")
         progress(nil)
+        if fileExtension == "m4a" {
+            return try await rangedCopy(request, to: destination, expectedDuration: expectedDuration, session: session, progress: progress)
+        }
         let (temp, response) = try await session.download(for: request)
         defer { try? FileManager.default.removeItem(at: temp) }
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
@@ -801,6 +840,48 @@ actor AudioCache {
         progress(1)
         return destination
     }
+    /// Some signed audio hosts accept finite ranges but refuse open-ended
+    /// requests. Assemble ordinary 256 KiB ranges, checking every boundary.
+    private func rangedCopy(_ original: URLRequest, to destination: URL, expectedDuration: Double,
+                            session: URLSession, progress: @escaping @Sendable (Double?) -> Void) async throws -> URL {
+        let temporary = directory.appendingPathComponent("partial-\(UUID().uuidString).m4a")
+        guard FileManager.default.createFile(atPath: temporary.path, contents: nil) else { throw BlusicError.message("Impossible de préparer le cache audio.") }
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let output = try FileHandle(forWritingTo: temporary)
+        defer { try? output.close() }
+        var offset = 0, total: Int?
+        repeat {
+            try Task.checkCancellation()
+            var request = original
+            request.setValue("bytes=\(offset)-\(offset + 262143)", forHTTPHeaderField: "Range")
+            let (data, response) = try await session.data(for: request)
+            guard let http = response as? HTTPURLResponse, [200, 206].contains(http.statusCode) else {
+                throw BlusicError.message("Le téléchargement audio est refusé (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)).")
+            }
+            guard response.mimeType?.hasPrefix("text/") != true, response.mimeType != "application/json", !data.isEmpty else {
+                throw BlusicError.message("Le serveur renvoie une page au lieu de l’audio.")
+            }
+            if http.statusCode == 206 {
+                guard let range = http.value(forHTTPHeaderField: "Content-Range"),
+                      let parsed = AudioByteRange.parse(range), parsed.start == offset,
+                      parsed.end - parsed.start + 1 == data.count, parsed.total <= 300_000_000,
+                      total == nil || total == parsed.total else { throw BlusicError.message("Plage audio incohérente ou fichier trop volumineux.") }
+                total = parsed.total
+            } else {
+                guard offset == 0, data.count <= 300_000_000 else { throw BlusicError.message("Le serveur ne respecte pas les plages audio.") }
+                total = data.count
+            }
+            try output.write(contentsOf: data)
+            offset += data.count
+            progress(total.map { Double(offset) / Double($0) })
+        } while offset < (total ?? 0)
+        try output.synchronize()
+        try validate(temporary, expectedDuration: expectedDuration)
+        try Task.checkCancellation()
+        if !FileManager.default.fileExists(atPath: destination.path) { try FileManager.default.moveItem(at: temporary, to: destination) }
+        try? FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: destination.path)
+        return destination
+    }
     private func validate(_ url: URL, expectedDuration: Double) throws {
         let file = try AVAudioFile(forReading: url)
         let duration = Double(file.length) / file.processingFormat.sampleRate
@@ -808,5 +889,16 @@ actor AudioCache {
               expectedDuration <= 0 || duration >= expectedDuration * 0.8 else {
             throw BlusicError.message("Le fichier audio est vide, tronqué ou plus court que le morceau annoncé.")
         }
+    }
+}
+
+enum AudioByteRange {
+    static func parse(_ value: String) -> (start: Int, end: Int, total: Int)? {
+        guard value.hasPrefix("bytes ") else { return nil }
+        let parts = value.dropFirst(6).split(separator: "/")
+        guard parts.count == 2, let total = Int(parts[1]), total > 0 else { return nil }
+        let span = parts[0].split(separator: "-")
+        guard span.count == 2, let start = Int(span[0]), let end = Int(span[1]), start >= 0, end >= start, end < total else { return nil }
+        return (start, end, total)
     }
 }

@@ -9,6 +9,16 @@ on:
         required: false
   push:
     branches: [main, master]
+    paths:
+      - 'Blusic/**'
+      - 'BlusicTests/**'
+      - 'Blusic.xcodeproj/**'
+      - '.github/workflows/ios.yml'
+      - 'tools/check_project.py'
+      - 'tools/capture_simulator.py'
+      - 'tools/select_simulator.py'
+      - 'tools/package_ipa.py'
+      - 'tools/verify_ipa.py'
   pull_request:
 permissions:
   contents: read

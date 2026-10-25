@@ -97,9 +97,35 @@ enum OnlinePlaybackResource: Sendable {
 
 protocol StreamingAudioLoading: OnlineAudioLoading {
     func playback(_ track: Track, settings: AppSettings, direct: Bool) async throws -> OnlinePlaybackResource
+    func prepareFile(_ stream: InvidiousStream, for track: Track) async throws -> InvidiousAudio
+    func invalidate(_ track: Track, settings: AppSettings) async
+}
+
+extension StreamingAudioLoading {
+    func prepareFile(_ stream: InvidiousStream, for track: Track) async throws -> InvidiousAudio {
+        try await withThrowingTaskGroup(of: InvidiousAudio.self) { group in
+            group.addTask {
+                let file = try await AudioCache.shared.localCopy(of: stream.url,
+                    cacheKey: "invidious:\(track.location):aac:\(stream.bitrate)", fileExtension: "m4a",
+                    expectedDuration: stream.duration, session: InvidiousService.mediaSession)
+                await AudioCache.shared.storeInvidiousInfo(track: track, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration)
+                return InvidiousAudio(fileURL: file, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration)
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(8))
+                throw BlusicError.message("La préparation du fichier audio a dépassé 8 secondes.")
+            }
+            defer { group.cancelAll() }
+            return try await group.next()!
+        }
+    }
+    func invalidate(_ track: Track, settings: AppSettings) async {}
 }
 
 struct InvidiousAudioLoader: StreamingAudioLoading {
+    func invalidate(_ track: Track, settings: AppSettings) async {
+        await InvidiousStreamCache.shared.invalidate(track, settings: settings)
+    }
     func load(_ track: Track, settings: AppSettings, progress: @escaping @Sendable (AudioLoadUpdate) -> Void) async throws -> InvidiousAudio {
         if let cached = await AudioCache.shared.cachedInvidious(track: track) { return cached }
         let stream = try await InvidiousStreamCache.shared.resolve(track, settings: settings, direct: false)
@@ -174,8 +200,10 @@ final class PreparedAudioCache {
     }
 }
 
-private actor InvidiousStreamCache {
+actor InvidiousStreamCache {
     static let shared = InvidiousStreamCache()
+    private let resolver: OnlineStreamResolver
+    init(resolver: OnlineStreamResolver = OnlineStreamResolver()) { self.resolver = resolver }
     private struct Pending {
         var id = UUID()
         var task: Task<InvidiousStream, Error>
@@ -183,6 +211,10 @@ private actor InvidiousStreamCache {
     }
     private var values: [String: (Date, InvidiousStream)] = [:]
     private var pending: [String: Pending] = [:]
+    func invalidate(_ track: Track, settings: AppSettings) {
+        let prefix = "\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(track.location)|"
+        values = values.filter { !$0.key.hasPrefix(prefix) }
+    }
     func resolve(_ track: Track, settings: AppSettings, direct: Bool) async throws -> InvidiousStream {
         let baseKey = "\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(track.location)"
         let key = "\(baseKey)|\(direct)"
@@ -195,8 +227,9 @@ private actor InvidiousStreamCache {
             work = existing
         } else {
             let previous = direct ? values["\(baseKey)|false"]?.1 : nil
+            let resolver = resolver
             work = Pending(task: Task {
-                try await OnlineStreamResolver().resolve(track, settings: settings, avoiding: previous)
+                try await resolver.resolve(track, settings: settings, avoiding: previous)
             }, waiters: [waiter])
             pending[key] = work
         }

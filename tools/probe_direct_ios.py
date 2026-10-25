@@ -5,9 +5,11 @@ No login, cookies, PO tokens, or encrypted formats. Reads at most 4096 media byt
 import json
 import time
 import urllib.request
+import urllib.parse
+import sys
 
 
-def probe(video="-WXpT4Ej2No"):
+def probe(video="-WXpT4Ej2No", full=False):
     began = time.monotonic()
     body = {"videoId": video, "context": {"client": {
         "clientName": "iOS", "clientVersion": "20.11.6", "deviceMake": "Apple", "deviceModel": "iPhone10,4",
@@ -21,13 +23,18 @@ def probe(video="-WXpT4Ej2No"):
     formats.sort(key=lambda f: f.get("bitrate", 0), reverse=True)
     result = {"id": video, "status": data.get("playabilityStatus", {}).get("status"), "aac": [{"itag": f.get("itag"), "bitrate": f.get("bitrate")} for f in formats]}
     if formats:
-        request = urllib.request.Request(formats[0]["url"], headers={"Range": "bytes=0-4095"})
+        result["n_parameter_present"] = "n" in urllib.parse.parse_qs(urllib.parse.urlsplit(formats[0]["url"]).query)
+        request = urllib.request.Request(formats[0]["url"], headers={"Range": "bytes=0-262143" if full else "bytes=0-4095"})
         with urllib.request.urlopen(request, timeout=8) as response:
-            chunk = response.read(4096)
+            chunk = response.read(8_000_000 if full else 4096)
             result.update(media_status=response.status, mp4_ftyp=b"ftyp" in chunk[:64], bytes=len(chunk))
+            if full:
+                expected = int(response.headers.get("Content-Length", "0"))
+                result.update(range_complete=expected == len(chunk) and expected > 4096, content_range=response.headers.get("Content-Range"), moov=b"moov" in chunk, mdat=b"mdat" in chunk)
     result["seconds"] = round(time.monotonic() - began, 3)
     return result
 
 
 if __name__ == "__main__":
-    print(json.dumps(probe()))
+    args = [arg for arg in sys.argv[1:] if not arg.startswith("--")]
+    print(json.dumps(probe(args[0] if args else "-WXpT4Ej2No", full="--full" in sys.argv)))
