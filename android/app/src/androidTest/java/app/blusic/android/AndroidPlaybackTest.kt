@@ -130,7 +130,13 @@ class AndroidPlaybackTest {
         // AGP uninstalls the test application after the suite, removing its
         // external files. Capture through the emulator's shell into a temporary
         // test-only folder that survives this cleanup.
-        val command = "mkdir -p /data/local/tmp/blusic-screenshots && screencap -p /data/local/tmp/blusic-screenshots/$name.png"
-        android.os.ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(command)).use { it.readBytes() }
+        fun shell(command: String): String = android.os.ParcelFileDescriptor.AutoCloseInputStream(
+            instrumentation.uiAutomation.executeShellCommand(command)).bufferedReader().use { it.readText() }
+        // executeShellCommand is an exec interface, not a shell expression:
+        // chaining with && would pass those words as mkdir arguments.
+        shell("mkdir -p /data/local/tmp/blusic-screenshots")
+        shell("screencap -p /data/local/tmp/blusic-screenshots/$name.png")
+        val listing = shell("ls -l /data/local/tmp/blusic-screenshots/$name.png")
+        assertTrue("Screenshot must be a regular PNG file: $listing", listing.trimStart().startsWith("-"))
     }
 }
