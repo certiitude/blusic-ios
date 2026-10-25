@@ -265,7 +265,9 @@ private fun PlayerScreen(vm: BlusicViewModel, state: PlaybackUi, library: Librar
             Text(error, color = Color(0xFFFFC7CC), fontSize = 12.sp, maxLines = 4, overflow = TextOverflow.Ellipsis)
             Row {
                 TextButton(onClick = { vm.play(track, state.queue) }) { Text("Réessayer") }
-                TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://music.youtube.com/watch?v=${track.location}"))) }) { Text("Lecteur officiel") }
+                if (track.source == "online" && track.location.matches(Regex("[A-Za-z0-9_-]{11}"))) {
+                    TextButton(onClick = { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("https://music.youtube.com/watch?v=${track.location}"))) }) { Text("Lecteur officiel") }
+                }
             }
         }
         PlaybackProgress(vm, track)
