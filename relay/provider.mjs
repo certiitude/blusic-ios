@@ -32,17 +32,31 @@ export class YouTubeProvider {
     for (const client of this.clients) {
       const directory = await mkdtemp(join(this.root, 'track-'));
       const path = join(directory, 'audio.m4a');
+      let phase = 'session';
       try {
-        const signal = AbortSignal.timeout(25_000);
-        const yt = await Innertube.create({lang: 'fr', location: 'FR', generate_session_locally: true, retrieve_player: true,
+        const signal = AbortSignal.timeout(18_000);
+        const yt = await Innertube.create({lang: 'fr', location: 'FR', generate_session_locally: true, retrieve_player: client === 'WEB',
           fetch: (input, init = {}) => fetch(input, {...init, signal: AbortSignal.any([signal, AbortSignal.timeout(10_000), ...(init.signal ? [init.signal] : [])])})});
+        phase = 'metadata';
         const info = await yt.getBasicInfo(id, {client});
         if (info.playability_status?.status !== 'OK') throw Error(info.playability_status?.reason || 'Titre non accessible sans connexion');
         const formats = (info.streaming_data?.adaptive_formats || []).filter(f => f.has_audio && !f.has_video && f.mime_type?.startsWith('audio/mp4') && !f.drm_families?.length)
           .sort((a,b) => b.bitrate - a.bitrate);
         const format = formats.find(f => f.content_length > 0 && f.content_length <= this.maxFileBytes);
         if (!format) throw Error('Aucun AAC public avec taille vérifiable');
-        const stream = await info.download({itag: format.itag, type: 'audio'});
+        phase = 'audio';
+        // Use the library's own finite-range download API, including its stream
+        // headers and playback nonce. Do not ask the host for an open-ended file.
+        async function* chunks() {
+          for (let offset = 0; offset < format.content_length; offset += 262144) {
+            signal.throwIfAborted();
+            const end = Math.min(offset + 262143, format.content_length - 1);
+            const stream = await info.download({itag:format.itag,type:'audio',range:{start:offset,end}});
+            let received = 0;
+            for await (const piece of stream) { received += piece.length; yield piece; }
+            if (received !== end-offset+1) throw Error('Plage audio tronquée ou ignorée');
+          }
+        }
         let bytes = 0; let head = Buffer.alloc(0);
         const guard = new Transform({transform: (chunk, _, done) => {
           bytes += chunk.length;
@@ -50,7 +64,7 @@ export class YouTubeProvider {
           if (bytes > this.maxFileBytes || bytes > format.content_length) done(Error('Fichier audio trop volumineux'));
           else done(null, chunk);
         }});
-        await pipeline(Readable.fromWeb(stream), guard, createWriteStream(path, {flags: 'wx'}), {signal});
+        await pipeline(Readable.from(chunks()), guard, createWriteStream(path, {flags: 'wx'}), {signal});
         const size = (await stat(path)).size;
         if (size !== format.content_length || !head.includes(Buffer.from('ftyp'))) throw Error('Fichier audio incomplet ou non M4A');
         const entry = {path, directory, size, bitrate: format.bitrate, duration: info.basic_info.duration || 0, client, expiry: Date.now() + 10 * 60_000};
@@ -60,7 +74,7 @@ export class YouTubeProvider {
       } catch (error) {
         await rm(directory, {recursive: true, force: true});
         // Keep only a bounded diagnostic; never return signed media URLs.
-        errors.push(`${client}: ${String(error.message).replace(/https?:\/\/\S+/g, '[upstream]').slice(0,250)}`);
+        errors.push(`${client}/${phase}: ${String(error.message).replace(/https?:\/\/\S+/g, '[upstream]').slice(0,250)}`);
       }
     }
     throw Error('youtubei.js n’a pas obtenu un fichier audio complet. ' + errors.join(' · '));
