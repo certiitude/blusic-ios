@@ -132,6 +132,89 @@ final class BlusicTests: XCTestCase {
         XCTAssertEqual(result.compatibleFormats.first?.sampleRate, 48000)
     }
 
+    func testIncompleteInvidiousFormatDoesNotHideValidAAC() throws {
+        let data = Data(#"{"adaptiveFormats":[{"bitrate":250000},{"url":"/good","type":"audio/mp4; codecs=mp4a.40.2","bitrate":"131055"}]}"#.utf8)
+        let details = try JSONDecoder().decode(InvidiousDetails.self, from: data)
+        XCTAssertEqual(details.compatibleFormats.map(\.url), ["/good"])
+    }
+
+    func testDirectAudioRejectsEncryptedDRMAndNonGoogleMedia() throws {
+        let track = Track(title: "Fixture", artist: "Test", source: .invidious, location: "abcdefghijk")
+        let invalid = Data(#"{"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"mimeType":"audio/mp4; codecs=mp4a.40.2","signatureCipher":"encrypted"},{"mimeType":"audio/mp4; codecs=mp4a.40.2","url":"https://media.googlevideo.com/a","drmFamilies":["WIDEVINE"]},{"mimeType":"audio/mp4; codecs=mp4a.40.2","url":"https://googlevideo.com.evil.invalid/a"}]}}"#.utf8)
+        XCTAssertThrowsError(try DirectAudioService.parse(invalid, track: track))
+        let restricted = Data(#"{"playabilityStatus":{"status":"LOGIN_REQUIRED","reason":"Sign in required"}}"#.utf8)
+        XCTAssertThrowsError(try DirectAudioService.parse(restricted, track: track)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Sign in required"))
+        }
+    }
+
+    func testAutomaticAudioSkipsDirectURLThatRefusesMediaAndUsesRelay() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        InvidiousStubProtocol.handler = { request in
+            switch request.url?.path {
+            case "/youtubei/v1/player":
+                XCTAssertEqual(request.httpMethod, "POST")
+                XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+                return (200, Data(#"{"playabilityStatus":{"status":"OK"},"videoDetails":{"lengthSeconds":"171"},"streamingData":{"adaptiveFormats":[{"url":"https://media.googlevideo.com/refused","mimeType":"audio/mp4; codecs=mp4a.40.2","bitrate":131055}]}}"#.utf8))
+            case "/refused": return (403, Data())
+            case "/api/v1/videos/abcdefghijk":
+                return (200, Data(#"{"lengthSeconds":171,"adaptiveFormats":[{"url":"/media.m4a","type":"audio/mp4; codecs=mp4a.40.2","bitrate":131055}]}"#.utf8))
+            case "/media.m4a":
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Range"), "bytes=0-4095")
+                return (206, Data([0, 0, 0, 20]) + Data("ftypM4A ".utf8) + Data(repeating: 0, count: 64))
+            default: XCTFail("Unexpected source request"); return (404, Data())
+            }
+        }
+        var settings = AppSettings(); settings.invidiousInstance = "https://fixture.invalid"; settings.invidiousAutomaticFallback = false
+        let track = Track(title: "Fixture", artist: "Test", source: .invidious, location: "abcdefghijk")
+        let stream = try await OnlineStreamResolver(session: session).resolve(track, settings: settings)
+        XCTAssertFalse(stream.isYouTubeDirect)
+        XCTAssertEqual(stream.url.absoluteString, "https://fixture.invalid/media.m4a")
+    }
+
+    func testDirectModeNeverContactsInvidiousAndValidatesMP4Bytes() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        InvidiousStubProtocol.handler = { request in
+            if request.url?.host == "www.youtube.com" {
+                return (200, Data(#"{"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"url":"https://media.googlevideo.com/audio","mimeType":"audio/mp4; codecs=mp4a.40.2","bitrate":131055}]}}"#.utf8))
+            }
+            XCTAssertEqual(request.url?.host, "media.googlevideo.com")
+            return (206, Data([0, 0, 0, 20]) + Data("ftypM4A ".utf8) + Data(repeating: 0, count: 64))
+        }
+        var settings = AppSettings(); settings.onlineAudioMode = "direct"
+        let track = Track(title: "Fixture", artist: "Test", source: .invidious, location: "abcdefghijk")
+        let stream = try await OnlineStreamResolver(session: session).resolve(track, settings: settings)
+        XCTAssertTrue(stream.isYouTubeDirect)
+        XCTAssertEqual(stream.bitrate, 131055)
+    }
+
+    @MainActor
+    func testLiveDamsoPreviouslyFailingTitleStartsAndSeeksUsingDirectAudio() async throws {
+        let track = Track(title: "Dieu ne ment jamais", artist: "Damso", source: .invidious, location: "-WXpT4Ej2No", musicCatalog: "youtube-music")
+        let store = LibraryStore(inMemory: true)
+        store.settings.onlineAudioMode = "direct"; store.settings.volume = 0.1
+        let player = AudioPlayer(library: store)
+        defer { player.forget(track.id) }
+        player.play(track, in: [track])
+        for _ in 0..<160 {
+            if player.firstAudioLatency != nil || player.error != nil { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNil(player.error)
+        XCTAssertTrue(player.isStreaming)
+        XCTAssertTrue(player.isPlaying)
+        let latency = try XCTUnwrap(player.firstAudioLatency)
+        XCTAssertLessThan(latency, 8)
+        XCTAssertTrue(player.formatLabel.contains("YouTube direct"))
+        XCTAssertGreaterThan(player.duration, 60)
+        player.seek(to: 30)
+        try await Task.sleep(for: .seconds(1))
+        XCTAssertGreaterThanOrEqual(player.position, 29)
+        print("DAMSO DIRECT PLAYBACK: first-audio=\(latency)s, duration=\(player.duration)s, format=\(player.formatLabel), seek=\(player.position)s")
+    }
+
     func testInvidiousSearchUsesNativeSourceAndPaginationWithoutKey() async throws {
         let session = stubSession()
         defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }

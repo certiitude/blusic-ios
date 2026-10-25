@@ -20,15 +20,17 @@ struct PlayerView: View {
         GeometryReader { geometry in
             ZStack {
                 background
-                ScrollView(showsIndicators: false) {
+                if mode == "lyrics", let track = player.current {
+                    lyricsLayout(track)
+                } else {
+                  ScrollView(showsIndicators: false) {
                     VStack(spacing: 0) {
                         Capsule().fill(.white.opacity(0.28)).frame(width: 36, height: 5).padding(.top, 12)
                         header.padding(.top, 10).padding(.bottom, 18)
                         if let track = player.current {
                             let size = min(geometry.size.width - 64, max(160, geometry.size.height * 0.30))
                             Group {
-                                if mode == "lyrics" { LyricsView(track: track).frame(height: size + 20) }
-                                else if mode == "queue" { queue.frame(height: size + 20) }
+                                if mode == "queue" { queue.frame(height: size + 20) }
                                 else {
                                     ArtworkView(track: track, size: size, radius: library.settings.artworkRadius + 5)
                                         .shadow(color: .black.opacity(0.3), radius: 25, y: 17)
@@ -74,12 +76,41 @@ struct PlayerView: View {
                             }
                         }
                     }.padding(.horizontal, 28).padding(.bottom, 20).frame(maxWidth: .infinity).frame(minHeight: geometry.size.height, alignment: .top)
+                  }
                 }
             }
         }
         .foregroundStyle(.white).preferredColorScheme(.dark)
         .sheet(isPresented: $showSound) { NavigationStack { SoundSettingsView() }.presentationDetents([.large]) }
         .sheet(isPresented: $showSleep) { SleepTimerView().presentationDetents([.height(380)]) }
+    }
+    private func lyricsLayout(_ track: Track) -> some View {
+        VStack(spacing: 0) {
+            Capsule().fill(.white.opacity(0.28)).frame(width: 36, height: 5).padding(.top, 12)
+            header.padding(.top, 6).padding(.bottom, 8)
+            HStack(spacing: 12) {
+                ArtworkView(track: track, size: 46, radius: 10)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(track.title).font(.headline).lineLimit(1)
+                    Text(track.subtitle).font(.subheadline).foregroundStyle(.white.opacity(0.6)).lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                IconButton(symbol: library.isFavorite(track) ? "heart.fill" : "heart", label: "Favori") { library.toggleFavorite(track) }
+            }.padding(.bottom, 8)
+            LyricsView(track: track).frame(maxWidth: .infinity, maxHeight: .infinity).layoutPriority(1)
+                .accessibilityIdentifier("expanded-lyrics")
+            if player.isLoading {
+                HStack { ProgressView().tint(.white); Text(player.loadingMessage).font(.caption).lineLimit(1) }.padding(.vertical, 4)
+            } else if let error = player.error {
+                HStack {
+                    Text(error).font(.caption).lineLimit(2)
+                    Button("Réessayer") { player.play(track) }.font(.caption.bold())
+                }.padding(.vertical, 4)
+            }
+            progress.padding(.top, 4)
+            transport.frame(height: 72)
+            tools.padding(.bottom, 8)
+        }.padding(.horizontal, 28)
     }
     private var background: some View {
         GeometryReader { geometry in

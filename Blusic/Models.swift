@@ -34,7 +34,7 @@ struct Track: Identifiable, Codable, Equatable, Hashable, Sendable {
         case .local: return "Sur cet iPhone"
         case .remote: return "Source HTTPS"
         case .youtube: return "YouTube"
-        case .invidious: return musicCatalog == "youtube-music" ? "YouTube Music · Invidious" : "Invidious · YouTube"
+        case .invidious: return musicCatalog == "youtube-music" ? "YouTube Music · audio en ligne" : "YouTube · audio en ligne"
         case .catalogReference: return "À associer à YouTube Music"
         case .unresolved: return "Source à associer"
         }
@@ -106,7 +106,12 @@ struct AppSettings: Codable, Equatable, Sendable {
     var linkSpeedAndPitch: Bool?
     var crossfadeEnabled: Bool?
     var crossfadeDuration: Double?
+    var onlineAudioMode: String?
 
+    var audioSourceMode: String {
+        guard let mode = onlineAudioMode, ["auto", "direct", "invidious"].contains(mode) else { return "auto" }
+        return mode
+    }
     var usesInvidiousFallback: Bool { invidiousAutomaticFallback ?? true }
     var invidiousAddress: String { invidiousInstance ?? InvidiousService.defaultInstance }
     var usesLinkedSpeedAndPitch: Bool { linkSpeedAndPitch ?? true }

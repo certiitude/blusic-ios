@@ -91,7 +91,7 @@ final class AudioPlayer: ObservableObject {
     var overlappingPlaybackCount: Int { (isPlaying ? 1 : 0) + (outgoing?.active() == true ? 1 : 0) }
     #endif
 
-    init(library: LibraryStore, loadingTimeout: TimeInterval = 35, onlineLoader: any OnlineAudioLoading = InvidiousAudioLoader()) {
+    init(library: LibraryStore, loadingTimeout: TimeInterval = 20, onlineLoader: any OnlineAudioLoading = InvidiousAudioLoader()) {
         self.library = library
         self.loadingTimeout = loadingTimeout
         self.onlineLoader = onlineLoader
@@ -168,7 +168,7 @@ final class AudioPlayer: ObservableObject {
             alternateTask?.cancel(); bufferWatchdog?.cancel(); wantsPlayback = false; stopStreaming()
             cancelTransition()
             isLoading = false; loadingMessage = "Chargement interrompu"; loadingProgress = nil
-            error = "Le chargement n’a pas abouti en \(Int(timeout.rounded())) s. Le serveur audio peut être bloqué ou trop lent. Réessaie ou change d’instance dans les réglages."
+            error = "Le chargement n’a pas abouti en \(Int(timeout.rounded())) s. Réessaie ou change d’accès dans Réglages → Sources audio."
         }
         loadTask = Task { [weak self] in
             guard let self else { return }
@@ -429,7 +429,7 @@ final class AudioPlayer: ObservableObject {
         }
         let rate = String(format: "%g", file.fileFormat.sampleRate / 1000)
         let quality = bitrate.flatMap { $0 > 0 ? " · \(Int((Double($0) / 1000).rounded())) kbit/s" : nil } ?? ""
-        formatLabel = track.source == .invidious ? "\(codec)\(quality) · Invidious" : "\(codec) · \(rate) kHz"
+        formatLabel = track.source == .invidious ? "\(codec)\(quality) · cache audio" : "\(codec) · \(rate) kHz"
         engine.disconnectNodeOutput(node); engine.disconnectNodeOutput(varispeed); engine.disconnectNodeOutput(pitch); engine.disconnectNodeOutput(equalizer)
         engine.connect(node, to: varispeed, format: file.processingFormat)
         engine.connect(varispeed, to: pitch, format: file.processingFormat)
@@ -459,7 +459,7 @@ final class AudioPlayer: ObservableObject {
         streamPlayer = player; streamSource = source; isStreaming = true; wantsPlayback = true
         if declaredDuration <= 0, source.duration > 0 { declaredDuration = source.duration }
         duration = PlaybackDuration.effective(declared: declaredDuration, measured: source.duration)
-        formatLabel = "AAC · \(Int((Double(source.bitrate) / 1000).rounded())) kbit/s · progressif"
+        formatLabel = "AAC · \(Int((Double(source.bitrate) / 1000).rounded())) kbit/s · \(source.providerLabel)"
         loadingMessage = "Mise en tampon du flux…"
         streamObservations = [
             player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] observed, _ in
@@ -474,7 +474,7 @@ final class AudioPlayer: ObservableObject {
                         loadingMessage = "Mise en tampon du flux…"
                         if bufferWatchdog == nil {
                             bufferWatchdog = Task { @MainActor [weak self] in
-                                do { try await Task.sleep(for: .seconds(8)) } catch { return }
+                                do { try await Task.sleep(for: .seconds(4)) } catch { return }
                                 guard let self, generation == token, isLoading else { return }
                                 retryStreamOrFail(token: token)
                             }
@@ -498,7 +498,7 @@ final class AudioPlayer: ObservableObject {
         player.playImmediately(atRate: library.settings.playbackRate)
         bufferWatchdog?.cancel()
         bufferWatchdog = Task { @MainActor [weak self] in
-            do { try await Task.sleep(for: .seconds(8)) } catch { return }
+            do { try await Task.sleep(for: .seconds(4)) } catch { return }
             guard let self, generation == token, isLoading else { return }
             retryStreamOrFail(token: token)
         }
@@ -510,7 +510,7 @@ final class AudioPlayer: ObservableObject {
             stopStreaming(); isPlaying = false; isLoading = false; wantsPlayback = false
             cancelTransition()
             loadingWatchdog?.cancel(); bufferWatchdog?.cancel()
-            error = "Le flux ne démarre pas sur ce réseau. Réessaie ou change d’instance Invidious dans les réglages."
+            error = "Le flux ne démarre pas sur ce réseau. Réessaie ou change d’accès dans Réglages → Sources audio."
             return
         }
         usedDirectFallback = true

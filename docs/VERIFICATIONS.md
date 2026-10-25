@@ -1,5 +1,7 @@
 # Vérifications réalisées
 
+**Mise à jour 1.5.0 :** [rapport actuel](RESULTAT-1.5.md), **51 tests passés**, compilation et rendu natifs inspectés. Les sections suivantes gardent l’historique des premières validations.
+
 Environnement local : Windows, Python 3.12. Un runner macOS GitHub Actions a ensuite été connecté avec l’autorisation du créateur.
 
 ## Compilation et XCTest réellement exécutés

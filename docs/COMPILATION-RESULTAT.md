@@ -1,5 +1,9 @@
 # IPA Blusic réellement compilée
 
+## Dernière livraison — 1.5.0
+
+Voir **[RESULTAT-1.5.md](RESULTAT-1.5.md)** : compilation réussie, **51 tests passés**, barre système native, vue paroles testée, favoris corrigés et mesures réseau de **0,75 s à froid / 0,25 s préchargé** sur simulateur. IPA : `dist/github/40139429050/Blusic-unsigned.ipa` (35 356 625 octets, non signée).
+
 ## Version 1.1.0 — Invidious intégré et testé
 
 - Exécution : https://github.com/certiitude/blusic-ios/actions/runs/40108900861

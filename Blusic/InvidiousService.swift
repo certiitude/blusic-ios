@@ -34,8 +34,9 @@ struct InvidiousFormat: Decodable {
     enum CodingKeys: String, CodingKey { case url, type, bitrate, audioSampleRate }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
-        url = try values.decode(String.self, forKey: .url)
-        type = try values.decode(String.self, forKey: .type)
+        // One incomplete format must not invalidate the other playable formats.
+        url = (try? values.decode(String.self, forKey: .url)) ?? ""
+        type = (try? values.decode(String.self, forKey: .type)) ?? ""
         bitrate = (try? values.decode(Int.self, forKey: .bitrate))
             ?? (try? values.decode(String.self, forKey: .bitrate)).flatMap(Int.init) ?? 0
         sampleRate = (try? values.decode(Int.self, forKey: .audioSampleRate))
@@ -43,7 +44,7 @@ struct InvidiousFormat: Decodable {
     }
     var isCompatibleAAC: Bool {
         let mime = type.lowercased()
-        return mime.hasPrefix("audio/mp4") && mime.contains("mp4a")
+        return !url.isEmpty && mime.hasPrefix("audio/mp4") && mime.contains("mp4a")
     }
 }
 
@@ -85,6 +86,8 @@ struct InvidiousStream: Sendable {
     var bitrate: Int
     var instance: URL
     var duration: Double
+    var isYouTubeDirect: Bool { instance.host == "www.youtube.com" }
+    var providerLabel: String { isYouTubeDirect ? "YouTube direct" : "Invidious" }
 }
 
 enum OnlinePlaybackResource: Sendable {
@@ -98,8 +101,15 @@ protocol StreamingAudioLoading: OnlineAudioLoading {
 
 struct InvidiousAudioLoader: StreamingAudioLoading {
     func load(_ track: Track, settings: AppSettings, progress: @escaping @Sendable (AudioLoadUpdate) -> Void) async throws -> InvidiousAudio {
-        let service = try InvidiousService(address: settings.invidiousAddress, automaticFallback: settings.usesInvidiousFallback)
-        return try await service.audio(for: track, progress: progress)
+        if let cached = await AudioCache.shared.cachedInvidious(track: track) { return cached }
+        let stream = try await InvidiousStreamCache.shared.resolve(track, settings: settings, direct: false)
+        progress(AudioLoadUpdate(message: "Préparation du fichier audio…"))
+        let file = try await AudioCache.shared.localCopy(of: stream.url,
+            cacheKey: "invidious:\(track.location):aac:\(stream.bitrate)", fileExtension: "m4a",
+            expectedDuration: stream.duration, session: InvidiousService.mediaSession,
+            progress: { progress(AudioLoadUpdate(message: "Préparation du fichier audio…", fraction: $0)) })
+        await AudioCache.shared.storeInvidiousInfo(track: track, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration)
+        return InvidiousAudio(fileURL: file, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration)
     }
     func playback(_ track: Track, settings: AppSettings, direct: Bool = false) async throws -> OnlinePlaybackResource {
         if let cached = await AudioCache.shared.cachedInvidious(track: track) { return .file(cached) }
@@ -169,21 +179,29 @@ private actor InvidiousStreamCache {
     private var values: [String: (Date, InvidiousStream)] = [:]
     private var pending: [String: Task<InvidiousStream, Error>] = [:]
     func resolve(_ track: Track, settings: AppSettings, direct: Bool) async throws -> InvidiousStream {
-        let key = "\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(track.location)|\(direct)"
+        let baseKey = "\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(track.location)"
+        let key = "\(baseKey)|\(direct)"
         if let (expiry, value) = values[key], expiry > Date() { return value }
-        if let task = pending[key] { return try await task.value }
+        if let task = pending[key] { return try await wait(for: task) }
+        let previous = direct ? values["\(baseKey)|false"]?.1 : nil
         let task = Task {
-            let service = try InvidiousService(address: settings.invidiousAddress, automaticFallback: settings.usesInvidiousFallback)
-            return try await service.stream(for: track, preferProxy: !direct)
+            try await OnlineStreamResolver().resolve(track, settings: settings, avoiding: previous)
         }
         pending[key] = task
         do {
-            let result = try await task.value
+            let result = try await wait(for: task)
             values[key] = (Date().addingTimeInterval(120), result)
             pending[key] = nil
             if values.count > 40 { values = values.filter { $0.value.0 > Date() } }
             return result
         } catch { pending[key] = nil; throw error }
+    }
+    private func wait(for task: Task<InvidiousStream, Error>) async throws -> InvidiousStream {
+        try await withTaskCancellationHandler {
+            let stream = try await task.value
+            try Task.checkCancellation()
+            return stream
+        } onCancel: { task.cancel() }
     }
 }
 
@@ -352,7 +370,7 @@ struct InvidiousService {
         var components = URLComponents(url: server.appendingPathComponent("api/v1/" + endpoint), resolvingAgainstBaseURL: false)!
         components.queryItems = parameters.map { URLQueryItem(name: $0.key, value: $0.value) }
         var request = URLRequest(url: components.url!)
-        request.timeoutInterval = 8
+        request.timeoutInterval = 5
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("Blusic/1.1 (iOS; Invidious client)", forHTTPHeaderField: "User-Agent")
         let (data, response) = try await session.data(for: request)
@@ -368,8 +386,13 @@ struct InvidiousService {
         if let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let error = body["error"] as? String {
             throw BlusicError.message("Invidious : \(error)")
         }
+        guard (try? JSONSerialization.jsonObject(with: data)) != nil else {
+            let looksHTML = String(data: data.prefix(256), encoding: .utf8)?.lowercased().contains("<html") == true
+                || http.value(forHTTPHeaderField: "Content-Type")?.contains("text/html") == true
+            throw BlusicError.message(looksHTML ? "L’instance renvoie une page HTML au lieu de son API audio." : "L’instance renvoie une réponse qui n’est pas du JSON valide.")
+        }
         do { return try JSONDecoder().decode(T.self, from: data) }
-        catch { throw BlusicError.message("L’instance ne renvoie pas la réponse JSON attendue. Un portail ou un CAPTCHA peut bloquer son API.") }
+        catch { throw BlusicError.message("Le JSON de cette instance est incompatible avec l’API attendue (champs absents ou types incorrects).") }
     }
 
     private static func rethrowCancellation(_ error: Error) throws {
@@ -386,7 +409,7 @@ private actor InvidiousDirectory {
         if Date() >= expires {
             do {
                 var request = URLRequest(url: URL(string: "https://api.invidious.io/instances.json")!)
-                request.timeoutInterval = 10
+                request.timeoutInterval = 3
                 let (data, response) = try await URLSession.shared.data(for: request)
                 guard (response as? HTTPURLResponse)?.statusCode == 200,
                       let entries = try JSONSerialization.jsonObject(with: data) as? [[Any]] else { return [] }

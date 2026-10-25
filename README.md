@@ -2,6 +2,17 @@
 
 **Ta musique, simplement.** Application iPhone native en SwiftUI, pensée autour d’une interface sombre, de pochettes immersives et d’un lecteur en verre translucide. Identité adaptée de l’icône Blusic fournie ; ergonomie mobile inspirée des captures et d’Apple Music.
 
+**Dernière livraison vérifiée : 1.5.0 — 51 tests passés.** [IPA, mesures réelles et rapport de vérification](docs/RESULTAT-1.5.md). Vérifie la version dans les réglages après installation : les anciennes IPA n’incluent pas tous ces correctifs.
+
+## Version 1.6 — accès audio direct et paroles agrandies
+
+- **Réglages → Sources audio** : automatique, YouTube direct ou relais Invidious. L’accès direct reprend nativement le contexte iOS validé avec youtubei.js, sans ajouter de serveur Node ni de bibliothèque JavaScript à l’app.
+- En automatique, le relais peut démarrer après 350 ms ; la première source dont les octets M4A sont accessibles gagne. Une URL renvoyant HTTP 403 ne suffit plus à être sélectionnée. Les requêtes restantes sont annulées.
+- Mise en tampon bloquée : autre accès après 4 s ; limite globale de démarrage ramenée de 35 à 20 s. Erreurs distinctes pour HTTP, page HTML, JSON invalide et champs incompatibles. Un format incomplet ne masque plus les formats AAC valides.
+- **Paroles en grand**, sans défilement imbriqué du lecteur : pochette et titre compacts, texte 34 pt adaptable, ligne centrée, animation de taille/netteté et défilement à ressort. Le défilement manuel suspend le suivi ; « Recentrer » le reprend. Les effets de mouvement respectent le réglage d’accessibilité.
+- Aucun serveur français fonctionnel n’a été validé. Le CDN direct est choisi par Google selon le réseau, sans garantie de localisation ni de latence.
+- État des essais et de la compilation : [rapport 1.6](docs/RESULTAT-1.6.md).
+
 ## Version 1.5 — navigation système et imports automatiques
 
 - La barre de navigation personnalisée est remplacée par **la vraie `TabView` d’iOS**. Sur iOS 26, le système dessine sa barre Liquid Glass et son **`tabViewBottomAccessory`** pour le mini-lecteur. Sur iOS antérieur, la barre d’onglets native standard est conservée. Aucun faux fond de barre en verre n’est dessiné par un HStack.

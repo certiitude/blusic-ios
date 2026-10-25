@@ -12,7 +12,8 @@ struct LyricsView: View {
     @State private var importing = false
     @State private var autoScroll = true
     @State private var fetchTask: Task<Void, Never>?
-    private var lines: [LyricLine] { LRCParser.parse(raw) }
+    @State private var lines: [LyricLine] = []
+    @ScaledMetric(relativeTo: .largeTitle) private var lyricSize = 34.0
     private var activeLine: Int? {
         lines.last { $0.time <= player.position + library.settings.lyricsOffset }?.id
     }
@@ -36,6 +37,9 @@ struct LyricsView: View {
                 HStack {
                     Text(lines.isEmpty ? "PAROLES" : "PAROLES SYNCHRONISÉES").font(.system(size: 9, weight: .bold)).tracking(1.6).foregroundStyle(.white.opacity(0.5))
                     Spacer()
+                    if !lines.isEmpty, !autoScroll {
+                        Button("Recentrer") { autoScroll = true }.font(.caption.bold()).tint(.white)
+                    }
                     Menu {
                         Toggle("Défilement automatique", isOn: $autoScroll)
                         Button("Avancer les paroles de 0,5 s") { library.settings.lyricsOffset += 0.5 }
@@ -45,30 +49,55 @@ struct LyricsView: View {
                         Button("Actualiser depuis LRCLIB") { fetchTask?.cancel(); fetchTask = Task { await fetch() } }
                     } label: { Image(systemName: "ellipsis").frame(width: 44, height: 30) }.tint(.white)
                 }
-                ScrollViewReader { proxy in
-                    ScrollView(showsIndicators: false) {
-                        VStack(alignment: .leading, spacing: 22) {
-                            if lines.isEmpty { Text(raw).font(.system(size: 26, weight: .bold, design: .rounded)).lineSpacing(9).foregroundStyle(.white.opacity(0.85)) }
-                            else {
-                                ForEach(lines) { line in
-                                    Button { if track.isNative { player.seek(to: max(0, line.time - library.settings.lyricsOffset)) } } label: {
-                                        Text(line.text.isEmpty ? "♪" : line.text)
-                                            .font(.system(size: 27, weight: .bold, design: .rounded)).tracking(-0.4)
-                                            .multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
-                                            .foregroundStyle(.white.opacity(activeLine == line.id ? 1 : 0.30))
-                                            .blur(radius: activeLine == line.id || reduceMotion ? 0 : 0.25)
-                                    }.buttonStyle(.plain).id(line.id)
+                GeometryReader { geometry in
+                    ScrollViewReader { proxy in
+                        ScrollView(showsIndicators: false) {
+                            VStack(alignment: .leading, spacing: 28) {
+                                if lines.isEmpty {
+                                    Text(raw).font(.system(size: lyricSize, weight: .bold, design: .rounded)).lineSpacing(10).foregroundStyle(.white.opacity(0.85))
+                                } else {
+                                    ForEach(lines) { line in
+                                        let distance = abs(line.id - (activeLine ?? lines.first?.id ?? 0))
+                                        let selected = line.id == activeLine
+                                        Button {
+                                            if track.isNative { player.seek(to: max(0, line.time - library.settings.lyricsOffset)); autoScroll = true }
+                                        } label: {
+                                            Text(line.text.isEmpty ? "♪ ♪ ♪" : line.text)
+                                                .font(.system(size: lyricSize, weight: .bold, design: .rounded)).tracking(-0.6)
+                                                .multilineTextAlignment(.leading).frame(maxWidth: .infinity, alignment: .leading)
+                                                .fixedSize(horizontal: false, vertical: true)
+                                                .foregroundStyle(.white.opacity(selected ? 1 : distance <= 1 ? 0.55 : 0.28))
+                                                .scaleEffect(reduceMotion || selected ? 1 : 0.94, anchor: .leading)
+                                                .blur(radius: reduceMotion || selected ? 0 : distance <= 1 ? 0.3 : 1.2)
+                                                .animation(reduceMotion ? nil : .spring(response: 0.65, dampingFraction: 0.85), value: activeLine)
+                                        }.buttonStyle(.plain).id(line.id)
+                                            .accessibilityLabel("\(line.text), \(line.time.clock)")
+                                            .accessibilityAddTraits(selected ? .isSelected : [])
+                                    }
                                 }
-                            }
-                        }.padding(.vertical, 15).padding(.bottom, 100)
-                    }
-                    .onChange(of: activeLine) { _, line in
-                        guard autoScroll, let line else { return }
-                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.4)) { proxy.scrollTo(line, anchor: .center) }
+                            }.padding(.vertical, lines.isEmpty ? 18 : geometry.size.height * 0.42)
+                        }
+                        .simultaneousGesture(DragGesture(minimumDistance: 12).onChanged { _ in autoScroll = false })
+                        .mask {
+                            LinearGradient(stops: [.init(color: .clear, location: 0), .init(color: .black, location: 0.08),
+                                .init(color: .black, location: 0.90), .init(color: .clear, location: 1)], startPoint: .top, endPoint: .bottom)
+                        }
+                        .onChange(of: activeLine) { _, line in
+                            guard autoScroll, let line else { return }
+                            withAnimation(reduceMotion ? nil : .spring(response: 0.7, dampingFraction: 0.88)) { proxy.scrollTo(line, anchor: .center) }
+                        }
+                        .task(id: "\(raw)|\(autoScroll)") {
+                            guard autoScroll else { return }
+                            try? await Task.sleep(for: .milliseconds(80))
+                            guard !Task.isCancelled else { return }
+                            guard let line = activeLine ?? lines.first?.id else { return }
+                            proxy.scrollTo(line, anchor: .center)
+                        }
                     }
                 }
             }
         }
+        .onChange(of: raw) { _, text in lines = LRCParser.parse(text); autoScroll = true }
         .task(id: "\(track.id)|\(track.title)|\(track.artist)|\(track.album)") {
             fetchTask?.cancel()
             raw = (library.track(track.id)?.lyrics ?? track.lyrics ?? "").trimmingCharacters(in: .whitespacesAndNewlines); message = nil

@@ -59,6 +59,17 @@ struct SettingsView: View {
                 Text("Lecture native en arrière-plan, commandes sur l’écran verrouillé, Bluetooth et AirPlay. Import WAV, ALAC, FLAC, AIFF, AAC et MP3 non protégés, selon le décodage pris en charge par iOS.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Sources audio") {
+                Picker("Accès à l’audio", selection: Binding(get: { library.settings.audioSourceMode }, set: { library.settings.onlineAudioMode = $0 })) {
+                    Text("Automatique · accès le plus rapide").tag("auto")
+                    Text("YouTube direct").tag("direct")
+                    Text("Relais Invidious").tag("invidious")
+                }
+                Text("Automatique essaie l’accès direct depuis cet iPhone et lance un relais après 0,35 s si nécessaire. La première source dont le fichier audio répond est retenue. Aucun serveur Node supplémentaire n’est requis.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Text("Le serveur de diffusion direct est choisi par Google selon le réseau. Une adresse française ne garantit pas un démarrage plus rapide. Le chargement reste annulable, avec une limite globale de 20 secondes.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section {
                 TextField("https://ton-instance.example", text: $instanceAddress)
                     .keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
@@ -88,7 +99,7 @@ struct SettingsView: View {
                 }
                 if let instanceStatus { Text(instanceStatus).font(.caption).foregroundStyle(.secondary) }
                 Link("Instances publiques Invidious", destination: URL(string: "https://docs.invidious.io/instances/")!)
-                Text("La recherche interroge les chansons de YouTube Music. Cette instance sert à récupérer l’audio AAC/M4A pour le lecteur natif : arrière-plan, égaliseur, vitesse et tonalité. Le relais est essayé avant l’accès direct. Le chargement peut être annulé et s’arrête avec une erreur après 35 secondes au maximum.")
+                Text("La recherche interroge les chansons de YouTube Music. Cette instance sert de relais AAC/M4A dans le mode automatique, ou de source principale en mode Invidious. Les appels d’API sont limités à 5 secondes par instance.")
                     .font(.caption).foregroundStyle(.secondary)
             } header: { Text("Invidious") } footer: { Text("Service communautaire non officiel : certaines instances bloquent l’API et certains titres sont indisponibles. La qualité AAC est compressée, pas lossless. Les serveurs de secours proviennent de l’annuaire public du projet et doivent annoncer leur API comme active.") }
             Section("Ta bibliothèque") {
@@ -102,7 +113,7 @@ struct SettingsView: View {
             }
             Section("À propos") {
                 NavigationLink("Confidentialité et sources") { privacy }
-                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.5.0")
+                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.6.0")
                 Text("Fait pour écouter. Pas pour te distraire.").font(.caption).foregroundStyle(.secondary)
             }
         }
@@ -116,7 +127,7 @@ struct SettingsView: View {
         List {
             Section("Sur ton iPhone") { Text("Aucun compte Blusic, aucune publicité ajoutée, aucun outil de mesure d’audience. Fichiers, favoris, réglages, paroles et historique sont enregistrés dans le conteneur de l’application. Les sauvegardes iCloud de l’iPhone peuvent les inclure selon tes réglages système.") }
             Section("Connexions externes") {
-                Text("La recherche de chansons transmet la requête à music.youtube.com, sans connexion au compte Google. Les imports de playlists et identifiants nécessaires à la lecture sont transmis à l’instance Invidious choisie. En cas de panne, le secours consulte api.invidious.io et peut contacter d’autres instances publiques. Les pochettes et flux directs peuvent contacter Google ; les relais passent par l’instance. Les fichiers validés sont mis en cache, avec une expiration de 24 heures pour la qualité normale ou de 10 minutes pour un flux bas débit. Une recherche de paroles transmet le titre et l’artiste à LRCLIB. Le lecteur vidéo officiel n’est ouvert que sur demande depuis le menu d’un titre.")
+                Text("La recherche de chansons transmet la requête à music.youtube.com, sans connexion au compte Google. L’accès audio direct transmet l’identifiant de chanson à www.youtube.com avec un contexte de client iOS, puis lit un flux HTTPS Google. Le mode automatique peut aussi contacter l’instance Invidious choisie ; le mode direct n’utilise pas ce relais pour la lecture. Les imports YouTube utilisent Invidious. En cas de panne du relais, le secours consulte api.invidious.io et peut contacter d’autres instances publiques. Les pochettes peuvent contacter Google. Les fichiers validés sont mis en cache, avec une expiration de 24 heures pour la qualité normale ou de 10 minutes pour un flux bas débit. Une recherche de paroles transmet le titre et l’artiste à LRCLIB. Le lecteur vidéo officiel n’est ouvert que sur demande depuis le menu d’un titre.")
                 Link("Documentation Invidious", destination: URL(string: "https://docs.invidious.io/")!)
                 Link("Confidentialité Google", destination: URL(string: "https://policies.google.com/privacy")!)
                 Link("Conditions YouTube", destination: URL(string: "https://www.youtube.com/t/terms")!)
