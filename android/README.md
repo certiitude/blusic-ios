@@ -29,8 +29,10 @@ APK : `app/build/outputs/apk/debug/app-debug.apk`. Il s’agit d’un APK de tes
 
 ## Validation
 
+Version actuelle **1.9.1** : [exécution `40414033885`](https://github.com/certiitude/blusic-ios/actions/runs/40414033885), **succès global**, **15 tests JVM + 8 tests sur émulateur Android 15**, aucun échec/ignoré. Le fondu avec deux lecteurs, la pause, les nouvelles préférences, l’annulation/reprise du pont et la lecture réseau de Stephanie sont couverts. APK récupéré et vérifié à `dist/github/android-40414033885/app-debug.apk` (58 097 530 octets) ; sept captures inspectées. [Rapport détaillé](../docs/ANDROID-PARITE-1.9.1.md).
+
 Les tests unitaires couvrent les métadonnées musicales, l’exclusion des vidéos, les URLs, les plages HTTP, la persistance JSON et les paroles. Les tests sur émulateur Android lisent un vrai instrumental via le service, vérifient l’avancement et le déplacement à 30 s, la pause, les écrans et une restauration de favoris/playlist. Captures réelles extraites de l’émulateur.
 
-La livraison finale GitHub Actions [`40234869261`](https://github.com/certiitude/blusic-ios/actions/runs/40234869261) réussit : **7 tests unitaires JVM et 5 tests sur émulateur Android 15**, dont lecture réelle en ligne de Stephanie et déplacement à 30 s. La signature du paquet est vérifiée par `apksigner` et cinq captures réelles sont récupérées et inspectées. Le diagnostic, le chemin de l’APK et les résultats exacts sont dans [le rapport commun](../docs/RELAIS-ET-ANDROID.md).
+La première livraison **1.0.0**, GitHub Actions [`40234869261`](https://github.com/certiitude/blusic-ios/actions/runs/40234869261), avait **7 tests unitaires JVM et 5 tests sur émulateur Android 15** réussis. Cet historique et ses limites sont conservés dans [le rapport commun](../docs/RELAIS-ET-ANDROID.md).
 
 Un test de lecture ne prouve pas la disponibilité de tout le catalogue réseau. Les mêmes fournisseurs tiers peuvent refuser une lecture sur Android comme sur iOS ; le moteur local est essayé avant les accès de secours. Le relais préconfiguré reste soumis aux refus réseau YouTube et aux limites Render Free.
