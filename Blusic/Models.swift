@@ -108,9 +108,10 @@ struct AppSettings: Codable, Equatable, Sendable {
     var crossfadeDuration: Double?
     var onlineAudioMode: String?
     var youtubeiRelayAddress: String?
+    var youtubeiRelayDisabled: Bool?
 
     var audioSourceMode: String {
-        guard let mode = onlineAudioMode, ["auto", "direct", "invidious"].contains(mode) else { return "auto" }
+        guard let mode = onlineAudioMode, ["auto", "direct", "invidious", "youtubei"].contains(mode) else { return "auto" }
         return mode
     }
     var usesInvidiousFallback: Bool { invidiousAutomaticFallback ?? true }

@@ -168,9 +168,10 @@ final class AudioPlayer {
         loadingMessage = "Préparation de l’audio…"
         let token = generation
         loadingWatchdog = Task { @MainActor [weak self] in
-            guard let timeout = self?.loadingTimeout else { return }
+            guard let self else { return }
+            let timeout = onlineLoader is InvidiousAudioLoader && ["auto", "youtubei"].contains(library.settings.audioSourceMode) ? max(loadingTimeout, 50) : loadingTimeout
             do { try await Task.sleep(for: .seconds(timeout)) } catch { return }
-            guard let self, generation == token, isLoading else { return }
+            guard generation == token, isLoading else { return }
             generation = UUID(); loadTask?.cancel()
             alternateTask?.cancel(); bufferWatchdog?.cancel(); wantsPlayback = false; stopStreaming()
             cancelTransition()
@@ -199,6 +200,7 @@ final class AudioPlayer {
                 }
                 let fileURL: URL
                 var reportedBitrate: Int?
+                var reportedProvider: String?
                 if playingTrack.source == .invidious {
                     if let streaming = onlineLoader as? any StreamingAudioLoading {
                         loadingMessage = "Connexion au flux audio…"
@@ -211,6 +213,7 @@ final class AudioPlayer {
                             return
                         case .file(let audio):
                             fileURL = audio.fileURL; reportedBitrate = audio.bitrate
+                            reportedProvider = audio.provider
                             if declaredDuration <= 0, let seconds = audio.duration, seconds > 0 { declaredDuration = seconds }
                         }
                     } else {
@@ -228,7 +231,7 @@ final class AudioPlayer {
                 else { throw BlusicError.message("Source audio introuvable.") }
                 try Task.checkCancellation()
                 guard generation == token else { return }
-                try startNativeFile(fileURL, track: playingTrack, bitrate: reportedBitrate, at: 0, autoplay: true)
+                try startNativeFile(fileURL, track: playingTrack, bitrate: reportedBitrate, at: 0, autoplay: true, provider: reportedProvider)
             } catch is CancellationError {
                 if generation == token { isLoading = false; loadingWatchdog?.cancel(); cancelTransition(); loadingMessage = ""; loadingProgress = nil }
             } catch {
@@ -420,7 +423,7 @@ final class AudioPlayer {
         }
     }
 
-    private func startNativeFile(_ url: URL, track: Track, bitrate: Int?, at seconds: Double, autoplay: Bool) throws {
+    private func startNativeFile(_ url: URL, track: Track, bitrate: Int?, at seconds: Double, autoplay: Bool, provider: String? = nil) throws {
         let file = try AVAudioFile(forReading: url)
         guard file.length > 0 else { throw BlusicError.message("Le fichier audio est vide.") }
         audioFile = file
@@ -436,7 +439,7 @@ final class AudioPlayer {
         }
         let rate = String(format: "%g", file.fileFormat.sampleRate / 1000)
         let quality = bitrate.flatMap { $0 > 0 ? " · \(Int((Double($0) / 1000).rounded())) kbit/s" : nil } ?? ""
-        formatLabel = track.source == .invidious ? "\(codec)\(quality) · cache audio" : "\(codec) · \(rate) kHz"
+        formatLabel = track.source == .invidious ? "\(codec)\(quality) · \(provider ?? "cache audio")" : "\(codec) · \(rate) kHz"
         engine.disconnectNodeOutput(node); engine.disconnectNodeOutput(varispeed); engine.disconnectNodeOutput(pitch); engine.disconnectNodeOutput(equalizer)
         engine.connect(node, to: varispeed, format: file.processingFormat)
         engine.connect(varispeed, to: pitch, format: file.processingFormat)
@@ -779,6 +782,7 @@ actor AudioCache {
         var instance: URL
         var expires: Date
         var duration: Double?
+        var provider: String?
     }
     private var directory: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("BlusicAudio")
@@ -796,13 +800,23 @@ actor AudioCache {
         guard expected > 0 else { return nil }
         do {
             try validate(file, expectedDuration: expected)
-            return InvidiousAudio(fileURL: file, bitrate: source.bitrate, instance: source.instance, duration: expected)
+            return InvidiousAudio(fileURL: file, bitrate: source.bitrate, instance: source.instance, duration: expected, provider: source.provider)
         } catch { return nil }
     }
-    func storeInvidiousInfo(track: Track, bitrate: Int, instance: URL, duration: Double? = nil) {
+    func storeInvidiousInfo(track: Track, bitrate: Int, instance: URL, duration: Double? = nil, provider: String? = nil) {
         let metadata = destination(key: "invidious:\(track.location):aac", ext: "json")
-        let source = CachedSource(bitrate: bitrate, instance: instance, expires: Date().addingTimeInterval(bitrate >= 90000 ? 86400 : 600), duration: duration ?? track.duration)
+        let source = CachedSource(bitrate: bitrate, instance: instance, expires: Date().addingTimeInterval(bitrate >= 90000 ? 86400 : 600), duration: duration ?? track.duration, provider: provider)
         if let data = try? JSONEncoder().encode(source) { try? data.write(to: metadata, options: .atomic) }
+    }
+    func adoptNativeYouTubei(_ audio: InvidiousAudio, track: Track) throws -> InvidiousAudio {
+        guard audio.fileURL.isFileURL, audio.fileURL.deletingLastPathComponent().standardizedFileURL == FileManager.default.temporaryDirectory.standardizedFileURL else { throw BlusicError.message("Fichier youtubei.js hors du répertoire temporaire.") }
+        try validate(audio.fileURL, expectedDuration: audio.duration ?? track.duration)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let target = destination(key: "invidious:\(track.location):aac:\(audio.bitrate)", ext: "m4a")
+        if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
+        try FileManager.default.moveItem(at: audio.fileURL, to: target)
+        storeInvidiousInfo(track: track, bitrate: audio.bitrate, instance: audio.instance, duration: audio.duration, provider: audio.provider)
+        var result = audio; result.fileURL = target; return result
     }
     func localCopy(of url: URL, cacheKey: String? = nil, fileExtension: String? = nil,
                    expectedDuration: Double = 0, session: URLSession = .shared,

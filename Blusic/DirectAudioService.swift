@@ -60,14 +60,22 @@ struct DirectAudioService: Sendable {
 /// First usable source wins, rather than waiting for a broken relay to time out.
 struct OnlineStreamResolver: Sendable {
     var session: URLSession = .shared
+    var relayAccess: @Sendable (String) -> String? = { address in
+        RelayKeychain.read(server: address) ?? BundledRelayConfiguration.load()?.access(for: address)
+    }
 
     func resolve(_ track: Track, settings: AppSettings, avoiding previous: InvidiousStream? = nil) async throws -> InvidiousStream {
         let mode = settings.audioSourceMode
-        let useDirect = mode != "invidious" && (previous == nil || previous?.isYouTubeDirect == false || mode == "direct")
-        let useRelay = mode != "direct" && (previous == nil || previous?.isYouTubeDirect == true || mode == "invidious")
+        let useDirect = ["auto", "direct"].contains(mode) && (previous == nil || previous?.isYouTubeDirect == false || mode == "direct")
+        let useRelay = ["auto", "invidious"].contains(mode) && (previous == nil || previous?.isYouTubeDirect == true || mode == "invidious")
+        let configuredAddress = settings.youtubeiRelayDisabled == true ? nil : settings.youtubeiRelayAddress
+        let configuredKey = configuredAddress.flatMap { relayAccess($0) }
+        if mode == "youtubei", configuredAddress == nil || configuredKey == nil {
+            throw BlusicError.message("Le relais youtubei.js n’est pas configuré. Active le relais préconfiguré dans Réglages → Relais youtubei.js.")
+        }
         return try await withThrowingTaskGroup(of: Result<InvidiousStream, Error>.self) { group in
-            if mode == "auto", previous?.provider != "youtubei.js", let address = settings.youtubeiRelayAddress,
-               let server = try? InvidiousService.instanceURL(address), let key = RelayKeychain.read(server: address) {
+            if ["auto", "youtubei"].contains(mode), previous?.provider != "youtubei.js" || mode == "youtubei", let address = configuredAddress,
+               let server = try? InvidiousService.instanceURL(address), let key = configuredKey {
                 group.addTask {
                     do { return .success(try await YouTubeRelayService(session: session).stream(for: track, server: server, key: key)) }
                     catch { return .failure(error) }
@@ -152,7 +160,11 @@ struct YouTubeRelayService {
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
-            throw BlusicError.message("Relais youtubei.js indisponible (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)).")
+            let payload = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+            let detail = (payload?["error"] as? String).map {
+                String($0.prefix(500)).replacingOccurrences(of: #"https?://[^\s]+"#, with: "[source]", options: .regularExpression)
+            }
+            throw BlusicError.message("Relais youtubei.js : HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)." + (detail.map { "\n" + $0 } ?? ""))
         }
         let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
         guard let path = payload?["url"] as? String, let url = URL(string: path, relativeTo: server)?.absoluteURL,
@@ -164,6 +176,49 @@ struct YouTubeRelayService {
             duration: payload?["duration"] as? Double ?? track.duration, provider: "youtubei.js")
         try await OnlineStreamResolver.validateMedia(stream, session: session)
         return stream
+    }
+}
+
+struct BundledRelayConfiguration: Sendable {
+    let server: URL
+    let applicationAccess: String
+    let revision: String
+
+    static func load(bundle: Bundle = .main) -> Self? {
+        guard let data = bundle.object(forInfoDictionaryKey: "BlusicBundledRelay") as? [String: Any] else { return nil }
+        return parse(data)
+    }
+    static func parse(_ data: [String: Any]) -> Self? {
+        guard let address = data["url"] as? String, let server = try? InvidiousService.instanceURL(address),
+              server.path.isEmpty || server.path == "/",
+              let access = data["access"] as? String, access.range(of: #"^app\.ios\.[a-f0-9]{64}$"#, options: .regularExpression) != nil,
+              let expiry = data["expiresAt"] as? NSNumber, expiry.int64Value == 0,
+              let revision = data["revision"] as? String, !revision.isEmpty else { return nil }
+        return Self(server: server, applicationAccess: access, revision: revision)
+    }
+    func access(for address: String) -> String? {
+        guard let candidate = try? InvidiousService.instanceURL(address), candidate == server else { return nil }
+        return applicationAccess
+    }
+    /// Migrate once per build configuration. Respect an explicit opt-out and a
+    /// custom server, and never put the credential in Codable library settings.
+    func install(settings: inout AppSettings, installedRevision: String?, save: (String, String) throws -> Void) throws -> Bool {
+        guard installedRevision != revision, settings.youtubeiRelayDisabled != true else { return false }
+        if let address = settings.youtubeiRelayAddress, !address.isEmpty, address != server.absoluteString { return false }
+        try save(applicationAccess, server.absoluteString)
+        settings.youtubeiRelayAddress = server.absoluteString
+        settings.youtubeiRelayDisabled = false
+        settings.onlineAudioMode = "auto"
+        return true
+    }
+    @MainActor
+    func install(in library: LibraryStore, defaults: UserDefaults = .standard) throws {
+        let key = "blusic.bundledRelay.revision"
+        var settings = library.settings
+        let changed = try install(settings: &settings, installedRevision: defaults.string(forKey: key)) {
+            try RelayKeychain.save($0, server: $1)
+        }
+        if changed { library.settings = settings; defaults.set(revision, forKey: key) }
     }
 }
 

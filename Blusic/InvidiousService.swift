@@ -70,6 +70,7 @@ struct InvidiousAudio: Sendable {
     var bitrate: Int
     var instance: URL
     var duration: Double? = nil
+    var provider: String? = nil
 }
 
 struct AudioLoadUpdate: Sendable {
@@ -140,6 +141,20 @@ struct InvidiousAudioLoader: StreamingAudioLoading {
     }
     func playback(_ track: Track, settings: AppSettings, direct: Bool = false) async throws -> OnlinePlaybackResource {
         if let cached = await AudioCache.shared.cachedInvidious(track: track) { return .file(cached) }
+        if !direct, ["auto", "youtubei"].contains(settings.audioSourceMode) {
+            do {
+                let audio = try await NativeYouTubeiResolver.shared.resolve(track)
+                return .file(try await AudioCache.shared.adoptNativeYouTubei(audio, track: track))
+            } catch {
+                if Task.isCancelled || error is CancellationError { throw CancellationError() }
+                do {
+                    let stream = try await InvidiousStreamCache.shared.resolve(track, settings: settings, direct: direct)
+                    return .stream(stream)
+                } catch let alternative {
+                    throw BlusicError.message("\(error.localizedDescription)\nSecours réseau : \(alternative.localizedDescription)")
+                }
+            }
+        }
         let stream = try await InvidiousStreamCache.shared.resolve(track, settings: settings, direct: direct)
         return .stream(stream)
     }

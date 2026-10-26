@@ -8,6 +8,8 @@ struct BlusicApp: App {
 
     init() {
         let store = LibraryStore()
+        do { try BundledRelayConfiguration.load()?.install(in: store) }
+        catch { store.notice = "La configuration du relais n’a pas pu être enregistrée dans le trousseau. \(error.localizedDescription)" }
         _library = State(initialValue: store)
         _player = State(initialValue: AudioPlayer(library: store))
     }

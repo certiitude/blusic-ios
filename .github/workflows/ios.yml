@@ -19,6 +19,8 @@ on:
       - 'tools/select_simulator.py'
       - 'tools/package_ipa.py'
       - 'tools/verify_ipa.py'
+      - 'tools/configure_ios_relay.py'
+      - 'native-resolver/**'
   pull_request:
 permissions:
   contents: read
@@ -32,6 +34,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Xcode version
         run: xcodebuild -version
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: native-resolver/package-lock.json
+      - name: Build packaged youtubei.js SABR resolver
+        working-directory: native-resolver
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+      - name: Configure bundled youtubei.js relay
+        env:
+          BLUSIC_IOS_RELAY_URL: ${{ vars.BLUSIC_IOS_RELAY_URL }}
+          BLUSIC_IOS_RELAY_ACCESS: ${{ secrets.BLUSIC_IOS_RELAY_ACCESS }}
+          BLUSIC_IOS_RELAY_EXPIRES: ${{ vars.BLUSIC_IOS_RELAY_EXPIRES }}
+          BLUSIC_IOS_RELAY_REVISION: ${{ vars.BLUSIC_IOS_RELAY_REVISION }}
+        run: python3 tools/configure_ios_relay.py
       - name: Build for physical iPhone (unsigned)
         run: >-
           xcodebuild build -project Blusic.xcodeproj -scheme Blusic -configuration Release
@@ -42,6 +59,8 @@ jobs:
           python3 tools/package_ipa.py
           --app build/Device/Build/Products/Release-iphoneos/Blusic.app
           --output build/Blusic-unsigned.ipa
+      - name: Verify preconfigured youtubei.js in compiled IPA
+        run: python3 tools/verify_ipa.py build/Blusic-unsigned.ipa --require-youtubei
       - uses: actions/upload-artifact@v4
         with:
           name: Blusic-iPhone-unsigned-needs-signing

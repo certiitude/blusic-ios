@@ -68,10 +68,11 @@ struct SettingsView: View {
                     Text("Automatique · accès le plus rapide").tag("auto")
                     Text("YouTube direct").tag("direct")
                     Text("Relais Invidious").tag("invidious")
+                    Text("youtubei.js · sur cet iPhone + relais").tag("youtubei")
                 }
-                Text("Automatique essaie l’accès direct depuis cet iPhone et lance un relais après 0,35 s si nécessaire. La première source dont le fichier audio répond est retenue. Aucun serveur Node supplémentaire n’est requis.")
+                Text("Automatique et youtubei.js essaient d’abord le moteur youtubei.js/SABR embarqué sur cet iPhone, puis les secours configurés. Le fichier AAC préparé est lu par le moteur audio natif, sans lecteur vidéo.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("Le serveur de diffusion direct est choisi par Google selon le réseau. Une adresse française ne garantit pas un démarrage plus rapide. Le chargement reste annulable, avec une limite globale de 20 secondes.")
+                Text("Les requêtes youtubei.js peuvent partir directement de cet iPhone pour éviter de dépendre du réseau du relais. Une première préparation peut prendre davantage de temps ; elle reste annulable et limitée à 50 secondes, 20 secondes pour les anciens accès seuls.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section {
@@ -107,6 +108,20 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             } header: { Text("Invidious") } footer: { Text("Service communautaire non officiel : certaines instances bloquent l’API et certains titres sont indisponibles. La qualité AAC est compressée, pas lossless. Les serveurs de secours proviennent de l’annuaire public du projet et doivent annoncer leur API comme active.") }
             Section("Relais youtubei.js") {
+                if let bundled = BundledRelayConfiguration.load() {
+                    LabeledContent("Relais préconfiguré", value: bundled.server.host ?? "Blusic")
+                    Text("Accès application sans date d’expiration ni quota d’écoutes Blusic. Les limites de Render Free et les restrictions de YouTube restent applicables.").font(.caption).foregroundStyle(.secondary)
+                    Button("Utiliser le relais Blusic préconfiguré") {
+                        do {
+                            try RelayKeychain.save(bundled.applicationAccess, server: bundled.server.absoluteString)
+                            library.settings.youtubeiRelayAddress = bundled.server.absoluteString
+                            library.settings.youtubeiRelayDisabled = false
+                            library.settings.onlineAudioMode = "auto"
+                            relayAddress = bundled.server.absoluteString; relayKey = bundled.applicationAccess
+                            relayStatus = "Relais Blusic activé ; lecteur audio natif conservé."
+                        } catch { relayStatus = error.localizedDescription }
+                    }
+                }
                 TextField("https://ton-relais.example", text: $relayAddress).keyboardType(.URL).textInputAutocapitalization(.never).autocorrectionDisabled()
                 SecureField("Clé d’accès au relais", text: $relayKey)
                 Button("Enregistrer le relais") {
@@ -115,12 +130,13 @@ struct SettingsView: View {
                         guard relayKey.count >= 24 else { throw BlusicError.message("La clé doit contenir au moins 24 caractères.") }
                         try RelayKeychain.save(relayKey, server: server)
                         library.settings.youtubeiRelayAddress = server
+                        library.settings.youtubeiRelayDisabled = false
                         relayStatus = "Relais configuré pour le mode automatique. Sa disponibilité audio dépend du fournisseur."
                     } catch { relayStatus = error.localizedDescription }
                 }
-                Button("Désactiver ce relais") { library.settings.youtubeiRelayAddress = nil; relayAddress = ""; relayKey = ""; relayStatus = nil }
+                Button("Désactiver ce relais") { library.settings.youtubeiRelayDisabled = true; library.settings.youtubeiRelayAddress = nil; if library.settings.audioSourceMode == "youtubei" { library.settings.onlineAudioMode = "auto" }; relayAddress = ""; relayKey = ""; relayStatus = nil }
                 if let relayStatus { Text(relayStatus).font(.caption).foregroundStyle(.secondary) }
-                Text("Le serveur youtubei.js doit être déployé et vérifier le fichier complet avant de relayer l’audio. La clé reste dans le trousseau de cet iPhone et n’est pas exportée avec la bibliothèque. Aucun serveur actif n’est fourni tant que son hébergement et sa lecture réelle n’ont pas été validés.").font(.caption).foregroundStyle(.secondary)
+                Text("Le relais utilise youtubei.js et vérifie le fichier complet avant de relayer l’audio au lecteur natif. L’IPA contient un accès application, copié dans le trousseau et exclu des sauvegardes JSON ; elle ne contient ni la clé d’administration Render ni la clé maître du serveur. Le fournisseur peut encore refuser certains titres.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Ta bibliothèque") {
                 NavigationLink { ManageFilesView() } label: { Label("Gérer les fichiers importés", systemImage: "internaldrive") }
@@ -133,7 +149,7 @@ struct SettingsView: View {
             }
             Section("À propos") {
                 NavigationLink("Confidentialité et sources") { privacy }
-                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.8.0")
+                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.0")
                 Text("Fait pour écouter. Pas pour te distraire.").font(.caption).foregroundStyle(.secondary)
             }
         }

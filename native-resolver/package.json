@@ -1,0 +1,9 @@
+{
+  "name": "blusic-native-youtubei-resolver",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {"build": "node build.mjs"},
+  "dependencies": {"youtubei.js": "18.3.0", "googlevideo": "5.0.1", "bgutils-js": "4.0.3"},
+  "devDependencies": {"esbuild": "0.25.12"}
+}

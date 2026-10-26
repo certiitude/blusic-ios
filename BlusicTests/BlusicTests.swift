@@ -301,6 +301,7 @@ final class BlusicTests: XCTestCase {
         XCTAssertEqual(track.album, "Commando")
         XCTAssertFalse(track.title.localizedCaseInsensitiveContains("clip"))
         let store = LibraryStore(inMemory: true)
+        store.settings.onlineAudioMode = "invidious" // Exercise the legacy progressive path explicitly.
         store.settings.volume = 0.1
         let player = AudioPlayer(library: store)
         defer { player.forget(track.id) }
@@ -549,6 +550,7 @@ final class BlusicTests: XCTestCase {
         let page = try await MusicCatalogService().search("Niska Réseaux")
         let track = try XCTUnwrap(page.tracks.first { $0.title.localizedCaseInsensitiveContains("Réseaux") })
         let store = LibraryStore(inMemory: true)
+        store.settings.onlineAudioMode = "invidious" // This performance test is for an AVPlayer preroll, not full SABR preparation.
         await InvidiousAudioLoader.prefetch([track], settings: store.settings)
         let player = AudioPlayer(library: store)
         defer { player.forget(track.id) }
@@ -1057,6 +1059,94 @@ final class BlusicTests: XCTestCase {
         InvidiousStubProtocol.handler = { _ in (200, Data(#"{"url":"https://other.invalid/v1/audio/abcdefghijk","bitrate":131000}"#.utf8)) }
         do { _ = try await YouTubeRelayService(session: session).stream(for: track, server: URL(string: "https://relay.fixture.invalid")!, key: "fixture-key"); XCTFail("A relay must not redirect media to an unrelated host") }
         catch { XCTAssertTrue(error.localizedDescription.contains("même serveur")) }
+    }
+
+    func testBundledRelayAutomaticallyConfiguresAudioWithoutExportingItsAccess() throws {
+        let access = "app.ios." + String(repeating: "a", count: 64)
+        let data: [String: Any] = ["url":"https://relay.fixture.invalid", "access":access, "expiresAt":0, "revision":"fixture-v1"]
+        let config = try XCTUnwrap(BundledRelayConfiguration.parse(data))
+        var settings = AppSettings(); settings.onlineAudioMode = "invidious"
+        var saved: [String] = []
+        let changed = try config.install(settings: &settings, installedRevision: nil) { key, address in saved = [key, address] }
+        XCTAssertTrue(changed)
+        XCTAssertEqual(settings.youtubeiRelayAddress, "https://relay.fixture.invalid")
+        XCTAssertEqual(settings.audioSourceMode, "auto")
+        XCTAssertEqual(saved, [access,"https://relay.fixture.invalid"])
+        let backup = String(decoding: try JSONEncoder().encode(settings), as: UTF8.self)
+        XCTAssertFalse(backup.contains(access), "The client credential must not be serialized into library backups")
+        XCTAssertEqual(config.access(for: "https://relay.fixture.invalid"), access)
+        XCTAssertNil(config.access(for: "https://other.invalid"))
+        settings.onlineAudioMode = "direct"
+        XCTAssertFalse(try config.install(settings: &settings, installedRevision: "fixture-v1") { _, _ in XCTFail("Unchanged configuration must not be reinstalled") })
+        XCTAssertEqual(settings.audioSourceMode, "direct")
+        var disabled = AppSettings(); disabled.youtubeiRelayDisabled = true
+        XCTAssertFalse(try config.install(settings: &disabled, installedRevision: nil) { _, _ in XCTFail("Explicit opt-out must remain disabled") })
+        var invalid = data; invalid["access"] = "master-key-not-an-app-token"
+        XCTAssertNil(BundledRelayConfiguration.parse(invalid))
+        invalid = data; invalid["expiresAt"] = 123456789
+        XCTAssertNil(BundledRelayConfiguration.parse(invalid))
+    }
+
+    func testYouTubeiOnlyModeRoutesAudioThroughThePreconfiguredRelay() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        InvidiousStubProtocol.handler = { request in
+            XCTAssertEqual(request.url?.host, "relay.fixture.invalid", "youtubei-only mode must not silently use another provider")
+            if request.url?.path.hasPrefix("/v1/streams/") == true {
+                XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer fixture-access")
+                return (200, Data(#"{"url":"/v1/audio/abcdefghijk?ticket=fixture","bitrate":131042,"duration":166}"#.utf8))
+            }
+            return (206, Data([0,0,0,20]) + Data("ftypM4A ".utf8) + Data(repeating: 0, count: 64))
+        }
+        var settings = AppSettings(); settings.onlineAudioMode = "youtubei"; settings.youtubeiRelayAddress = "https://relay.fixture.invalid"
+        let resolver = OnlineStreamResolver(session: session, relayAccess: { _ in "fixture-access" })
+        let track = Track(title:"Relay audio fixture",artist:"Test",source:.invidious,location:"abcdefghijk")
+        let stream = try await resolver.resolve(track, settings: settings)
+        XCTAssertEqual(stream.providerLabel,"youtubei.js")
+        XCTAssertEqual(stream.url.host,"relay.fixture.invalid")
+    }
+
+    func testRelayUpstream403RemainsVisibleInsteadOfBecomingAnUnknownPlayerError() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        InvidiousStubProtocol.handler = { _ in (502, Data(#"{"error":"YouTube upstream HTTP 403"}"#.utf8)) }
+        let track = Track(title:"Reported failure fixture",artist:"Test",source:.invidious,location:"abcdefghijk")
+        do { _ = try await YouTubeRelayService(session: session).stream(for:track,server:URL(string:"https://relay.fixture.invalid")!,key:"fixture");XCTFail("An upstream refusal must remain a failure") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("502"));XCTAssertTrue(error.localizedDescription.contains("403")) }
+    }
+
+    @MainActor
+    func testLivePreconfiguredYouTubeiSABRPlaysFuturAmourAndSeeksNatively() async throws {
+        let config = try XCTUnwrap(BundledRelayConfiguration.load(), "This build must actually bundle its youtubei.js access")
+        let store = LibraryStore(inMemory:true)
+        store.settings.onlineAudioMode = "youtubei"; store.settings.youtubeiRelayAddress = config.server.absoluteString
+        store.settings.volume = 0.1
+        let track = Track(title:"FUTUR AMOUR",artist:"L’ange",duration:166,source:.invidious,location:"qMAzmGNeDxc",musicCatalog:"youtube-music")
+        let player = AudioPlayer(library:store,loadingTimeout:50)
+        defer { player.forget(track.id) }
+        player.play(track,in:[track])
+        for _ in 0..<200 {
+            if player.firstAudioLatency != nil || player.error != nil { break }
+            try await Task.sleep(for:.milliseconds(250))
+        }
+        XCTAssertNil(player.error)
+        XCTAssertTrue(player.isPlaying)
+        XCTAssertNotNil(player.firstAudioLatency)
+        XCTAssertTrue(player.formatLabel.contains("youtubei.js"))
+        XCTAssertGreaterThan(player.duration,160)
+        player.seek(to:90)
+        try await Task.sleep(for:.seconds(1.5))
+        XCTAssertGreaterThanOrEqual(player.position,89)
+        print("LIVE YOUTUBEI SABR: native playback and seek verified; first_audio=\(player.firstAudioLatency ?? -1)s duration=\(player.duration)s")
+    }
+
+    func testOnDeviceResolverBridgeOnlyAllowsItsPublicProviderHosts() {
+        for address in ["https://www.youtube.com/youtubei/v1/player", "https://jnn-pa.googleapis.com/rpc", "https://rr1.googlevideo.com/audio", "https://www.gstatic.com/script.js"] {
+            XCTAssertTrue(NativeYouTubeRequestPolicy.allows(URL(string: address)!))
+        }
+        for address in ["http://www.youtube.com/", "https://127.0.0.1/", "https://youtube.com.attacker.invalid/", "https://user:pass@www.youtube.com/", "https://www.youtube.com:8443/"] {
+            XCTAssertFalse(NativeYouTubeRequestPolicy.allows(URL(string: address)!))
+        }
     }
 }
 

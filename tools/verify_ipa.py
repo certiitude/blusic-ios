@@ -12,7 +12,7 @@ import sys
 import zipfile
 
 
-def validate_ipa(path: Path) -> dict:
+def validate_ipa(path: Path, require_youtubei: bool = False) -> dict:
     with zipfile.ZipFile(path) as archive:
         files = archive.namelist()
         invalid = archive.testzip()
@@ -58,7 +58,7 @@ def validate_ipa(path: Path) -> dict:
         for audio in ["bleu-nuit.wav", "apres-la-pluie.wav", "orbite.wav", "dernier-metro.wav"]:
             if root + audio not in files:
                 raise ValueError(f"Média embarqué absent : {audio}")
-        return {
+        report = {
             "bundle_id": info.get("CFBundleIdentifier"),
             "version": info.get("CFBundleShortVersionString"),
             "minimum_ios": info.get("MinimumOSVersion"),
@@ -67,13 +67,35 @@ def validate_ipa(path: Path) -> dict:
             "code_resources_present": root + "_CodeSignature/CodeResources" in files,
             "size": path.stat().st_size,
         }
+        relay = info.get("BlusicBundledRelay")
+        if require_youtubei or relay:
+            import re
+            import urllib.parse
+            if not isinstance(relay, dict):
+                raise ValueError("Configuration youtubei.js préintégrée absente de l’IPA.")
+            endpoint = urllib.parse.urlsplit(relay.get("url", ""))
+            if endpoint.scheme != "https" or not endpoint.hostname or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
+                raise ValueError("Adresse du relais dans l’IPA invalide.")
+            if not re.fullmatch(r"app\.ios\.[a-f0-9]{64}", relay.get("access", "")) or relay.get("expiresAt") != 0 or not relay.get("revision"):
+                raise ValueError("Accès application youtubei.js absent, invalide ou expirant.")
+            report.update(youtubei_preconfigured=True, youtubei_server=endpoint.hostname, youtubei_access_expires=False, youtubei_revision=relay["revision"])
+        if require_youtubei:
+            resolver = root + "YouTubeiResolver.js"
+            if resolver not in files:
+                raise ValueError("Le moteur youtubei.js/SABR embarqué est absent de l’IPA.")
+            script = archive.read(resolver)
+            if len(script) < 100_000 or b"__blusicResolve" not in script or b"SabrStream" not in script:
+                raise ValueError("Le moteur youtubei.js embarqué est incomplet.")
+            report["youtubei_on_device_resolver"] = True
+        return report
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("ipa", type=Path)
+    parser.add_argument("--require-youtubei", action="store_true")
     args = parser.parse_args()
-    report = validate_ipa(args.ipa)
+    report = validate_ipa(args.ipa, require_youtubei=args.require_youtubei)
     print(f"IPA iPhone vérifiée : {args.ipa}")
     for key, value in report.items():
         print(f"  {key}: {value}")
