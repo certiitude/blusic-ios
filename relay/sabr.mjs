@@ -7,8 +7,11 @@ import {Readable, Transform} from 'node:stream';
 import {pipeline} from 'node:stream/promises';
 import {createWriteStream} from 'node:fs';
 import {stat} from 'node:fs/promises';
+import {GuestHTTP} from './guest-http.mjs';
+import {USER_AGENT} from 'bgutils-js/utils';
 
 Platform.shim.eval = async data => vm.runInNewContext(`(() => { ${data.output} })()`,Object.create(null),{timeout:1500});
+const guest=new GuestHTTP();
 const boundedFetch = async (input,init={}) => {
   const original=new URL(input instanceof Request?input.url:String(input));
   const destination=process.env.BLUSIC_INNERTUBE_HOST;
@@ -16,7 +19,7 @@ const boundedFetch = async (input,init={}) => {
     const url=new URL(original);url.hostname=destination;
     input=input instanceof Request?new Request(url,input):url;
   }
-  const response=await fetch(input,{...init,signal:AbortSignal.any([AbortSignal.timeout(10000),...(init.signal ? [init.signal] : [])])});
+  const response=await guest.fetch(input,{...init,signal:AbortSignal.any([AbortSignal.timeout(10000),...(init.signal ? [init.signal] : [])])});
   if(!response.ok)console.log(JSON.stringify({event:'source-http-failure',host:original.hostname,path:original.pathname.slice(0,100),status:response.status}));
   return response;
 };
@@ -27,15 +30,17 @@ export class SabrAudioSource {
     if(this.context && this.expires>Date.now()) return this.context;
     if(this.context) (await this.context.catch(()=>null))?.origin.close().catch(()=>{});
     const work=(async()=>{
+      const warm=await boundedFetch('https://www.youtube.com/',{headers:{'User-Agent':USER_AGENT}}).catch(()=>null);
+      await warm?.body?.cancel().catch(()=>{});
       let yt;
-      try{yt=await Innertube.create({lang:'fr',location:'FR',generate_session_locally:false,retrieve_player:true,fetch:boundedFetch});}
+      try{yt=await Innertube.create({lang:'fr',location:'FR',user_agent:USER_AGENT,generate_session_locally:false,retrieve_player:true,fetch:boundedFetch});}
       catch(error){
         console.log(JSON.stringify({event:'session-bootstrap-retry',reason:String(error.message).replace(/https?:\/\/\S+/g,'[source]').slice(0,200)}));
-        yt=await Innertube.create({lang:'fr',location:'FR',generate_session_locally:true,retrieve_player:true,fetch:boundedFetch});
+        yt=await Innertube.create({lang:'fr',location:'FR',user_agent:USER_AGENT,generate_session_locally:true,retrieve_player:true,fetch:boundedFetch});
       }
       let origin;
-      try{origin=await createOriginMinter(yt);}
-      catch(error){origin=await createOriginMinter(yt,undefined,{skipPage:true});}
+      try{origin=await createOriginMinter(yt,undefined,{fetchFunction:boundedFetch});}
+      catch(error){origin=await createOriginMinter(yt,undefined,{skipPage:true,fetchFunction:boundedFetch});}
       return {yt,origin};
     })();
     this.context=work; this.expires=Date.now()+45*60000;

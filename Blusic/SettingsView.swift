@@ -49,6 +49,7 @@ struct SettingsView: View {
                 Toggle("Listes compactes", isOn: $library.settings.compactRows)
             }
             Section("Écoute") {
+                Text("Le titre suivant de la file commence sa préparation 45 secondes avant la fin de la lecture actuelle, ou dès le démarrage pour un morceau plus court. Le fichier prêt est réutilisé pour le fondu, sans nouvelle résolution au dernier moment.").font(.caption).foregroundStyle(.secondary)
                 Toggle("Fondu entre les titres", isOn: Binding(get: { library.settings.usesCrossfade }, set: { library.settings.crossfadeEnabled = $0 }))
                 if library.settings.usesCrossfade {
                     VStack(alignment: .leading, spacing: 8) {

@@ -3,13 +3,14 @@
 import vm from 'node:vm';
 
 export async function createOriginMinter(yt, load = name => import(name), options = {}) {
+  const sourceFetch=options.fetchFunction||fetch;
   const {JSDOM, VirtualConsole} = await load('jsdom');
   const {BotGuardClient,getChallenge} = await load('bgutils-js/botguard');
   const {WebPoMinter} = await load('bgutils-js/webpo');
   const {getHeaders, buildURL, USER_AGENT, parseLooseJSON} = await load('bgutils-js/utils');
   let html='';
   if(!options.forceWaa && !options.skipPage){
-    const response = await fetch('https://www.youtube.com/', {headers:{'User-Agent':USER_AGENT},signal:AbortSignal.timeout(8000)});
+    const response = await sourceFetch('https://www.youtube.com/', {headers:{'User-Agent':USER_AGENT},signal:AbortSignal.timeout(8000)});
     if (!response.ok) throw Error(`Attestation page HTTP ${response.status}`);
     html=await response.text();
   }
@@ -18,12 +19,14 @@ export async function createOriginMinter(yt, load = name => import(name), option
   let challenge = embedded ? parseLooseJSON(embedded).R?.bgChallenge : undefined;
   if(!challenge && options.forceWaa){
     challenge=await getChallenge({requestKey:'O43z0dpjhgX20SCx4KAo',useYouTubeAPI:false,
-      fetchFunction:(input,init={})=>fetch(input,{...init,signal:AbortSignal.timeout(8000)})});
+      fetchFunction:(input,init={})=>sourceFetch(input,{...init,signal:AbortSignal.timeout(8000)})});
   }
   if (!challenge && yt) {
     const result = await yt.getAttestationChallenge('ENGAGEMENT_TYPE_UNBOUND');
     const c = result.bg_challenge;
-    if (c) challenge = {program:c.program,globalName:c.global_name,interpreterUrl:{privateDoNotAccessOrElseTrustedResourceUrlWrappedValue:c.interpreter_url?.private_do_not_access_or_else_trusted_resource_url_wrapped_value}};
+    if (c) challenge = {program:c.program,globalName:c.global_name,
+      interpreterUrl:{privateDoNotAccessOrElseTrustedResourceUrlWrappedValue:c.interpreter_url?.private_do_not_access_or_else_trusted_resource_url_wrapped_value},
+      interpreterJavascript:{privateDoNotAccessOrElseSafeScriptWrappedValue:c.interpreter_javascript?.private_do_not_access_or_else_safe_script_wrapped_value}};
   }
   if (!challenge?.program || !challenge?.globalName) throw Error('No public origin attestation program returned');
   const address = challenge.interpreterUrl?.privateDoNotAccessOrElseTrustedResourceUrlWrappedValue;
@@ -33,7 +36,7 @@ export async function createOriginMinter(yt, load = name => import(name), option
     if(!address)throw Error('No attestation interpreter returned');
     url = new URL(address, 'https://www.youtube.com');
     if (url.protocol!=='https:' || !['www.google.com','www.gstatic.com','www.youtube.com'].includes(url.hostname)) throw Error('Unrecognized attestation interpreter host');
-    const scriptResponse = await fetch(url,{signal:AbortSignal.timeout(8000)});
+    const scriptResponse = await sourceFetch(url,{signal:AbortSignal.timeout(8000)});
     if (!scriptResponse.ok) throw Error(`Attestation interpreter HTTP ${scriptResponse.status}`);
     script = await scriptResponse.text();
   }
@@ -46,7 +49,7 @@ export async function createOriginMinter(yt, load = name => import(name), option
   const client = await BotGuardClient.create({program:challenge.program,globalName:challenge.globalName,globalObject:dom.window});
   const output = [];
   const snapshot = await client.snapshot({webPoSignalOutput:output},8000);
-  const integrity = await fetch(buildURL('GenerateIT',!options.forceWaa),{method:'POST',headers:getHeaders(),
+  const integrity = await sourceFetch(buildURL('GenerateIT',!options.forceWaa),{method:'POST',headers:getHeaders(),
     body:JSON.stringify(['O43z0dpjhgX20SCx4KAo',snapshot]),signal:AbortSignal.timeout(8000)});
   if(!integrity.ok) {dom.window.close();throw Error(`Origin attestation HTTP ${integrity.status}`);}
   const [integrityToken,estimatedTtlSecs,mintRefreshThreshold,websafeFallbackToken] = await integrity.json();

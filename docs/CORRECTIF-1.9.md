@@ -26,6 +26,14 @@ Diagnostic local **FUTUR AMOUR — L’ange**, identifiant `qMAzmGNeDxc` :
 - Le relais youtubei.js distant est également préconfiguré dans le build. L’accès application est **sans expiration et sans quota d’écoutes Blusic**. La clé d’administration Render et la clé maître du serveur ne sont pas intégrées au paquet. Les limites du plan gratuit et les restrictions YouTube restent applicables.
 - L’accès contenu dans le paquet est nécessairement récupérable dans une IPA ; il n’est pas présenté comme un secret impossible à extraire. La sauvegarde JSON de bibliothèque ne l’exporte pas.
 
+## Révision de préparation — build 12
+
+- Session invitée éphémère cohérente entre les requêtes de métadonnées, d’attestation et de média ; aucun cookie de compte importé. Le transport Node utilise un CookieJar et le transport iOS le stockage mémoire de sa propre URLSession éphémère.
+- Le pont natif lit les réponses par blocs avec contre-pression plutôt que charger toute la réponse réseau en mémoire avant de la transmettre à JavaScript. Les callbacks et le fichier temporaire sont liés à un identifiant de travail pour qu’une annulation précédente ne puisse pas effacer la préparation suivante.
+- La préparation complète du prochain titre commence à **45 secondes réelles de la fin**, en tenant compte de la vitesse. Le titre choisi est conservé en mode aléatoire et le fichier préparé est transmis au lecteur natif lors de Suivant/du fondu. Une modification de la file ou de la source invalide la préparation.
+- Vérifications locales : **6 tests Node réussis**, syntaxe des 22 fichiers Swift et ressources vérifiées. FUTUR AMOUR est encore récupéré entièrement par Node : **2 687 251 octets en 8,38 s**.
+- Le test du même bundle navigateur avec transport Node et session invitée reste en échec : **1 132 349 / 2 687 251 octets**, statut d’attestation `2` et arrêt du flux. La présence d’une preuve n’est pas présentée comme son acceptation.
+
 ## Vérifications à terminer
 
-Compilation iPhone arm64, exécution réelle du moteur embarqué sur iPhone Simulator, décodage natif, lecture et déplacement à 90 s sur FUTUR AMOUR, vérification de la configuration du paquet final. **Aucun succès sur l’iPhone physique de l’utilisateur n’est encore affirmé.**
+La compilation iPhone arm64 du build 11 avait réussi, mais son test réseau FUTUR AMOUR avait échoué (73 tests réussis, 3 échecs). Le build 12 doit encore être compilé et exécuté sur iPhone Simulator, notamment les tests de préchargement/réutilisation/fondu et d’isolation des annulations, ainsi que la lecture native et le déplacement à 90 s sur FUTUR AMOUR. **Aucun succès sur l’iPhone physique de l’utilisateur n’est encore affirmé.**

@@ -23,13 +23,15 @@ final class NativeYouTubeiResolver: NSObject, WKScriptMessageHandler {
     private var continuation: CheckedContinuation<InvidiousAudio, Error>?
     private var watchdog: Task<Void, Never>?
     private var requests: [Int: Task<Void, Never>] = [:]
+    private var fetches: [Int: NativeResolverNetworkStream] = [:]
     private let spool = NativeYouTubeSpool()
     private static let network: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 12
         configuration.timeoutIntervalForResource = 20
-        configuration.httpCookieStorage = nil
-        configuration.httpShouldSetCookies = false
+        // Ephemeral session cookies belong only to this resolver, never to the
+        // user's Safari/Google account. Script-supplied Cookie headers remain blocked.
+        configuration.httpShouldSetCookies = true
         return URLSession(configuration: configuration)
     }()
 
@@ -39,6 +41,8 @@ final class NativeYouTubeiResolver: NSObject, WKScriptMessageHandler {
         let token = UUID().uuidString
         job = token
         do {
+            await spool.start(token: token)
+            try Task.checkCancellation()
             try prepareDocument()
             for _ in 0..<120 {
                 try Task.checkCancellation()
@@ -91,7 +95,7 @@ final class NativeYouTubeiResolver: NSObject, WKScriptMessageHandler {
     private func handle(_ message: WKScriptMessage) {
         guard let document = web, message.webView === document, let body = message.body as? [String: Any], let action = body["action"] as? String else { return }
         if action == "ready" { ready = true; return }
-        guard let token = job else { return }
+        guard let token = job, body["job"] as? String == token else { return }
         if action == "fetch", let identifier = body["request"] as? Int {
             requests[identifier] = Task { @MainActor [weak self] in
                 guard let self else { return }
@@ -102,7 +106,7 @@ final class NativeYouTubeiResolver: NSObject, WKScriptMessageHandler {
                     var request = URLRequest(url: url)
                     let method = body["method"] as? String ?? "GET"
                     guard ["GET", "POST", "HEAD"].contains(method) else { throw BlusicError.message("Méthode réseau non autorisée.") }
-                    request.httpMethod = method; request.httpShouldHandleCookies = false
+                    request.httpMethod = method; request.httpShouldHandleCookies = true
                     for (name, value) in body["headers"] as? [String: String] ?? [:] where !["host", "cookie", "authorization", "content-length", "connection"].contains(name.lowercased()) {
                         request.setValue(value, forHTTPHeaderField: name)
                     }
@@ -110,25 +114,45 @@ final class NativeYouTubeiResolver: NSObject, WKScriptMessageHandler {
                         guard encoded.count <= 4_000_000, let data = Data(base64Encoded: encoded) else { throw BlusicError.message("Requête audio trop volumineuse.") }
                         request.httpBody = data
                     }
-                    let (data, response) = try await Self.network.data(for: request)
+                    let (bytes, response) = try await Self.network.bytes(for: request)
                     try Task.checkCancellation()
-                    guard let http = response as? HTTPURLResponse, let final = http.url, NativeYouTubeRequestPolicy.allows(final), data.count <= 12_000_000 else {
+                    guard let http = response as? HTTPURLResponse, let final = http.url, NativeYouTubeRequestPolicy.allows(final) else {
+                        bytes.task.cancel()
                         throw BlusicError.message("Réponse réseau youtubei.js invalide ou trop importante.")
                     }
+                    guard job == token, web === document else { bytes.task.cancel(); return }
+                    fetches[identifier] = NativeResolverNetworkStream(bytes)
                     var headers: [String: String] = [:]
                     for (name, value) in http.allHeaderFields { headers[String(describing: name)] = String(describing: value) }
-                    reply(identifier, ["status": http.statusCode, "headers": headers, "body": data.base64EncodedString(), "url": final.absoluteString], document: document, token: token)
+                    reply(identifier, ["status": http.statusCode, "headers": headers, "stream": identifier, "url": final.absoluteString], document: document, token: token)
                 } catch {
                     reply(identifier, ["error": "Réseau youtubei.js : \(error.localizedDescription)"], document: document, token: token)
                 }
+                if web === document { requests[identifier] = nil }
+            }
+        } else if action == "readFetch" || action == "closeFetch", let streamID = body["stream"] as? Int, let identifier = body["request"] as? Int {
+            requests[identifier] = Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    guard let stream = fetches[streamID] else { throw BlusicError.message("Flux réseau fermé.") }
+                    if action == "closeFetch" {
+                        await stream.close(); fetches[streamID] = nil
+                        reply(identifier, ["ok": true], document: document, token: token)
+                    } else {
+                        let data = try await stream.read()
+                        try Task.checkCancellation()
+                        if data.isEmpty { await stream.close(); fetches[streamID] = nil }
+                        reply(identifier, ["done": data.isEmpty, "body": data.base64EncodedString()], document: document, token: token)
+                    }
+                } catch { reply(identifier, ["error": error.localizedDescription], document: document, token: token) }
                 if web === document { requests[identifier] = nil }
             }
         } else if action == "beginAudio" || action == "appendAudio", body["job"] as? String == token, let identifier = body["request"] as? Int {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 do {
-                    if action == "beginAudio" { try await spool.begin(expected: body["expected"] as? Int ?? 0) }
-                    else { try await spool.append(encoded: body["body"] as? String ?? "") }
+                    if action == "beginAudio" { try await spool.begin(expected: body["expected"] as? Int ?? 0, token: token) }
+                    else { try await spool.append(encoded: body["body"] as? String ?? "", token: token) }
                     reply(identifier, ["ok": true], document: document, token: token)
                 } catch { reply(identifier, ["error": error.localizedDescription], document: document, token: token) }
             }
@@ -137,9 +161,9 @@ final class NativeYouTubeiResolver: NSObject, WKScriptMessageHandler {
                 guard let self else { return }
                 do {
                     let result = try await spool.finish(expected: body["expected"] as? Int ?? 0,
-                        bitrate: body["bitrate"] as? Int ?? 0, duration: body["duration"] as? Double ?? 0)
+                        bitrate: body["bitrate"] as? Int ?? 0, duration: body["duration"] as? Double ?? 0, token: token)
                     guard job == token else { try? FileManager.default.removeItem(at: result.fileURL); return }
-                    watchdog?.cancel(); watchdog = nil; job = nil
+                    watchdog?.cancel(); watchdog = nil; closeNetwork(); job = nil
                     let callback = continuation; continuation = nil; callback?.resume(returning: result)
                 } catch { fail(error, token: token, reset: false) }
             }
@@ -154,32 +178,63 @@ final class NativeYouTubeiResolver: NSObject, WKScriptMessageHandler {
     private func fail(_ error: Error, token: String, reset: Bool) {
         guard job == token else { return }
         watchdog?.cancel(); watchdog = nil
-        requests.values.forEach { $0.cancel() }; requests.removeAll()
+        closeNetwork()
         web?.evaluateJavaScript("window.__blusicCancel()", completionHandler: nil)
         if reset { web?.configuration.userContentController.removeScriptMessageHandler(forName: "blusicResolver"); web?.stopLoading(); web = nil; ready = false }
-        Task { await spool.cancel() }
+        Task { await spool.cancel(token: token) }
         job = nil
         let callback = continuation; continuation = nil; callback?.resume(throwing: error)
     }
+    private func closeNetwork() {
+        requests.values.forEach { $0.cancel() }; requests.removeAll()
+        let active = Array(fetches.values); fetches.removeAll()
+        Task { for stream in active { await stream.close() } }
+    }
 }
 
-private actor NativeYouTubeSpool {
+private actor NativeResolverNetworkStream {
+    private var iterator: URLSession.AsyncBytes.AsyncIterator?
+    private let task: URLSessionTask
+    private var received = 0
+    init(_ bytes: URLSession.AsyncBytes) { iterator = bytes.makeAsyncIterator(); task = bytes.task }
+    func read() async throws -> Data {
+        guard var iterator = self.iterator else { return Data() }
+        var chunk = Data(); chunk.reserveCapacity(32768)
+        for _ in 0..<32768 {
+            try Task.checkCancellation()
+            guard let byte = try await iterator.next() else { break }
+            chunk.append(byte)
+        }
+        received += chunk.count
+        guard received <= 12_000_000 else { task.cancel(); throw BlusicError.message("Réponse du moteur youtubei.js trop volumineuse.") }
+        self.iterator = iterator
+        return chunk
+    }
+    func close() { task.cancel(); iterator = nil }
+}
+
+actor NativeYouTubeSpool {
+    private var token: String?
     private var handle: FileHandle?
     private var url: URL?
     private var expected = 0
     private var written = 0
-    func begin(expected: Int) throws {
-        cancel()
+    func start(token: String) { discard(); self.token = token }
+    func begin(expected: Int, token: String) throws {
+        guard self.token == token else { throw CancellationError() }
+        discard()
         guard expected > 0, expected <= 25_000_000 else { throw BlusicError.message("Taille AAC invalide.") }
         let path = FileManager.default.temporaryDirectory.appendingPathComponent("youtubei-\(UUID().uuidString).m4a")
         guard FileManager.default.createFile(atPath: path.path, contents: nil) else { throw BlusicError.message("Impossible de préparer le fichier audio.") }
         url = path; handle = try FileHandle(forWritingTo: path); self.expected = expected; written = 0
     }
-    func append(encoded: String) throws {
+    func append(encoded: String, token: String) throws {
+        guard self.token == token else { throw CancellationError() }
         guard encoded.count <= 12_000_000, let data = Data(base64Encoded: encoded), let handle, written + data.count <= expected else { throw BlusicError.message("Bloc AAC invalide.") }
         try handle.write(contentsOf: data); written += data.count
     }
-    func finish(expected: Int, bitrate: Int, duration: Double) throws -> InvidiousAudio {
+    func finish(expected: Int, bitrate: Int, duration: Double, token: String) throws -> InvidiousAudio {
+        guard self.token == token else { throw CancellationError() }
         guard let url, expected == self.expected, written == expected else { throw BlusicError.message("Fichier AAC incomplet.") }
         try handle?.synchronize(); try handle?.close(); handle = nil
         let file = try AVAudioFile(forReading: url)
@@ -188,5 +243,6 @@ private actor NativeYouTubeSpool {
         self.url = nil
         return InvidiousAudio(fileURL: url, bitrate: bitrate, instance: URL(string: "https://www.youtube.com")!, duration: duration, provider: "youtubei.js · iPhone")
     }
-    func cancel() { try? handle?.close(); handle = nil; if let url { try? FileManager.default.removeItem(at: url) }; url = nil; written = 0 }
+    func cancel(token: String) { guard self.token == token else { return }; discard(); self.token = nil }
+    private func discard() { try? handle?.close(); handle = nil; if let url { try? FileManager.default.removeItem(at: url) }; url = nil; written = 0 }
 }

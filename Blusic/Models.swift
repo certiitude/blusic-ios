@@ -73,6 +73,14 @@ enum PlaybackDuration {
     }
 }
 
+enum QueuePreparationPolicy {
+    static let leadSeconds = 45.0
+    static func shouldStart(duration: Double, position: Double, rate: Float) -> Bool {
+        guard duration.isFinite, position.isFinite, duration > 0, position >= 0, position < duration, rate.isFinite, rate > 0 else { return false }
+        return (duration - position) / Double(rate) <= leadSeconds
+    }
+}
+
 struct ListeningEvent: Identifiable, Codable, Sendable {
     var id = UUID()
     var trackID: UUID

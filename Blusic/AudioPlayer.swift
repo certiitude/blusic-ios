@@ -12,7 +12,7 @@ import SwiftUI
 @Observable
 final class AudioPlayer {
     private(set) var current: Track?
-    private(set) var queue: [Track] = []
+    private(set) var queue: [Track] = [] { didSet { invalidateUpcomingPreparation() } }
     private(set) var isPlaying = false
     private(set) var isLoading = false
     private(set) var loadingMessage = ""
@@ -22,14 +22,15 @@ final class AudioPlayer {
     private(set) var effectsMessage: String?
     private(set) var firstAudioLatency: Double?
     private(set) var isTransitioning = false
+    private(set) var upcomingPreparationStatus: String?
     #if DEBUG
     private(set) var artworkFetchCount = 0
     #endif
     private(set) var position = 0.0
     private(set) var duration = 0.0
     private(set) var formatLabel = ""
-    var shuffle = false
-    var repeatMode: RepeatMode = .off
+    var shuffle = false { didSet { if oldValue != shuffle { invalidateUpcomingPreparation() } } }
+    var repeatMode: RepeatMode = .off { didSet { if oldValue != repeatMode { invalidateUpcomingPreparation() } } }
     var sleepDeadline: Date?
     var stopAtEnd = false
     var loopA: Double?
@@ -90,6 +91,11 @@ final class AudioPlayer {
     private var resumeAfterInterruption = false
     private var playedIDs = Set<UUID>()
     private var artworkTask: Task<Void, Never>?
+    @ObservationIgnored private var upcomingTask: Task<InvidiousAudio, Error>?
+    @ObservationIgnored private var upcomingMonitor: Task<Void, Never>?
+    @ObservationIgnored private var upcomingKey: String?
+    @ObservationIgnored private var preparationForCurrentID: UUID?
+    @ObservationIgnored private var plannedNextID: UUID?
 
     #if DEBUG
     var overlappingPlaybackCount: Int { (isPlaying ? 1 : 0) + (outgoing?.active() == true ? 1 : 0) }
@@ -130,6 +136,12 @@ final class AudioPlayer {
     }
 
     func play(_ requested: Track, in tracks: [Track]? = nil) {
+        let incomingKey = Self.preparationKey(requested, settings: library.settings)
+        let usePrepared = upcomingKey == incomingKey
+        let incomingPreparation = usePrepared ? upcomingTask : nil
+        if !usePrepared { upcomingTask?.cancel() }
+        upcomingTask = nil; upcomingMonitor?.cancel(); upcomingMonitor = nil; upcomingKey = nil
+        preparationForCurrentID = nil; plannedNextID = nil; upcomingPreparationStatus = nil
         let track = library.add(requested)
         if let tracks {
             var seen = Set<UUID>()
@@ -201,7 +213,26 @@ final class AudioPlayer {
                 let fileURL: URL
                 var reportedBitrate: Int?
                 var reportedProvider: String?
-                if playingTrack.source == .invidious {
+                var preparedAudio: InvidiousAudio?
+                if let incomingPreparation {
+                    do {
+                        preparedAudio = try await withTaskCancellationHandler {
+                            let audio = try await incomingPreparation.value
+                            try Task.checkCancellation()
+                            return audio
+                        } onCancel: { incomingPreparation.cancel() }
+                    } catch {
+                        if Task.isCancelled || error is CancellationError { throw CancellationError() }
+                        // A failed background preparation must not prevent a
+                        // fresh attempt when the user actually starts the title.
+                    }
+                }
+                if let audio = preparedAudio {
+                    try Task.checkCancellation()
+                    guard generation == token else { return }
+                    fileURL = audio.fileURL; reportedBitrate = audio.bitrate; reportedProvider = audio.provider
+                    if declaredDuration <= 0, let seconds = audio.duration, seconds > 0 { declaredDuration = seconds }
+                } else if playingTrack.source == .invidious {
                     if let streaming = onlineLoader as? any StreamingAudioLoading {
                         loadingMessage = "Connexion au flux audio…"
                         let resource = try await streaming.playback(playingTrack, settings: library.settings, direct: false)
@@ -266,6 +297,7 @@ final class AudioPlayer {
         } catch { self.error = error.localizedDescription }
     }
     func pause() {
+        invalidateUpcomingPreparation()
         flushListening()
         if isLoading { generation = UUID(); loadTask?.cancel(); stopStreaming(); isLoading = false }
         wantsPlayback = false; streamPlayer?.pause(); alternateTask?.cancel(); bufferWatchdog?.cancel()
@@ -298,7 +330,7 @@ final class AudioPlayer {
                 playedIDs = current.map { Set([$0.id]) } ?? []
                 choices = queue.filter { $0.id != current?.id }
             }
-            if let chosen = choices.randomElement() { play(chosen) }
+            if let chosen = choices.first(where: { $0.id == plannedNextID }) ?? choices.randomElement() { play(chosen) }
             else if repeatMode != .off || userInitiated, let first = queue.first { play(first) }
             else { pause() }
         } else if index + 1 < queue.count { play(queue[index + 1]) }
@@ -337,6 +369,7 @@ final class AudioPlayer {
         stopAtEnd = false
     }
     func apply(_ settings: AppSettings) {
+        if let key = upcomingKey, let next = queue.first(where: { $0.id == plannedNextID }), Self.preparationKey(next, settings: settings) != key { invalidateUpcomingPreparation() }
         let rate = min(2, max(0.5, settings.playbackRate))
         varispeed.bypass = !settings.usesLinkedSpeedAndPitch || abs(rate - 1) < 0.0001
         varispeed.rate = settings.usesLinkedSpeedAndPitch ? rate : 1
@@ -662,15 +695,10 @@ final class AudioPlayer {
             firstAudioLatency = Date().timeIntervalSince(beganLoading)
             finishLoading()
             beginCrossfade()
-            let nextIndex = (queue.firstIndex { $0.id == current?.id } ?? -1) + 1
-            if queue.indices.contains(nextIndex) {
-                let nextTracks = Array(queue.dropFirst(nextIndex).prefix(2)).filter { $0.source == .invidious }
-                let settings = library.settings
-                Task { await InvidiousAudioLoader.prefetch(nextTracks, settings: settings) }
-            }
             if isStreaming, requestedEffects || library.settings.needsPreparedEffects { prepareNativeEffects() }
         }
         flushListening(force: false)
+        prepareUpcomingIfNeeded()
         if library.settings.usesCrossfade, !isLoading, !isTransitioning, stopAtEnd == false, repeatMode != .one,
            loopB == nil, let id = current?.id, automaticFadeID != id, duration > 0,
            (duration - position) / Double(max(0.5, library.settings.playbackRate)) <= library.settings.crossfadeSeconds {
@@ -695,6 +723,67 @@ final class AudioPlayer {
     }
     private func persistQueue() {
         library.savedQueue = queue.map(\.id); library.savedCurrentID = current?.id
+    }
+    private static func preparationKey(_ track: Track, settings: AppSettings) -> String {
+        "\(track.source.rawValue)|\(track.location)|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(settings.youtubeiRelayAddress ?? "")|\(settings.youtubeiRelayDisabled ?? false)"
+    }
+    private func invalidateUpcomingPreparation() {
+        upcomingTask?.cancel(); upcomingTask = nil
+        upcomingMonitor?.cancel(); upcomingMonitor = nil
+        upcomingKey = nil; preparationForCurrentID = nil; plannedNextID = nil; upcomingPreparationStatus = nil
+    }
+    private func prepareUpcomingIfNeeded() {
+        guard !isLoading, firstAudioLatency != nil, stopAtEnd == false, repeatMode != .one,
+              let current, preparationForCurrentID != current.id,
+              QueuePreparationPolicy.shouldStart(duration: duration, position: position, rate: library.settings.playbackRate) else { return }
+        let next: Track?
+        if shuffle {
+            let unplayed = queue.filter { !playedIDs.contains($0.id) }
+            next = unplayed.randomElement() ?? (repeatMode == .all ? queue.filter { $0.id != current.id }.randomElement() : nil)
+        } else {
+            let index = queue.firstIndex { $0.id == current.id } ?? -1
+            next = queue.indices.contains(index + 1) ? queue[index + 1] : repeatMode == .all ? queue.first : nil
+        }
+        preparationForCurrentID = current.id
+        guard let next else { return }
+        plannedNextID = next.id
+        guard [.invidious, .remote].contains(next.source) else { return } // Local files already need no network preparation.
+        let settings = library.settings, loader = onlineLoader, currentID = current.id
+        let key = Self.preparationKey(next, settings: settings)
+        upcomingKey = key; upcomingPreparationStatus = "Préparation du titre suivant…"
+        let task = Task.detached(priority: .utility) { () throws -> InvidiousAudio in
+            try await withThrowingTaskGroup(of: InvidiousAudio.self) { group in
+                group.addTask {
+                    if next.source == .remote, let url = URL(string: next.location) {
+                        let file = try await AudioCache.shared.localCopy(of: url, expectedDuration: next.duration)
+                        return InvidiousAudio(fileURL: file, bitrate: 0, instance: url, duration: next.duration)
+                    }
+                    if let streaming = loader as? any StreamingAudioLoading {
+                        switch try await streaming.playback(next, settings: settings, direct: false) {
+                        case .file(let audio): return audio
+                        case .stream(let stream):
+                            if loader is InvidiousAudioLoader { return try await loader.load(next, settings: settings, progress: { _ in }) }
+                            return try await streaming.prepareFile(stream, for: next)
+                        }
+                    }
+                    return try await loader.load(next, settings: settings, progress: { _ in })
+                }
+                group.addTask { try await Task.sleep(for: .seconds(35)); throw BlusicError.message("Préchargement du suivant trop lent.") }
+                defer { group.cancelAll() }
+                return try await group.next()!
+            }
+        }
+        upcomingTask = task
+        upcomingMonitor = Task { @MainActor [weak self] in
+            do {
+                _ = try await task.value
+                guard !Task.isCancelled, let self, self.current?.id == currentID, upcomingKey == key else { return }
+                upcomingPreparationStatus = "Titre suivant préchargé"
+            } catch {
+                guard !Task.isCancelled, let self, self.current?.id == currentID, upcomingKey == key else { return }
+                upcomingPreparationStatus = "Le titre suivant n’a pas pu être préchargé"
+            }
+        }
     }
     private func updateNowPlaying(loadArtwork: Bool = false) {
         guard let current, current.isNative else { return }

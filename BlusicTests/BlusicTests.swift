@@ -1129,14 +1129,14 @@ final class BlusicTests: XCTestCase {
             if player.firstAudioLatency != nil || player.error != nil { break }
             try await Task.sleep(for:.milliseconds(250))
         }
-        XCTAssertNil(player.error)
-        XCTAssertTrue(player.isPlaying)
-        XCTAssertNotNil(player.firstAudioLatency)
-        XCTAssertTrue(player.formatLabel.contains("youtubei.js"))
+        guard player.error == nil, player.isPlaying, player.firstAudioLatency != nil, player.formatLabel.contains("youtubei.js") else {
+            XCTFail(player.error ?? "Le moteur youtubei.js n’a pas commencé la lecture native")
+            return
+        }
         XCTAssertGreaterThan(player.duration,160)
         player.seek(to:90)
         try await Task.sleep(for:.seconds(1.5))
-        XCTAssertGreaterThanOrEqual(player.position,89)
+        guard player.position >= 89 else { XCTFail("Le déplacement natif n’a pas abouti"); return }
         print("LIVE YOUTUBEI SABR: native playback and seek verified; first_audio=\(player.firstAudioLatency ?? -1)s duration=\(player.duration)s")
     }
 
@@ -1147,6 +1147,113 @@ final class BlusicTests: XCTestCase {
         for address in ["http://www.youtube.com/", "https://127.0.0.1/", "https://youtube.com.attacker.invalid/", "https://user:pass@www.youtube.com/", "https://www.youtube.com:8443/"] {
             XCTAssertFalse(NativeYouTubeRequestPolicy.allows(URL(string: address)!))
         }
+    }
+
+    func testUpcomingPreparationStartsAt45PlaybackSecondsIncludingVarispeed() {
+        XCTAssertFalse(QueuePreparationPolicy.shouldStart(duration: 200, position: 154.9, rate: 1))
+        XCTAssertTrue(QueuePreparationPolicy.shouldStart(duration: 200, position: 155, rate: 1))
+        XCTAssertTrue(QueuePreparationPolicy.shouldStart(duration: 30, position: 0.2, rate: 1))
+        XCTAssertTrue(QueuePreparationPolicy.shouldStart(duration: 200, position: 110, rate: 2))
+        XCTAssertFalse(QueuePreparationPolicy.shouldStart(duration: 200, position: 109, rate: 2))
+        XCTAssertFalse(QueuePreparationPolicy.shouldStart(duration: 0, position: 0, rate: 1))
+        XCTAssertFalse(QueuePreparationPolicy.shouldStart(duration: .nan, position: 0, rate: 1))
+    }
+
+    func testCancelledResolverJobCannotDiscardTheNextJobsAudio() async throws {
+        let spool = NativeYouTubeSpool()
+        await spool.start(token: "old-job")
+        try await spool.begin(expected: 4, token: "old-job")
+        await spool.start(token: "new-job")
+        try await spool.begin(expected: 4, token: "new-job")
+        await spool.cancel(token: "old-job")
+        do {
+            try await spool.append(encoded: Data([1]).base64EncodedString(), token: "old-job")
+            XCTFail("A stale callback must not write to a new job's audio file")
+        } catch is CancellationError {} catch { XCTFail("Unexpected stale-job error: \(error)") }
+        try await spool.append(encoded: Data([1, 2, 3, 4]).base64EncodedString(), token: "new-job")
+        await spool.cancel(token: "new-job")
+    }
+
+    @MainActor
+    func test45SecondPreparationIsReusedByNextAndTheCrossfade() async throws {
+        let store = LibraryStore(inMemory: true); store.tracks = []
+        store.settings.crossfadeEnabled = true; store.settings.crossfadeDuration = 1.2
+        let file = try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "orbite", withExtension: "wav"))
+        let calls = UpcomingPreparationCounter()
+        let player = AudioPlayer(library: store, onlineLoader: UpcomingPreparationLoader(file: file, calls: calls))
+        let current = Track(title: "Current 48s fixture", artist: "Test", duration: 48, source: .bundled, location: "bleu-nuit.wav")
+        let next = Track(title: "Next network fixture", artist: "Test", duration: 5, source: .invidious, location: "bbbbbbbbbbb")
+        defer { player.forget(current.id); player.forget(next.id) }
+        player.play(current, in: [current,next])
+        try await Task.sleep(for: .milliseconds(450))
+        let initial = await calls.count
+        XCTAssertEqual(initial, 0, "Do not start the transition preparation while more than 45s remain")
+        player.seek(to: 4)
+        for _ in 0..<40 {
+            if player.upcomingPreparationStatus == "Titre suivant préchargé" { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(player.upcomingPreparationStatus, "Titre suivant préchargé")
+        let count = await calls.count
+        XCTAssertEqual(count, 1)
+        player.next()
+        for _ in 0..<20 {
+            if player.isTransitioning { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(player.current?.location, next.location)
+        XCTAssertTrue(player.isPlaying)
+        XCTAssertTrue(player.isTransitioning)
+        XCTAssertEqual(player.overlappingPlaybackCount, 2)
+        let finalCount = await calls.count
+        XCTAssertEqual(finalCount, 1, "Next must reuse the prepared AAC/file instead of resolving the source a second time")
+    }
+
+    @MainActor
+    func testShuffleUsesTheSameNextTitleThatWasPreparedInAdvance() async throws {
+        let store = LibraryStore(inMemory: true); store.tracks = []
+        let file = try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "orbite", withExtension: "wav"))
+        let calls = UpcomingPreparationCounter()
+        let player = AudioPlayer(library: store, onlineLoader: UpcomingPreparationLoader(file: file, calls: calls))
+        player.shuffle = true
+        let current = Track(title: "Shuffle current fixture", artist: "Test", duration: 48, source: .bundled, location: "bleu-nuit.wav")
+        let a = Track(title: "Shuffle next A", artist: "Test", duration: 5, source: .invidious, location: "aaaaaaaaaaa")
+        let b = Track(title: "Shuffle next B", artist: "Test", duration: 5, source: .invidious, location: "bbbbbbbbbbb")
+        defer { player.forget(current.id); player.forget(a.id); player.forget(b.id) }
+        player.play(current, in: [current,a,b])
+        try await Task.sleep(for: .milliseconds(450)); player.seek(to: 4)
+        for _ in 0..<40 {
+            if player.upcomingPreparationStatus == "Titre suivant préchargé" { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let prepared = await calls.lastLocation
+        XCTAssertNotNil(prepared)
+        player.next()
+        try await Task.sleep(for: .milliseconds(350))
+        XCTAssertEqual(player.current?.location, prepared, "Shuffle must not choose a different title at the last moment")
+        let repeated = await calls.calls(for: prepared ?? "")
+        XCTAssertEqual(repeated, 1, "The prepared title must not be resolved again; the following title may now begin its own preparation")
+    }
+}
+
+private actor UpcomingPreparationCounter {
+    private(set) var count = 0
+    private(set) var lastLocation: String?
+    private var locations: [String] = []
+    func record(_ location: String) { count += 1; lastLocation = location; locations.append(location) }
+    func calls(for location: String) -> Int { locations.filter { $0 == location }.count }
+}
+
+private struct UpcomingPreparationLoader: StreamingAudioLoading {
+    var file: URL
+    var calls: UpcomingPreparationCounter
+    func load(_ track: Track, settings: AppSettings, progress: @escaping @Sendable (AudioLoadUpdate) -> Void) async throws -> InvidiousAudio {
+        throw BlusicError.message("The test must use the streaming loader's prepared-file result")
+    }
+    func playback(_ track: Track, settings: AppSettings, direct: Bool) async throws -> OnlinePlaybackResource {
+        await calls.record(track.location)
+        try await Task.sleep(for: .milliseconds(180))
+        return .file(InvidiousAudio(fileURL: file, bitrate: 0, instance: URL(string: "https://fixture.invalid")!, duration: track.duration, provider: "Prepared test fixture"))
     }
 }
 

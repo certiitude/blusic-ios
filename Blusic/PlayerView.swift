@@ -161,6 +161,9 @@ struct PlayerView: View {
                 if let seconds = player.firstAudioLatency {
                     Text(String(format: "Démarrage : %.1f s", seconds)).font(.system(size: 9)).foregroundStyle(.white.opacity(0.4))
                 }
+                if let status = player.upcomingPreparationStatus {
+                    Text(status).font(.system(size: 10)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
+                }
             }
             Spacer(minLength: 0)
             IconButton(symbol: library.isFavorite(track) ? "heart.fill" : "heart", label: "Favori") { library.toggleFavorite(track) }
