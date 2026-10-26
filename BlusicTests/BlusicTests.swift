@@ -1198,11 +1198,12 @@ final class BlusicTests: XCTestCase {
         XCTAssertEqual(count, 1)
         player.next()
         for _ in 0..<20 {
-            if player.isTransitioning { break }
+            if player.isPlaying, player.firstAudioLatency != nil, player.isTransitioning { break }
             try await Task.sleep(for: .milliseconds(50))
         }
         XCTAssertEqual(player.current?.location, next.location)
         XCTAssertTrue(player.isPlaying)
+        XCTAssertNotNil(player.firstAudioLatency, "Observe the incoming audio, not only the outgoing deck retained during loading")
         XCTAssertTrue(player.isTransitioning)
         XCTAssertEqual(player.overlappingPlaybackCount, 2)
         let finalCount = await calls.count
