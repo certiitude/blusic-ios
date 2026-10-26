@@ -12,8 +12,11 @@ import urllib.parse
 def main():
     private = json.loads(Path(r"C:\Users\elome\AppData\Local\Temp\opencode\blusic-relay-deployment-private.json").read_text(encoding="utf-8"))
     base = "https://blusic-audio-relay.onrender.com"
+    access=private["key"]
+    if "--application" in sys.argv:
+        access=json.loads(Path(r"C:\Users\elome\AppData\Local\Temp\opencode\blusic-ios-relay-capability-private.json").read_text(encoding="utf-8"))["capability"]
     video = sys.argv[1] if len(sys.argv) > 1 else "qMAzmGNeDxc"
-    request = urllib.request.Request(base + "/v1/streams/" + video, headers={"Authorization": "Bearer " + private["key"]})
+    request = urllib.request.Request(base + "/v1/streams/" + video, headers={"Authorization": "Bearer " + access})
     began = time.monotonic()
     try:
         with urllib.request.urlopen(request, timeout=90) as response:

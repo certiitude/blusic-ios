@@ -29,7 +29,7 @@ try {
   const url = await yt.session.player.decipher(server);
   if(process.argv.includes('--attest')) {
     const {createOriginMinter}=await import('../relay/origin.mjs');
-    origin=await createOriginMinter(yt,load);
+    origin=await createOriginMinter(yt,load,{forceWaa:process.argv.includes('--waa'),diagnostic:process.argv.includes('--waa')});
     console.log(JSON.stringify({phase:'origin-attestation',created:true}));
   }
   stream = new SabrStream({videoId:id,serverAbrStreamingUrl:url,videoPlaybackUstreamerConfig:config,
