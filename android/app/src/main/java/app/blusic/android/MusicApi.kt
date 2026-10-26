@@ -35,31 +35,33 @@ class MusicApi(val client: OkHttpClient = OkHttpClient.Builder().connectTimeout(
         require(video.matches(Regex("[A-Za-z0-9_-]{11}"))) { "Identifiant musical invalide" }
         val key = "${settings.resolutionKey}|$video"
         resolved[key]?.takeIf { it.first > System.currentTimeMillis() }?.let { return@withContext it.second }
-        var nativeError: String? = null
-        if (nativeResolver != null && settings.sourceMode in listOf("auto", "youtubei")) {
-            try {
-                val stream = withTimeout(32_000) { nativeResolver.invoke(video, settings) }
-                resolved[key] = (System.currentTimeMillis() + 90_000) to stream
-                return@withContext stream
-            } catch (e: Exception) { currentCoroutineContext().ensureActive(); nativeError = e.localizedMessage }
-        }
-        withTimeout(18_000) {
+        val usesNative = nativeResolver != null && settings.sourceMode in listOf("auto", "youtubei")
+        withTimeout(if (usesNative) 35_000 else 18_000) {
             supervisorScope {
-                val outcomes = Channel<Result<AudioStream>>(3)
+                val outcomes = Channel<Result<AudioStream>>(4)
                 val jobs = mutableListOf<Job>()
                 suspend fun attempt(block: () -> AudioStream) {
                     try { outcomes.send(Result.success(runInterruptible(Dispatchers.IO, block))) }
                     catch (e: CancellationException) { throw e }
                     catch (e: Exception) { outcomes.send(Result.failure(e)) }
                 }
+                if (usesNative) jobs += launch {
+                    try { outcomes.send(Result.success(withTimeout(32_000) { nativeResolver!!.invoke(video, settings) })) }
+                    catch (e: Exception) {
+                        currentCoroutineContext().ensureActive()
+                        outcomes.send(Result.failure(IOException("youtubei.js sur cet appareil : ${e.localizedMessage}")))
+                    }
+                }
                 if (settings.sourceMode in listOf("auto", "youtubei") && !settings.relayDisabled && settings.relayAddress.isNotBlank() && !relayKey.isNullOrBlank()) jobs += launch {
+                    if (usesNative) delay(600)
                     attempt { relayService(video, settings.relayAddress, relayKey, settings.highQuality) }
                 }
                 if (settings.sourceMode in listOf("auto", "direct")) jobs += launch {
+                    if (usesNative) delay(900)
                     attempt { direct(video, settings.highQuality).also { validate(it) } }
                 }
                 if (settings.sourceMode in listOf("auto", "invidious")) jobs += launch {
-                    if (settings.sourceMode == "auto") delay(350)
+                    if (settings.sourceMode == "auto") delay(if (usesNative) 1200 else 350)
                     attempt {
                         try { relay(video, settings.instance, settings.highQuality) }
                         catch (e: IOException) {
@@ -71,7 +73,7 @@ class MusicApi(val client: OkHttpClient = OkHttpClient.Builder().connectTimeout(
                     }
                 }
                 try {
-                    val errors = mutableListOf<String>(); nativeError?.let { errors += "youtubei.js sur cet appareil : $it" }
+                    val errors = mutableListOf<String>()
                     repeat(jobs.size) {
                         ensureActive()
                         val outcome = outcomes.receive()

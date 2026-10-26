@@ -55,7 +55,7 @@ import kotlinx.coroutines.delay
     var show by remember { mutableStateOf(false) }
     Column {
         Text("Écoute", fontSize = 19.sp, fontWeight = FontWeight.Bold)
-        Text("Le suivant est préparé entièrement 45 secondes avant la fin, en tenant compte de la vitesse. Le fichier prêt est réutilisé pour le fondu et Suivant.", color = Muted, fontSize = 12.sp)
+        Text("Le suivant est préparé 45 secondes avant la fin. En cas d’échec, les essais continuent sans limite de nombre, avec une pause progressive de 1 à 10 secondes, tant que ce titre reste le suivant. Le fichier prêt est réutilisé pour le fondu.", color = Muted, fontSize = 12.sp)
         SettingSwitch("Fondu entre les titres", state.crossfade, "crossfade-setting") { value -> vm.settings { it.copy(crossfade = value) } }
         if (state.crossfade) ValueSlider("Durée du fondu", state.crossfadeSeconds, .5f..8f, "s") { value -> vm.settings { it.copy(crossfadeSeconds = value) } }
         SettingSwitch("Retrouver la file au lancement", state.restoreQueue) { value -> vm.settings { it.copy(restoreQueue = value) } }

@@ -186,10 +186,13 @@ class PlaybackService : MediaSessionService() {
         val settings = app.library.state.value; val key = "${track.identity}|${settings.resolutionKey}"
         preparationKey = key; plannedIndex = index
         app.engineState.value = app.engineState.value.copy(preparation = "Préparation du titre suivant…")
-        val task = scope.async(Dispatchers.IO) { withTimeout(35_000) {
+        val task = scope.async(Dispatchers.IO) { PreparationRetry.run(operation = { withTimeout(35_000) {
             val effective = if (track.source == "reference") app.api.match(track).copy(id = track.id).also { app.library.replaceSource(track, it) } else track
             app.prepared.prepare(effective, settings, app.library.relayCredentials.read(settings.relayAddress))
-        } }
+        } }, onRetry = { count, wait ->
+            app.api.invalidate(track.location)
+            withContext(Dispatchers.Main) { if (preparationKey == key) app.engineState.value = app.engineState.value.copy(preparation = "Préchargement : nouvel essai ${count + 1} dans ${wait / 1000} s…") }
+        }) }
         preparation = task
         scope.launch {
             try {

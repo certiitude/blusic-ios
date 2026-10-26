@@ -79,6 +79,25 @@ enum QueuePreparationPolicy {
         guard duration.isFinite, position.isFinite, duration > 0, position >= 0, position < duration, rate.isFinite, rate > 0 else { return false }
         return (duration - position) / Double(rate) <= leadSeconds
     }
+    static func retryDelay(afterFailure count: Int) -> Double { min(10, pow(2, Double(min(4, max(0, count - 1))))) }
+    static func retry<T: Sendable>(
+        operation: @escaping @Sendable () async throws -> T,
+        onRetry: @escaping @Sendable (Int, Double) async -> Void = { _, _ in },
+        sleep: @escaping @Sendable (Double) async throws -> Void = { try await Task.sleep(for: .seconds($0)) }
+    ) async throws -> T {
+        var failures = 0
+        while true {
+            try Task.checkCancellation()
+            do { return try await operation() }
+            catch {
+                try Task.checkCancellation()
+                failures = min(1_000_000, failures + 1)
+                let wait = retryDelay(afterFailure: failures)
+                await onRetry(failures, wait)
+                try await sleep(wait)
+            }
+        }
+    }
 }
 
 enum OnlineAudioQuality: String, Sendable {

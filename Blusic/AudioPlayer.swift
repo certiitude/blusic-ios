@@ -751,8 +751,9 @@ final class AudioPlayer {
         let settings = library.settings, loader = onlineLoader, currentID = current.id
         let key = Self.preparationKey(next, settings: settings)
         upcomingKey = key; upcomingPreparationStatus = "Préparation du titre suivant…"
-        let task = Task.detached(priority: .utility) { () throws -> InvidiousAudio in
-            try await withThrowingTaskGroup(of: InvidiousAudio.self) { group in
+        let task = Task.detached(priority: .utility) { [weak self] () throws -> InvidiousAudio in
+            try await QueuePreparationPolicy.retry(operation: {
+              try await withThrowingTaskGroup(of: InvidiousAudio.self) { group in
                 group.addTask {
                     if next.source == .remote, let url = URL(string: next.location) {
                         let file = try await AudioCache.shared.localCopy(of: url, expectedDuration: next.duration)
@@ -771,7 +772,14 @@ final class AudioPlayer {
                 group.addTask { try await Task.sleep(for: .seconds(35)); throw BlusicError.message("Préchargement du suivant trop lent.") }
                 defer { group.cancelAll() }
                 return try await group.next()!
-            }
+              }
+            }, onRetry: { attempt, wait in
+                if let streaming = loader as? any StreamingAudioLoading { await streaming.invalidate(next, settings: settings) }
+                await MainActor.run { [weak self] in
+                    guard let self, self.current?.id == currentID, self.upcomingKey == key else { return }
+                    self.upcomingPreparationStatus = "Préchargement : nouvel essai \(attempt + 1) dans \(Int(wait)) s…"
+                }
+            })
         }
         upcomingTask = task
         upcomingMonitor = Task { @MainActor [weak self] in

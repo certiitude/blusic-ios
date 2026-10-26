@@ -1234,6 +1234,48 @@ final class BlusicTests: XCTestCase {
         XCTAssertFalse(QueuePreparationPolicy.shouldStart(duration: .nan, position: 0, rate: 1))
     }
 
+    func testPreparationRetriesBeyondTwentyFailuresAndUsesBoundedBackoff() async throws {
+        let fixture = RetryingPreparationFixture(failures: 20)
+        let result = try await QueuePreparationPolicy.retry(operation: { try await fixture.attempt() }, sleep: { _ in })
+        XCTAssertEqual(result, 21)
+        XCTAssertEqual([1, 2, 3, 4, 5, 1000].map { QueuePreparationPolicy.retryDelay(afterFailure: $0) }, [1, 2, 4, 8, 10, 10])
+    }
+
+    @MainActor
+    func testFailedUpcomingPreparationRetriesUntilReadyAndPauseCancelsPendingRetry() async throws {
+        let store = LibraryStore(inMemory: true); store.tracks = []
+        let file = try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "orbite", withExtension: "wav"))
+        let attempts = RetryingPreparationFixture(failures: 2)
+        let player = AudioPlayer(library: store, onlineLoader: RetryingUpcomingLoader(file: file, attempts: attempts))
+        let current = Track(title: "Retry current", artist: "Test", duration: 48, source: .bundled, location: "bleu-nuit.wav")
+        let next = Track(title: "Retry next", artist: "Test", duration: 48, source: .invidious, location: "bbbbbbbbbbb")
+        defer { player.forget(current.id); player.forget(next.id) }
+        player.play(current, in: [current, next]); try await Task.sleep(for: .milliseconds(500)); player.seek(to: 4)
+        for _ in 0..<100 {
+            if player.upcomingPreparationStatus == "Titre suivant préchargé" { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(player.upcomingPreparationStatus, "Titre suivant préchargé")
+        XCTAssertTrue(player.isPlaying); XCTAssertEqual(player.current?.id, current.id)
+        let count = await attempts.count; XCTAssertEqual(count, 3)
+        player.next(); try await Task.sleep(for: .milliseconds(350))
+        let reused = await attempts.count; XCTAssertEqual(reused, 3)
+        player.pause()
+
+        let unavailable = RetryingPreparationFixture(failures: 1000)
+        let other = AudioPlayer(library: store, onlineLoader: RetryingUpcomingLoader(file: file, attempts: unavailable))
+        defer { other.pause() }
+        other.play(current, in: [current, next]); try await Task.sleep(for: .milliseconds(500)); other.seek(to: 4)
+        for _ in 0..<30 {
+            let observed = await unavailable.count
+            if observed > 0 { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        other.pause(); let before = await unavailable.count
+        try await Task.sleep(for: .seconds(1.3)); let after = await unavailable.count
+        XCTAssertGreaterThan(before, 0); XCTAssertEqual(before, after, "Pause must stop retrying instead of starting background network requests forever")
+    }
+
     func testCancelledResolverJobCannotDiscardTheNextJobsAudio() async throws {
         let spool = NativeYouTubeSpool()
         await spool.start(token: "old-job")
@@ -1352,6 +1394,28 @@ private actor UpcomingPreparationCounter {
     private(set) var qualities: [OnlineAudioQuality] = []
     func record(_ location: String, quality: OnlineAudioQuality) { count += 1; lastLocation = location; locations.append(location); qualities.append(quality) }
     func calls(for location: String) -> Int { locations.filter { $0 == location }.count }
+}
+
+private actor RetryingPreparationFixture {
+    let failures: Int
+    private(set) var count = 0
+    init(failures: Int) { self.failures = failures }
+    func attempt() throws -> Int {
+        count += 1
+        if count <= failures { throw BlusicError.message("Fixture : source temporairement indisponible") }
+        return count
+    }
+}
+private struct RetryingUpcomingLoader: StreamingAudioLoading {
+    let file: URL
+    let attempts: RetryingPreparationFixture
+    func load(_ track: Track, settings: AppSettings, progress: @escaping @Sendable (AudioLoadUpdate) -> Void) async throws -> InvidiousAudio {
+        _ = try await attempts.attempt()
+        return InvidiousAudio(fileURL: file, bitrate: 131000, instance: URL(string: "https://fixture.invalid")!, duration: track.duration)
+    }
+    func playback(_ track: Track, settings: AppSettings, direct: Bool) async throws -> OnlinePlaybackResource {
+        .file(try await load(track, settings: settings, progress: { _ in }))
+    }
 }
 
 private struct UpcomingPreparationLoader: StreamingAudioLoading {

@@ -2,8 +2,35 @@ package app.blusic.android
 
 import org.junit.Assert.*
 import org.junit.Test
+import kotlinx.coroutines.*
+import okhttp3.OkHttpClient
+import okhttp3.Response
+import okhttp3.Protocol
+import okhttp3.ResponseBody.Companion.toResponseBody
 
 class UiPerformanceTest {
+    @Test fun automaticPlaybackDoesNotWaitForSlowNativeResolverBeforeTryingWorkingAudio() = runBlocking {
+        var nativeCancelled = false
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            val metadata = chain.request().url.encodedPath == "/youtubei/v1/player"
+            val body = if (metadata) """{"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"url":"https://media.googlevideo.com/audio","mimeType":"audio/mp4; codecs=mp4a.40.2","bitrate":131000}]}}""" else "0000ftypM4A fixture"
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(if (metadata) 200 else 206).message("Fixture").body(body.toResponseBody()).build()
+        }.build()
+        val api = MusicApi(client, nativeResolver = { _, _ -> try { delay(30000); error("Should be cancelled") } finally { nativeCancelled = true } })
+        val start = System.nanoTime()
+        val stream = withTimeout(5000) { api.resolve("abcdefghijk", LibraryState(automaticFallback = false)) }
+        assertEquals("YouTube direct", stream.provider); assertTrue(nativeCancelled)
+        assertTrue((System.nanoTime() - start) / 1000000 < 5000)
+    }
+    @Test fun preparationHasNoRetryCountLimitAndRemainsCancellable() = runBlocking {
+        var calls = 0; val waits = mutableListOf<Long>()
+        val result = PreparationRetry.run(operation = { calls++; if (calls <= 25) throw java.io.IOException("Temporary fixture failure"); "ready" }, pause = { waits += it })
+        assertEquals("ready", result); assertEquals(26, calls); assertEquals(listOf(1000L, 2000L, 4000L, 8000L, 10000L), waits.take(5)); assertEquals(10000L, waits.last())
+        val retrying = CompletableDeferred<Unit>(); var attempts = 0
+        val job = launch { PreparationRetry.run(operation = { attempts++; throw java.io.IOException("Offline fixture") }, onRetry = { _, _ -> retrying.complete(Unit) }) }
+        retrying.await(); job.cancelAndJoin(); delay(50)
+        assertEquals(1, attempts)
+    }
     @Test fun thumbnailsUseDisplayDensityAndUpgradeOnlyKnownUnsignedSizing() {
         assertEquals(960, ArtworkPolicy.pixels(320f, 3f))
         val small = "https://lh3.googleusercontent.com/cover=w60-h60-l90-rj"
