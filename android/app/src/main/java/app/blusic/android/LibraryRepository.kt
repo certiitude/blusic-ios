@@ -111,11 +111,14 @@ class LibraryRepository(private val context: Context) {
     suspend fun listening(track: Track, seconds: Double) = update { old ->
         if (seconds <= 0 || seconds > 15) old else {
             val last = old.history.lastOrNull(); val now = System.currentTimeMillis()
-            val events = if (last?.trackId == track.id && now - last.date < 86_400_000) old.history.dropLast(1) + last.copy(seconds = last.seconds + seconds)
+            val day = java.time.Instant.ofEpochMilli(now).atZone(java.time.ZoneId.systemDefault()).toLocalDate()
+            val sameDay = last?.let { java.time.Instant.ofEpochMilli(it.date).atZone(java.time.ZoneId.systemDefault()).toLocalDate() == day } == true
+            val events = if (last?.trackId == track.id && sameDay) old.history.dropLast(1) + last.copy(seconds = last.seconds + seconds)
                 else old.history + ListeningEvent(track.id, now, seconds)
             old.copy(history = events.takeLast(20000))
         }
     }
+    fun listeningAsync(track: Track, seconds: Double) { scope.launch { listening(track, seconds) } }
     suspend fun saveQueue(tracks: List<Track>, current: String?) {
         add(tracks)
         update { if (it.savedQueue == tracks.map(Track::id) && it.savedCurrent == current) it else it.copy(savedQueue = tracks.map(Track::id), savedCurrent = current) }

@@ -42,6 +42,7 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
     private val connected = CompletableDeferred<MediaController>()
     private var searchJob: Job? = null
     private var loadingDeadline: Job? = null
+    private var playJob: Job? = null
     private var recordedId: String? = null
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
@@ -53,6 +54,10 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
             if (player.isPlaying) {
                 loadingDeadline?.cancel()
                 if (track != null && track.id != recordedId) { recordedId = track.id; save { app.library.record(track) } }
+            }
+            if (events.contains(Player.EVENT_PLAYBACK_STATE_CHANGED)) {
+                if (player.playbackState == Player.STATE_BUFFERING && loadingDeadline?.isActive != true) startDeadline()
+                if (player.playbackState in listOf(Player.STATE_READY, Player.STATE_IDLE, Player.STATE_ENDED)) loadingDeadline?.cancel()
             }
         }
         override fun onPlayerError(error: PlaybackException) {
@@ -100,10 +105,12 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
             finally { if (isActive) searchLoading.value = false }
         }
     }
-    fun play(requested: Track, context: List<Track> = listOf(requested)) = viewModelScope.launch {
+    fun play(requested: Track, context: List<Track> = listOf(requested)): Job {
+        playJob?.cancel()
+        return viewModelScope.launch {
         try {
             val player = connected.await()
-            var track = requested
+            var track = app.library.state.value.byId[requested.id] ?: requested
             if (track.source == "reference") {
                 mutablePlayback.update { it.copy(loading = true, error = null) }
                 app.library.add(listOf(track))
@@ -120,7 +127,9 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
             player.setMediaItems(queue.map(Track::mediaItem), queue.indexOfFirst { it.identity == track.identity }.coerceAtLeast(0), 0)
             player.prepare(); player.play(); startDeadline()
             save { app.library.record(track) }
-        } catch (e: Exception) { mutablePlayback.update { it.copy(loading = false, error = e.localizedMessage) } }
+        } catch (_: CancellationException) { }
+        catch (e: Exception) { mutablePlayback.update { it.copy(loading = false, error = e.localizedMessage) } }
+        }.also { playJob = it }
     }
     private fun startDeadline() {
         loadingDeadline?.cancel()
@@ -132,7 +141,7 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
     }
     fun toggle() {
         val p = controller ?: return
-        if (playback.value.loading) { p.stop(); loadingDeadline?.cancel(); mutablePlayback.update { it.copy(loading = false) } }
+        if (playback.value.loading) { playJob?.cancel(); p.stop(); loadingDeadline?.cancel(); mutablePlayback.update { it.copy(loading = false, playing = false, error = null) } }
         else if (p.isPlaying) p.pause()
         else if (playback.value.error != null || p.playbackState == Player.STATE_IDLE) playback.value.track?.let { play(it, playback.value.queue) }
         else p.play()

@@ -25,7 +25,10 @@ class PreparedAudioRepository(context: Context, private val api: MusicApi) {
         val id = key(track, settings)
         locks.getOrPut(id) { Mutex() }.withLock {
             cached(track, settings)?.let { return@withLock it }
-            val source = api.resolve(track.location, settings, access)
+            val source = if (track.source == "remote") {
+                val address = java.net.URI(track.location); require(address.scheme == "https" && address.userInfo == null)
+                AudioStream(track.location, 0, "Source HTTPS", settings.quality, track.duration)
+            } else api.resolve(track.location, settings, access)
             val temporary = File(root, "partial-${java.util.UUID.randomUUID()}.m4a")
             try {
                 if (source.url.startsWith("file:")) {

@@ -31,6 +31,8 @@ object PlaylistImports {
     }
     fun reference(title: String, artist: String, album: String = "", duration: Long = 0, url: String = ""): Track {
         val id = videoId(url)
+        val remote = runCatching { URI(url.trim()) }.getOrNull()?.takeIf { it.scheme == "https" && !it.host.isNullOrBlank() && it.userInfo == null && it.path.substringAfterLast('.').lowercase() in listOf("mp3", "m4a", "aac", "wav", "flac", "aiff", "aif", "ogg", "opus") }
+        if (id == null && remote != null) return Track(id = "remote:" + UUID.nameUUIDFromBytes(url.toByteArray()), title = title, artist = artist, album = album, duration = duration, source = "remote", location = remote.toString())
         val identity = id ?: "${normalize(title)}|${normalize(artist)}"
         return Track(id = if (id != null) "yt:$id" else "ref:" + UUID.nameUUIDFromBytes(identity.toByteArray()), title = title, artist = artist,
             album = album, duration = duration, source = if (id != null) "online" else "reference", location = id ?: identity)
@@ -62,7 +64,7 @@ object PlaylistImports {
         if (!root.has("settings")) return LibraryState.parse(text)
         val settings = root.getJSONObject("settings")
         val tracks = root.getJSONArray("tracks").objects().map { j ->
-            val source = when (j.getString("source")) { "invidious", "youtube" -> "online"; "bundled" -> "bundled"; else -> "reference" }
+            val source = when (j.getString("source")) { "invidious", "youtube" -> "online"; "bundled" -> "bundled"; "remote" -> "remote"; else -> "reference" }
             Track(j.getString("id"), j.getString("title"), j.optString("artist"), j.optString("album"), (j.optDouble("duration") * 1000).toLong(), source,
                 j.optString("location"), j.optString("artwork", "cover-night"), j.stringOrNull("artworkURL"), j.stringOrNull("lyrics"), j.stringOrNull("artistID"), j.optBoolean("isExplicit"))
         }

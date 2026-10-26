@@ -34,6 +34,7 @@ class NativeYouTubeiResolver(private val context: Context, private val scriptPro
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var web: WebView? = null
     private var ready = CompletableDeferred<Unit>()
+    @Volatile private var documentToken: String? = null
     @Volatile private var token: String? = null
     private var result: CompletableDeferred<AudioStream>? = null
     private val calls = ConcurrentHashMap<Int, Call>()
@@ -81,12 +82,13 @@ class NativeYouTubeiResolver(private val context: Context, private val scriptPro
     private fun prepareDocument() {
         if (web != null) return
         ready = CompletableDeferred()
+        val document = UUID.randomUUID().toString(); documentToken = document
         val source = scriptProvider?.invoke() ?: context.assets.open("YouTubeiResolver.js").bufferedReader().use { it.readText() }
         web = WebView(context).apply {
             settings.javaScriptEnabled = true; settings.domStorageEnabled = false
             settings.allowFileAccess = false; settings.allowContentAccess = false
             settings.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW; settings.mediaPlaybackRequiresUserGesture = true
-            addJavascriptInterface(Bridge(), "BlusicNative")
+            addJavascriptInterface(Bridge(document, ready), "BlusicNative")
             webViewClient = object : WebViewClient() {
                 override fun onPageFinished(view: WebView, url: String) {
                     view.evaluateJavascript("window.webkit={messageHandlers:{blusicResolver:{postMessage:function(x){BlusicNative.postMessage(JSON.stringify(x));}}}};\n$source", null)
@@ -99,13 +101,14 @@ class NativeYouTubeiResolver(private val context: Context, private val scriptPro
         }
     }
     private suspend fun reset() = withContext(NonCancellable + Dispatchers.Main) {
+        documentToken = null
         web?.removeJavascriptInterface("BlusicNative"); web?.stopLoading(); web?.destroy(); web = null
     }
-    inner class Bridge {
+    inner class Bridge(private val document: String, private val readySignal: CompletableDeferred<Unit>) {
         @JavascriptInterface fun postMessage(text: String) {
-            if (text.length > 12_000_000) return
+            if (documentToken != document || text.length > 12_000_000) return
             val body = runCatching { JSONObject(text) }.getOrNull() ?: return
-            if (body.optString("action") == "ready") { ready.complete(Unit); return }
+            if (body.optString("action") == "ready") { readySignal.complete(Unit); return }
             val job = token ?: return
             if (body.optString("job") != job) return
             scope.launch {

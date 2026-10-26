@@ -34,6 +34,7 @@ class AdvancedFeaturesTest {
         val tracks = PlaylistImports.parse("Track Name;Artist Name;Album;Track URI\n\"A; B\";Artist;Album;spotify:track:123\nSong;Artist;Album;https://music.youtube.com/watch?v=abcdefghijk", "playlist.csv")
         assertEquals(2, tracks.size); assertEquals("A; B", tracks[0].title); assertEquals("reference", tracks[0].source)
         assertEquals("online", tracks[1].source); assertEquals("abcdefghijk", tracks[1].location)
+        assertEquals("remote", PlaylistImports.parse("#EXTM3U\n#EXTINF:180,Artist - Song\nhttps://audio.example.org/song.mp3", "test.m3u").single().source)
         assertTrue(runCatching { PlaylistImports.csv("Title,Artist\n\"broken") }.isFailure)
     }
     @Test fun matchingRejectsCoversAndDifferentVersions() {

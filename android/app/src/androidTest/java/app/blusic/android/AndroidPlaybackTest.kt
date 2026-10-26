@@ -23,6 +23,9 @@ import java.io.ByteArrayOutputStream
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancelAndJoin
 
 @RunWith(AndroidJUnit4::class)
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -161,8 +164,10 @@ class AndroidPlaybackTest {
         java.nio.ByteBuffer.wrap(audio).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(4, audio.size - 8).putInt(40, audio.size - 44)
         // A protocol fixture, not a claim that YouTube accepted this emulator.
         val encoded = android.util.Base64.encodeToString(audio, android.util.Base64.NO_WRAP)
+        var boots = 0
         val resolver = NativeYouTubeiResolver(context) {
-            """
+            if (++boots == 1) "window.__blusicResolve=function(){}; window.__blusicCancel=function(){}; webkit.messageHandlers.blusicResolver.postMessage({action:'ready'});"
+            else """
             var waiting={},seq=0;
             window.__blusicReply=function(i,r){var p=waiting[i];delete waiting[i];r.error?p.reject(Error(r.error)):p.resolve(r);};
             function invoke(action,data){return new Promise(function(resolve,reject){var i=++seq;waiting[i]={resolve:resolve,reject:reject};webkit.messageHandlers.blusicResolver.postMessage(Object.assign({action:action,request:i},data));});}
@@ -177,6 +182,9 @@ class AndroidPlaybackTest {
             webkit.messageHandlers.blusicResolver.postMessage({action:'ready'});
             """.trimIndent()
         }
+        val cancelled = async(Dispatchers.IO) { resolver.resolve("abcdefghijk", true) }
+        repeat(100) { if (withContext(Dispatchers.Main) { boots > 0 }) return@repeat; delay(20) }
+        assertTrue(withContext(Dispatchers.Main) { boots > 0 }); cancelled.cancelAndJoin()
         val result = withContext(Dispatchers.IO) { resolver.resolve("abcdefghijk", true) }
         val file = File(java.net.URI(result.url))
         try { assertEquals("high", result.quality); assertEquals(audio.size.toLong(), file.length()); assertTrue(NativeYouTubeiResolver.validateAudio(file, 2000) >= 1900) } finally { file.delete() }

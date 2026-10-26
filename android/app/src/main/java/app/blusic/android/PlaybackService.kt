@@ -127,7 +127,7 @@ class PlaybackService : MediaSessionService() {
                     persistQueue()
                 }
                 if (p.playWhenReady) manager.requestAudioFocus(focus)
-                else { cancelTransition(); invalidatePreparation() }
+                else { flushListening(); cancelTransition(); invalidatePreparation() }
                 if (events.contains(Player.EVENT_TIMELINE_CHANGED)) {
                     val ids = (0 until main.mediaItemCount).map { main.getMediaItemAt(it).mediaId }
                     if (ids != queueSignature) {
@@ -187,6 +187,7 @@ class PlaybackService : MediaSessionService() {
         }
     }
     fun advance() {
+        if (outgoing != null || transitionStarting) cancelTransition()
         if (!transitionStarting && outgoing == null && standby.mediaItemCount > 0 && plannedIndex == main.nextMediaItemIndex && standby.playbackState == Player.STATE_READY) beginTransition()
         else if (!transitionStarting && outgoing == null && plannedIndex == main.nextMediaItemIndex && preparation != null) {
             if (pendingAdvance?.isActive == true) return
@@ -228,7 +229,7 @@ class PlaybackService : MediaSessionService() {
         }
     }
     private fun cancelTransition() { fade?.cancel(); fade = null; outgoing?.pause(); outgoing = null; transitionStarting = false; if (::standby.isInitialized) standby.pause(); if (::main.isInitialized) main.volume = app.library.state.value.volume; app.engineState.value = app.engineState.value.copy(transitioning = false) }
-    private fun flushListening() { val seconds = listening; listening = 0.0; val track = listeningTrack ?: return; if (seconds > 0) scope.launch(Dispatchers.IO) { app.library.listening(track, seconds) } }
+    private fun flushListening() { val seconds = listening; listening = 0.0; val track = listeningTrack ?: return; if (seconds > 0) app.library.listeningAsync(track, seconds) }
     private fun tick() {
         if (!::main.isInitialized) return
         val now = android.os.SystemClock.elapsedRealtime(); val elapsed = if (tickAt > 0) (now - tickAt) / 1000.0 else 0.0; tickAt = now
@@ -263,7 +264,7 @@ class PlaybackService : MediaSessionService() {
 }
 
 fun Track.mediaItem(): MediaItem {
-    val uri = when (source) { "bundled" -> "asset:///$location"; "local" -> location; "reference" -> "blusic-reference://resolve/${Uri.encode(id)}"; else -> "blusic://$location" }
+    val uri = when (source) { "bundled" -> "asset:///$location"; "local", "remote" -> location; "reference" -> "blusic-reference://resolve/${Uri.encode(id)}"; else -> "blusic://$location" }
     val extras = android.os.Bundle().apply { putString("track", json().toString()) }
     return MediaItem.Builder().setMediaId(id).setUri(uri).setMediaMetadata(MediaMetadata.Builder().setTitle(title)
         .setArtist(artist).setAlbumTitle(album).setArtworkUri(artworkUrl?.let(Uri::parse)).setExtras(extras).build()).build()
