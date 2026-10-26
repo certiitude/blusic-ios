@@ -20,6 +20,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -32,14 +34,14 @@ import kotlinx.coroutines.delay
     Dialog(onDismissRequest = close, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
         Surface(color = Ink, contentColor = MaterialTheme.colorScheme.onBackground, modifier = Modifier.fillMaxSize()) {
             Column(Modifier.systemBarsPadding().padding(20.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontSize = 24.sp, fontWeight = FontWeight.Bold); Action(Icons.Rounded.Close, "Fermer", close) }
+                Row(Modifier.padding(bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) { Text(title, Modifier.weight(1f), fontSize = 24.sp, fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis); Action(Icons.Rounded.Close, "Fermer", close) }
                 Box(Modifier.weight(1f)) { content() }
             }
         }
     }
 }
 @Composable internal fun SettingSwitch(label: String, checked: Boolean, tag: String? = null, change: (Boolean) -> Unit) {
-    Row(Modifier.fillMaxWidth().then(if (tag != null) Modifier.testTag(tag) else Modifier), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp).then(if (tag != null) Modifier.testTag(tag) else Modifier), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(label, Modifier.weight(1f)); Switch(checked, change)
     }
 }
@@ -72,7 +74,7 @@ import kotlinx.coroutines.delay
         item { SettingSwitch("Lier vitesse et tonalité", state.linkedPitch) { linked -> vm.audio(state.speed, linked) } }
         item { ValueSlider("Tonalité", if (state.linkedPitch) (12 * kotlin.math.log2(state.speed.toDouble())).toFloat() else state.pitchSemitones, -12f..12f, "demi-tons", vm::pitch) }
         item { Text(if (state.linkedPitch) "Le son accélère et monte ensemble." else "Vitesse et hauteur réglées indépendamment.", color = Muted, fontSize = 12.sp) }
-        item { HorizontalDivider(); SettingSwitch("Égaliseur 10 bandes", state.equalizerEnabled, "equalizer-setting") { value -> vm.settings { it.copy(equalizerEnabled = value) } } }
+        item { Column { HorizontalDivider(); SettingSwitch("Égaliseur 10 bandes", state.equalizerEnabled, "equalizer-setting") { value -> vm.settings { it.copy(equalizerEnabled = value) } } } }
         if (state.equalizerEnabled) items(10) { index ->
             ValueSlider("${TenBandEqualizer.frequencies[index].toInt()} Hz", state.equalizer[index], -12f..12f, "dB") { value -> vm.settings { old -> old.copy(equalizer = old.equalizer.toMutableList().apply { this[index] = value }) } }
         }
@@ -138,7 +140,7 @@ import kotlinx.coroutines.delay
 @Composable internal fun ArtistRow(artist: MusicArtist, vm: BlusicViewModel, state: LibraryState) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Row(Modifier.weight(1f).clickable { vm.openArtist(artist) }, verticalAlignment = Alignment.CenterVertically) {
-            AsyncImage(artist.artworkUrl, artist.name, Modifier.size(56.dp)); Text(artist.name, Modifier.padding(12.dp), fontWeight = FontWeight.Bold)
+            ArtworkImage(artist.artworkUrl, artist.name, Modifier.size(56.dp), 256); Text(artist.name, Modifier.padding(12.dp).weight(1f), fontWeight = FontWeight.Bold, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
         val followed = state.followedArtists.any { it.id == artist.id }
         Action(if (followed) Icons.Rounded.Check else Icons.Rounded.PersonAdd, if (followed) "Ne plus suivre" else "Suivre l’artiste", { vm.follow(artist) })
@@ -147,7 +149,7 @@ import kotlinx.coroutines.delay
 @Composable internal fun ArtistScreen(profile: ArtistProfile, vm: BlusicViewModel, state: LibraryState) {
     val loading by vm.artistLoading.collectAsStateWithLifecycle()
     LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        item { AsyncImage(profile.artist.artworkUrl, profile.artist.name, Modifier.fillMaxWidth().height(200.dp)) }
+        item { ArtworkImage(profile.artist.artworkUrl, profile.artist.name, Modifier.fillMaxWidth().height(200.dp)) }
         item { ArtistRow(profile.artist, vm, state) }
         if (loading) item { LinearProgressIndicator(Modifier.fillMaxWidth()) }
         if (profile.biography.isNotBlank()) item { Text(profile.biography, color = Muted) }
@@ -181,6 +183,30 @@ import kotlinx.coroutines.delay
             item { Text("L’association automatique n’est pas assez sûre. Choisis la bonne version.", color = Muted) }
             item { OutlinedButton(onClick = { file.launch(arrayOf("audio/*")) }) { Text("Associer un fichier audio") } }
             items(results.tracks, key = { it.id }) { candidate -> TrackRow(candidate, vm, state) { vm.associate(reference, candidate) } }
+        }
+    }
+}
+
+@Composable internal fun RelaySettings(vm: BlusicViewModel, state: LibraryState) {
+    var advanced by remember { mutableStateOf(false) }
+    var address by remember(state.relayAddress) { mutableStateOf(state.relayAddress) }
+    var key by remember { mutableStateOf("") }
+    val bundled = state.relayAddress.trimEnd('/') == "https://blusic-audio-relay.onrender.com"
+    Surface(shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
+        Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Relais youtubei.js", fontSize = 19.sp, fontWeight = FontWeight.Bold)
+            Text(when { state.relayDisabled -> "Relais distant désactivé"; bundled -> "Relais Blusic préconfiguré · activé"; state.relayAddress.isNotBlank() -> "Relais personnalisé · activé"; else -> "Configuration du relais en cours…" },
+                modifier = Modifier.testTag("relay-status"), fontWeight = FontWeight.SemiBold)
+            if (bundled && !state.relayDisabled) Text("blusic-audio-relay.onrender.com", fontSize = 12.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            Text("Aucune adresse ni clé à saisir. Accès application sans expiration ni quota d’écoutes Blusic, sans PC à laisser allumé. Les limites de Render Free et les refus éventuels de YouTube restent applicables.", fontSize = 12.sp)
+            OutlinedButton(onClick = { vm.useBundledRelay() }, modifier = Modifier.testTag("restore-bundled-relay")) { Text("Utiliser le relais Blusic préconfiguré") }
+            if (!state.relayDisabled && state.relayAddress.isNotBlank()) TextButton(onClick = { vm.relay("", "") }) { Text("Désactiver le relais distant") }
+            TextButton(onClick = { advanced = !advanced }) { Text(if (advanced) "Masquer les réglages avancés" else "Relais personnalisé · réglages avancés") }
+            if (advanced) {
+                OutlinedTextField(address, { address = it }, label = { Text("Adresse HTTPS du relais") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                OutlinedTextField(key, { key = it }, label = { Text("Accès du relais personnalisé") }, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(), singleLine = true)
+                Button(onClick = { vm.relay(address, key) }) { Text("Enregistrer le relais personnalisé") }
+            }
         }
     }
 }

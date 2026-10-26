@@ -22,12 +22,20 @@ import androidx.media3.session.MediaSessionService
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
 import java.util.concurrent.ConcurrentHashMap
+import coil.ImageLoader
+import coil.ImageLoaderFactory
+import coil.memory.MemoryCache
+import coil.disk.DiskCache
+import java.io.File
 
 data class EngineState(val preparation: String? = null, val transitioning: Boolean = false, val overlapping: Int = 0,
     val format: String = "", val firstAudioMs: Long? = null, val sleepDeadline: Long? = null, val stopAtEnd: Boolean = false,
     val loopA: Long? = null, val loopB: Long? = null)
 
-class BlusicApplication : Application() {
+class BlusicApplication : Application(), ImageLoaderFactory {
+    override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
+        .memoryCache { MemoryCache.Builder(this).maxSizeBytes(minOf(48L * 1024 * 1024, Runtime.getRuntime().maxMemory() / 8).toInt()).build() }
+        .diskCache { DiskCache.Builder().directory(File(cacheDir, "artwork-hd-v2")).maxSizeBytes(80L * 1024 * 1024).build() }.build()
     val library by lazy { LibraryRepository(this) }
     val nativeResolver by lazy { NativeYouTubeiResolver(this) }
     val api by lazy { MusicApi(nativeResolver = { video, settings -> nativeResolver.resolve(video, settings.highQuality) }) }
@@ -61,13 +69,16 @@ class PlaybackService : MediaSessionService() {
     private var shuffleSeed = 261026L
     private var queueSignature = emptyList<String>()
     private var focusResume = false
+    private var cachedItem: MediaItem? = null
+    private var cachedTrack: Track? = null
+    private var appliedSound: Triple<Float, Float, Float>? = null
     private val manager by lazy { getSystemService(AudioManager::class.java) }
     private val focus by lazy { AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
         .setAudioAttributes(android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build())
         .setOnAudioFocusChangeListener { change ->
             when (change) {
                 AudioManager.AUDIOFOCUS_LOSS, AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> { focusResume = change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT && main.playWhenReady; main.pause(); cancelTransition() }
-                AudioManager.AUDIOFOCUS_GAIN -> if (focusResume) { focusResume = false; main.play() }
+                AudioManager.AUDIOFOCUS_GAIN -> { main.volume = app.library.state.value.volume; if (focusResume) { focusResume = false; main.play() } }
                 AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK -> { main.volume = app.library.state.value.volume * .2f; outgoing?.volume = 0f }
             }
         }.build() }
@@ -86,8 +97,12 @@ class PlaybackService : MediaSessionService() {
             }
             app.library.state.collect { settings ->
                 if (settingsKey != settings.resolutionKey) { settingsKey = settings.resolutionKey; invalidatePreparation() }
-                for (player in listOf(main, standby)) player.playbackParameters = PlaybackParameters(settings.speed, settings.pitchRatio)
-                if (fade == null) main.volume = settings.volume
+                val sound = Triple(settings.speed, settings.pitchRatio, settings.volume)
+                if (appliedSound != sound) {
+                    for (player in listOf(main, standby)) player.playbackParameters = PlaybackParameters(settings.speed, settings.pitchRatio)
+                    if (fade == null) main.volume = settings.volume
+                    appliedSound = sound
+                }
                 if (!settings.crossfade && (outgoing != null || transitionStarting)) cancelTransition()
             }
         }
@@ -126,8 +141,8 @@ class PlaybackService : MediaSessionService() {
                     track?.let { scope.launch(Dispatchers.IO) { app.library.record(it) } }
                     persistQueue()
                 }
-                if (p.playWhenReady) manager.requestAudioFocus(focus)
-                else { flushListening(); cancelTransition(); invalidatePreparation() }
+                if (p.playWhenReady && events.contains(Player.EVENT_PLAY_WHEN_READY_CHANGED)) manager.requestAudioFocus(focus)
+                else if (!p.playWhenReady) { flushListening(); cancelTransition(); invalidatePreparation() }
                 if (events.contains(Player.EVENT_TIMELINE_CHANGED)) {
                     val ids = (0 until main.mediaItemCount).map { main.getMediaItemAt(it).mediaId }
                     if (ids != queueSignature) {
@@ -148,7 +163,11 @@ class PlaybackService : MediaSessionService() {
         override fun pause() { player.pause(); cancelTransition(); invalidatePreparation() }
         override fun stop() { player.stop(); cancelTransition(); invalidatePreparation() }
     }
-    private fun currentTrack(player: Player = main): Track? = player.currentMediaItem?.mediaMetadata?.extras?.getString("track")?.let { runCatching { Track.fromJson(org.json.JSONObject(it)) }.getOrNull() }
+    private fun currentTrack(): Track? {
+        val item = main.currentMediaItem
+        if (item !== cachedItem) { cachedItem = item; cachedTrack = item?.mediaMetadata?.extras?.getString("track")?.let { runCatching { Track.fromJson(org.json.JSONObject(it)) }.getOrNull() } }
+        return cachedTrack
+    }
     private fun persistQueue() {
         val tracks = (0 until main.mediaItemCount).mapNotNull { index -> main.getMediaItemAt(index).mediaMetadata.extras?.getString("track")?.let { runCatching { Track.fromJson(org.json.JSONObject(it)) }.getOrNull() } }
         val current = currentTrack()?.id

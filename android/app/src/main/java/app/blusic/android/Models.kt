@@ -47,8 +47,16 @@ data class LibraryState(val tracks: List<Track> = Track.demos(), val favorites: 
     val relayDisabled: Boolean = false, val relayRevision: String = "", val automaticFallback: Boolean = true,
     val appearance: String = "dark", val accent: String = "violet", val haptics: Boolean = true,
     val compactRows: Boolean = false, val artworkRadius: Float = 14f, val animateArtwork: Boolean = true) {
-    val byId by lazy { tracks.associateBy { it.id } }
-    val byIdentity by lazy { tracks.associateBy { it.identity } }
+    private class TrackIndex(tracks: List<Track>) {
+        val byId = tracks.associateBy { it.id }
+        val byIdentity = tracks.associateBy { it.identity }
+    }
+    @Volatile private var index: TrackIndex? = null
+    private fun index(): TrackIndex = index ?: synchronized(this) { index ?: TrackIndex(tracks).also { index = it } }
+    val byId get() = index().byId
+    val byIdentity get() = index().byIdentity
+    fun reuseIndexes(previous: LibraryState): LibraryState { if (tracks === previous.tracks) index = previous.index; return this }
+    fun presentation(): LibraryState = if (history.isEmpty()) this else copy(history = emptyList()).reuseIndexes(this)
     val likedTracks by lazy { tracks.filter { it.id in favorites } }
     val recentTracks by lazy { recent.mapNotNull { byId[it] } }
     val quality get() = if (highQuality) "high" else "standard"

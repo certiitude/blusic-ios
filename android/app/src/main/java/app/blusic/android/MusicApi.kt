@@ -19,6 +19,7 @@ class MusicApi(val client: OkHttpClient = OkHttpClient.Builder().connectTimeout(
     .readTimeout(6, TimeUnit.SECONDS).callTimeout(7, TimeUnit.SECONDS).build(),
     private val nativeResolver: (suspend (String, LibraryState) -> AudioStream)? = null) {
     private val resolved = ConcurrentHashMap<String, Pair<Long, AudioStream>>()
+    private val relayClient = client.newBuilder().readTimeout(17, TimeUnit.SECONDS).callTimeout(17, TimeUnit.SECONDS).build()
     private val jsonType = "application/json; charset=utf-8".toMediaType()
     fun search(query: String, continuation: String? = null): SearchPage {
         val body = JSONObject().put("context", JSONObject().put("client", JSONObject()
@@ -88,7 +89,7 @@ class MusicApi(val client: OkHttpClient = OkHttpClient.Builder().connectTimeout(
     fun invalidate(video: String) { resolved.keys.removeAll { it.endsWith("|$video") } }
     private fun relayService(video: String, address: String, key: String, high: Boolean): AudioStream {
         val base = validateInstance(address)
-        val payload = json(Request.Builder().url("$base/v1/streams/$video" + if (high) "?quality=high" else "").header("Authorization", "Bearer $key").build())
+        val payload = json(Request.Builder().url("$base/v1/streams/$video" + if (high) "?quality=high" else "").header("Authorization", "Bearer $key").build(), relayClient)
         if (high && payload.optString("requestedQuality") != "high") throw IOException("Relais sans prise en charge de la haute qualité")
         val server = URI(base)
         val url = server.resolve(payload.getString("url"))
@@ -165,7 +166,7 @@ class MusicApi(val client: OkHttpClient = OkHttpClient.Builder().connectTimeout(
             return body.stringOrNull("syncedLyrics") ?: body.stringOrNull("plainLyrics")
         }
     }
-    private fun json(request: Request): JSONObject = client.newCall(request.newBuilder().header("User-Agent", "Blusic Android/1.0").build()).execute().use {
+    private fun json(request: Request, transport: OkHttpClient = client): JSONObject = transport.newCall(request.newBuilder().header("User-Agent", "Blusic Android/1.9.2").build()).execute().use {
         if (!it.isSuccessful) throw IOException("${request.url.host} : HTTP ${it.code}")
         try { JSONObject(it.body?.string() ?: "") } catch (_: Exception) { throw IOException("${request.url.host} renvoie une page au lieu du JSON attendu") }
     }

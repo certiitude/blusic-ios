@@ -191,6 +191,51 @@ class AndroidPlaybackTest {
         assertTrue(context.assets.open("YouTubeiResolver.js").bufferedReader().use { it.readText().contains("__blusicResolve") })
     }
 
+    @Test fun repeatedLibraryAccessDoesNotRewriteTheLibraryAndRelayNeedsNoManualKey() = runBlocking {
+        val app = compose.activity.application as BlusicApplication
+        app.library.ready.await(); app.library.useBundledRelay()
+        val state = app.library.state.value
+        assertEquals("https://blusic-audio-relay.onrender.com", state.relayAddress)
+        assertFalse(state.relayDisabled)
+        assertTrue(app.library.relayCredentials.read(state.relayAddress)?.startsWith("app.android.") == true)
+        val restored = LibraryRepository(compose.activity); restored.ready.await()
+        val count = restored.writeCount
+        repeat(20) { restored.add(listOf(Track.demos()[0])); restored.update { it } }
+        assertEquals(count, restored.writeCount)
+        assertEquals(state.relayAddress, restored.state.value.relayAddress)
+        compose.onNodeWithContentDescription("Réglages").performClick()
+        compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("relay-status"))
+        compose.onNodeWithTag("relay-status").assertTextContains("préconfiguré")
+        compose.onNodeWithText("Clé du relais").assertDoesNotExist()
+        screenshot("android-relay")
+    }
+
+    @Test fun compactPlayerWithLargeTextHasSeparateMetadataAndReachableControls() {
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val fixture = File(compose.activity.cacheDir, "layout-long.wav")
+        compose.activity.assets.open("bleu-nuit.wav").use { input -> fixture.outputStream().use { input.copyTo(it) } }
+        fun shell(command: String) = android.os.ParcelFileDescriptor.AutoCloseInputStream(instrumentation.uiAutomation.executeShellCommand(command)).bufferedReader().use { it.readText() }
+        try {
+            shell("wm size 720x1280"); shell("wm density 320"); shell("settings put system font_scale 1.3")
+            Thread.sleep(1200); compose.activityRule.scenario.recreate()
+            lateinit var vm: BlusicViewModel
+            val track = Track.demos()[0].copy(id = "layout-long", source = "local", location = fixture.toURI().toString(), title = "Un très long titre avec plusieurs mots pour vérifier une interface lisible", artist = "Un artiste au nom long, et son invité", album = "Un album au titre particulièrement long")
+            compose.runOnUiThread { vm = ViewModelProvider(compose.activity)[BlusicViewModel::class.java]; vm.play(track) }
+            compose.waitUntil(15000) { vm.playback.value.playing }
+            compose.onNodeWithTag("mini-player").performClick()
+            compose.onNodeWithTag("player-play").assertIsDisplayed()
+            compose.onNodeWithTag("player-title").performScrollTo()
+            val title = compose.onNodeWithTag("player-title").getUnclippedBoundsInRoot()
+            val artist = compose.onNodeWithTag("player-artist").getUnclippedBoundsInRoot()
+            assertTrue("Metadata must be laid out in distinct rows", title.bottom <= artist.top)
+            screenshot("android-compact-player")
+            compose.onNodeWithContentDescription("File d’attente").performClick()
+            compose.onNodeWithText("Vider la file").assertIsDisplayed()
+            screenshot("android-compact-queue")
+            compose.runOnUiThread { vm.controller?.pause() }
+        } finally { shell("settings put system font_scale 1.0"); shell("wm size reset"); shell("wm density reset"); Thread.sleep(800); fixture.delete() }
+    }
+
     private fun screenshot(name: String) {
         compose.waitForIdle()
         val instrumentation = InstrumentationRegistry.getInstrumentation()

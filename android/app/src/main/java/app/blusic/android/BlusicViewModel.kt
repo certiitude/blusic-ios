@@ -23,12 +23,15 @@ data class PlaybackUi(val track: Track? = null, val playing: Boolean = false, va
 class BlusicViewModel(application: Application) : AndroidViewModel(application) {
     private val app = application as BlusicApplication
     val library = app.library.state
+    val presentationLibrary = library.map { it.presentation() }.distinctUntilChanged().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), library.value.presentation())
     val libraryError = app.library.error
     val engine = app.engineState
     val artistResults = MutableStateFlow<List<MusicArtist>>(emptyList())
     val artistProfile = MutableStateFlow<ArtistProfile?>(null)
     val artistLoading = MutableStateFlow(false)
     val matchReference = MutableStateFlow<Track?>(null)
+    private var timelineItems = emptyList<MediaItem>()
+    private var timelineTracks = emptyList<Track>()
     private val mutablePlayback = MutableStateFlow(PlaybackUi())
     val playback = mutablePlayback.asStateFlow()
     val search = MutableStateFlow(SearchPage(emptyList(), null))
@@ -46,11 +49,13 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
     private var recordedId: String? = null
     private val listener = object : Player.Listener {
         override fun onEvents(player: Player, events: Player.Events) {
-            val track = player.currentMediaItem?.mediaMetadata?.extras?.getString("track")?.let { runCatching { Track.fromJson(JSONObject(it)) }.getOrNull() }
+            val items = (0 until player.mediaItemCount).map { player.getMediaItemAt(it) }
+            if (items != timelineItems) { timelineItems = items; timelineTracks = items.mapNotNull { it.mediaMetadata.extras?.getString("track")?.let { raw -> runCatching { Track.fromJson(JSONObject(raw)) }.getOrNull() } } }
+            val track = timelineTracks.getOrNull(player.currentMediaItemIndex)
             val previous = mutablePlayback.value
             mutablePlayback.value = previous.copy(track = track, playing = player.isPlaying,
                 loading = player.playbackState == Player.STATE_BUFFERING, shuffle = player.shuffleModeEnabled, repeat = player.repeatMode,
-                queue = (0 until player.mediaItemCount).mapNotNull { player.getMediaItemAt(it).mediaMetadata.extras?.getString("track")?.let { raw -> runCatching { Track.fromJson(JSONObject(raw)) }.getOrNull() } })
+                queue = timelineTracks)
             if (player.isPlaying) {
                 loadingDeadline?.cancel()
                 if (track != null && track.id != recordedId) { recordedId = track.id; save { app.library.record(track) } }
@@ -170,6 +175,7 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
         }
         message.value = "Réglage du relais enregistré"
     }
+    fun useBundledRelay() = save { app.library.useBundledRelay(); message.value = "Relais Blusic préconfiguré activé" }
     private fun applyAudio() { val s = library.value; controller?.playbackParameters = PlaybackParameters(s.speed, s.pitchRatio) }
     fun settings(change: (LibraryState) -> LibraryState) = save { app.library.update(change) }
     fun pitch(semitones: Float) = settings { it.copy(pitchSemitones = semitones.coerceIn(-12f, 12f), speed = if (it.linkedPitch) Math.pow(2.0, semitones / 12.0).toFloat().coerceIn(.5f, 2f) else it.speed) }

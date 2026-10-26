@@ -17,6 +17,7 @@ class LibraryRepository(private val context: Context) {
     private val lock = Mutex()
     private val file = AtomicFile(File(context.filesDir, "library.json"))
     private val mutable = MutableStateFlow(LibraryState())
+    internal var writeCount: Long = 0; private set
     val state = mutable.asStateFlow()
     val error = MutableStateFlow<String?>(null)
     val ready = scope.async {
@@ -26,27 +27,38 @@ class LibraryRepository(private val context: Context) {
     }
     private fun installBundledRelay() {
         runCatching {
-            val bundled = org.json.JSONObject(context.assets.open("bundled-relay.json").bufferedReader().use { it.readText() })
-            val old = mutable.value; val revision = bundled.getString("revision"); val address = bundled.getString("url")
-            if (old.relayRevision != revision && !old.relayDisabled && (old.relayAddress.isBlank() || old.relayAddress == address)) {
-                val access = bundled.getString("access")
-                require(access.matches(Regex("app\\.android\\.[a-f0-9]{64}")) && bundled.getLong("expiresAt") == 0L)
-                relayCredentials.save(access, address)
-                mutable.value = old.copy(relayAddress = address, relayRevision = revision)
+            val bundled = BundledRelay.load(context) ?: return
+            val old = mutable.value
+            if (bundled.shouldInstall(old, relayCredentials.read(bundled.address))) {
+                relayCredentials.save(bundled.access, bundled.address)
+                val next = old.copy(relayAddress = bundled.address, relayRevision = bundled.revision)
+                persist(next); mutable.value = next
             }
         }.onFailure { if (it !is java.io.FileNotFoundException) error.value = "Configuration du relais : ${it.localizedMessage}" }
+    }
+    private fun persist(next: LibraryState) {
+        val stream = file.startWrite()
+        try { stream.write(next.json().toString().toByteArray()); file.finishWrite(stream); writeCount++ }
+        catch (e: Exception) { file.failWrite(stream); throw e }
+    }
+    suspend fun useBundledRelay() {
+        val bundled = BundledRelay.load(context) ?: kotlin.error("Configuration Blusic absente de cet APK")
+        withContext(Dispatchers.IO) { relayCredentials.save(bundled.access, bundled.address) }
+        update { it.copy(relayAddress = bundled.address, relayRevision = bundled.revision, relayDisabled = false, sourceMode = "auto") }
     }
     suspend fun update(change: (LibraryState) -> LibraryState) = withContext(Dispatchers.IO) {
         ready.await()
         lock.withLock {
-            val next = change(mutable.value)
-            val stream = file.startWrite()
-            try { stream.write(next.json().toString().toByteArray()); file.finishWrite(stream); mutable.value = next }
-            catch (e: Exception) { file.failWrite(stream); throw e }
+            val old = mutable.value; val next = change(old)
+            if (next != old) { next.reuseIndexes(old); persist(next); mutable.value = next }
         }
     }
     suspend fun add(tracks: List<Track>) {
         update { old ->
+            if (tracks.all { track -> old.byIdentity[track.identity]?.let { saved ->
+                (saved.artistId != null || track.artistId == null) && (saved.artworkUrl != null || track.artworkUrl == null) &&
+                    (saved.album.isNotBlank() || track.album.isBlank()) && (saved.duration > 0 || track.duration <= 0)
+            } == true }) return@update old
             val updated = old.tracks.toMutableList(); val indices = updated.withIndex().associate { it.value.identity to it.index }.toMutableMap()
             for (track in tracks) {
                 val index = indices[track.identity]
@@ -91,7 +103,7 @@ class LibraryRepository(private val context: Context) {
                 reader.embeddedPicture?.takeIf { it.size <= 16_000_000 }?.let { bytes ->
                     val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
                     android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                    val options = android.graphics.BitmapFactory.Options().apply { inSampleSize = (maxOf(bounds.outWidth, bounds.outHeight) / 512).coerceAtLeast(1) }
+                    val options = android.graphics.BitmapFactory.Options().apply { inSampleSize = (maxOf(bounds.outWidth, bounds.outHeight) / 1536).coerceAtLeast(1) }
                     android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, options)?.let { bitmap ->
                         val directory = File(context.filesDir, "ImportedArtwork").apply { mkdirs() }; val target = File(directory, "${java.util.UUID.randomUUID()}.jpg")
                         target.outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 90, it) }; bitmap.recycle(); cover = target.toURI().toString()
