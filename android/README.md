@@ -2,7 +2,7 @@
 
 Application native **Kotlin / Jetpack Compose**, Android **8.0 minimum (API 26)**, cible Android 15 (API 35). Lecteur **Media3 / ExoPlayer** dans un service média : lecture en arrière-plan, commandes de notification et écran verrouillé, focus audio, Bluetooth et arrêt quand la sortie se déconnecte.
 
-## Première version
+## Version 1.9.1
 
 - Accueil sombre, pochettes, accès rapide, récents et démonstrations Blusic Studio.
 - Recherche de **chansons YouTube Music**, pagination et recherche locale ; filtre ATV pour ne pas confondre chanson et clip vidéo.
@@ -12,7 +12,9 @@ Application native **Kotlin / Jetpack Compose**, Android **8.0 minimum (API 26)*
 - Accès audio automatique, direct ou Invidious configurable ; validation du contenu et lecture HTTP par plages bornées de 256 Ko. Les refus du fournisseur restent affichés.
 - Images redimensionnées par Coil, listes paresseuses, réseau et disque hors du thread UI ; seules les petites vues de progression suivent l’horloge.
 
-Les démonstrations et pochettes originales sont réutilisées depuis les ressources du projet iOS par la configuration Gradle ; aucun média commercial n’est inclus. Les fonctions avancées iOS (EQ 10 bandes, fondu entre deux lecteurs, import CSV avec association) ne sont pas encore portées dans cette première version Android.
+Les fonctions avancées ont été portées : youtubei.js/SABR sur l’appareil et relais préconfiguré, haute qualité, préparation complète à 45 s, fondu entre deux lecteurs, EQ dix bandes, tonalité indépendante, imports CSV/Deezer/YouTube avec association, sauvegardes JSON, profils/suivi d’artistes, statistiques, minuterie/boucle A–B et réglages d’apparence. Détails et vérifications dans [le rapport de parité](../docs/ANDROID-PARITE-1.9.1.md).
+
+Les démonstrations et pochettes originales sont réutilisées depuis les ressources du projet iOS ; aucun média commercial n’est inclus. Le bundle JavaScript et ses licences sont générés par `native-resolver`, et l’accès application Android est injecté par `tools/configure_relay.py` en CI, sans clé d’administration ni clé maître du relais.
 
 ## Compilation
 
@@ -31,4 +33,4 @@ Les tests unitaires couvrent les métadonnées musicales, l’exclusion des vid�
 
 La livraison finale GitHub Actions [`40234869261`](https://github.com/certiitude/blusic-ios/actions/runs/40234869261) réussit : **7 tests unitaires JVM et 5 tests sur émulateur Android 15**, dont lecture réelle en ligne de Stephanie et déplacement à 30 s. La signature du paquet est vérifiée par `apksigner` et cinq captures réelles sont récupérées et inspectées. Le diagnostic, le chemin de l’APK et les résultats exacts sont dans [le rapport commun](../docs/RELAIS-ET-ANDROID.md).
 
-Un test de lecture ne prouve pas la disponibilité de tout le catalogue réseau. Les mêmes fournisseurs tiers peuvent refuser une lecture sur Android comme sur iOS ; le relais youtubei.js déployé reçoit encore des HTTP 403 de YouTube et n’est pas activé par défaut.
+Un test de lecture ne prouve pas la disponibilité de tout le catalogue réseau. Les mêmes fournisseurs tiers peuvent refuser une lecture sur Android comme sur iOS ; le moteur local est essayé avant les accès de secours. Le relais préconfiguré reste soumis aux refus réseau YouTube et aux limites Render Free.

@@ -3,9 +3,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main, master]
-    paths: ['android/**', '.github/workflows/android.yml']
+    paths: ['android/**', '.github/workflows/android.yml', 'native-resolver/**', 'relay/audio-quality.mjs']
   pull_request:
-    paths: ['android/**', '.github/workflows/android.yml']
+    paths: ['android/**', '.github/workflows/android.yml', 'native-resolver/**', 'relay/audio-quality.mjs']
 permissions:
   contents: read
 jobs:
@@ -14,6 +14,23 @@ jobs:
     timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: native-resolver/package-lock.json
+      - name: Package on-device youtubei.js and licences
+        working-directory: native-resolver
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run build
+          mkdir -p ../android/app/src/main/assets
+          cp ../Blusic/YouTubeiResolver.js ../Blusic/ThirdPartyResolverLicenses.txt ../android/app/src/main/assets/
+      - name: Configure preinstalled Android relay access
+        working-directory: android
+        env:
+          BLUSIC_ANDROID_RELAY_ACCESS: ${{ secrets.BLUSIC_ANDROID_RELAY_ACCESS }}
+        run: python3 tools/configure_relay.py
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -44,6 +61,7 @@ jobs:
         run: |
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose app/build/outputs/apk/debug/app-debug.apk
           "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging app/build/outputs/apk/debug/app-debug.apk
+          python3 ../tools/verify_apk.py app/build/outputs/apk/debug/app-debug.apk
       - name: Enable emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

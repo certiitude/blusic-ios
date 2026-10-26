@@ -24,6 +24,11 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
     private val app = application as BlusicApplication
     val library = app.library.state
     val libraryError = app.library.error
+    val engine = app.engineState
+    val artistResults = MutableStateFlow<List<MusicArtist>>(emptyList())
+    val artistProfile = MutableStateFlow<ArtistProfile?>(null)
+    val artistLoading = MutableStateFlow(false)
+    val matchReference = MutableStateFlow<Track?>(null)
     private val mutablePlayback = MutableStateFlow(PlaybackUi())
     val playback = mutablePlayback.asStateFlow()
     val search = MutableStateFlow(SearchPage(emptyList(), null))
@@ -43,7 +48,8 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
             val track = player.currentMediaItem?.mediaMetadata?.extras?.getString("track")?.let { runCatching { Track.fromJson(JSONObject(it)) }.getOrNull() }
             val previous = mutablePlayback.value
             mutablePlayback.value = previous.copy(track = track, playing = player.isPlaying,
-                loading = player.playbackState == Player.STATE_BUFFERING, shuffle = player.shuffleModeEnabled, repeat = player.repeatMode)
+                loading = player.playbackState == Player.STATE_BUFFERING, shuffle = player.shuffleModeEnabled, repeat = player.repeatMode,
+                queue = (0 until player.mediaItemCount).mapNotNull { player.getMediaItemAt(it).mediaMetadata.extras?.getString("track")?.let { raw -> runCatching { Track.fromJson(JSONObject(raw)) }.getOrNull() } })
             if (player.isPlaying) {
                 loadingDeadline?.cancel()
                 if (track != null && track.id != recordedId) { recordedId = track.id; save { app.library.record(track) } }
@@ -94,10 +100,19 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
             finally { if (isActive) searchLoading.value = false }
         }
     }
-    fun play(track: Track, context: List<Track> = listOf(track)) = viewModelScope.launch {
+    fun play(requested: Track, context: List<Track> = listOf(requested)) = viewModelScope.launch {
         try {
             val player = connected.await()
-            val queue = context.ifEmpty { listOf(track) }.distinctBy { it.identity }
+            var track = requested
+            if (track.source == "reference") {
+                mutablePlayback.update { it.copy(loading = true, error = null) }
+                app.library.add(listOf(track))
+                track = try { withContext(Dispatchers.IO) { app.api.match(requested).copy(id = requested.id) } }
+                catch (e: Exception) { if (e is CancellationException) throw e; matchReference.value = requested; mutablePlayback.update { it.copy(loading = false) }; return@launch }
+                app.library.replaceSource(requested, track)
+            }
+            val queue = context.ifEmpty { listOf(track) }.map { if (it.id == requested.id) track else it }.distinctBy { it.identity }
+            app.library.add(queue)
             mutablePlayback.value = PlaybackUi(track = track, loading = true, queue = queue, shuffle = player.shuffleModeEnabled, repeat = player.repeatMode)
             app.api.invalidate(track.location)
             player.setMediaItems(queue.map(Track::mediaItem), queue.indexOfFirst { it.identity == track.identity }.coerceAtLeast(0), 0)
@@ -108,8 +123,9 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
     private fun startDeadline() {
         loadingDeadline?.cancel()
         loadingDeadline = viewModelScope.launch {
-            delay(20_000)
-            if (controller?.isPlaying != true) { controller?.stop(); mutablePlayback.update { it.copy(loading = false, playing = false, error = "Le chargement a dépassé 20 secondes. Réessaie ou change de source audio.") } }
+            val seconds = if (library.value.sourceMode in listOf("auto", "youtubei")) 50 else 20
+            delay(seconds * 1000L)
+            if (controller?.isPlaying != true) { controller?.stop(); mutablePlayback.update { it.copy(loading = false, playing = false, error = "Le chargement a dépassé $seconds secondes. Réessaie ou change de source audio.") } }
         }
     }
     fun toggle() {
@@ -134,16 +150,48 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
     }
     fun audio(speed: Float, linked: Boolean) = save { app.library.update { it.copy(speed = speed, linkedPitch = linked) }; withContext(Dispatchers.Main) { applyAudio() } }
     fun relay(address: String, key: String) = save {
-        if (address.isBlank()) app.library.update { it.copy(relayAddress = "") }
+        if (address.isBlank()) app.library.update { it.copy(relayAddress = "", relayDisabled = true) }
         else {
             val server = MusicApi.validateInstance(address)
             require(key.length >= 24) { "La clé doit contenir au moins 24 caractères" }
             app.library.relayCredentials.save(key, server)
-            app.library.update { it.copy(relayAddress = server) }
+            app.library.update { it.copy(relayAddress = server, relayDisabled = false) }
         }
         message.value = "Réglage du relais enregistré"
     }
-    private fun applyAudio() { val s = library.value; controller?.playbackParameters = PlaybackParameters(s.speed, if (s.linkedPitch) s.speed else 1f) }
+    private fun applyAudio() { val s = library.value; controller?.playbackParameters = PlaybackParameters(s.speed, s.pitchRatio) }
+    fun settings(change: (LibraryState) -> LibraryState) = save { app.library.update(change) }
+    fun pitch(semitones: Float) = settings { it.copy(pitchSemitones = semitones.coerceIn(-12f, 12f), speed = if (it.linkedPitch) Math.pow(2.0, semitones / 12.0).toFloat().coerceIn(.5f, 2f) else it.speed) }
+    fun enqueue(track: Track, next: Boolean) = viewModelScope.launch {
+        app.library.add(listOf(track)); val p = connected.await()
+        val existing = (0 until p.mediaItemCount).firstOrNull { p.getMediaItemAt(it).mediaId == track.id }
+        if (existing == p.currentMediaItemIndex) return@launch
+        existing?.let(p::removeMediaItem)
+        p.addMediaItem(if (next) (p.currentMediaItemIndex + 1).coerceAtLeast(0) else p.mediaItemCount, track.mediaItem())
+        message.value = if (next) "À écouter juste après" else "Ajouté à la file"
+    }
+    fun removeQueue(index: Int) { controller?.takeIf { index in 0 until it.mediaItemCount }?.removeMediaItem(index) }
+    fun moveQueue(index: Int, direction: Int) { controller?.let { if (index in 0 until it.mediaItemCount && index + direction in 0 until it.mediaItemCount) it.moveMediaItem(index, index + direction) } }
+    fun clearQueue() { controller?.let { val item = it.currentMediaItem ?: return; val position = it.currentPosition; it.setMediaItems(listOf(item), 0, position) } }
+    fun sleep(minutes: Int?) { engine.value = engine.value.copy(sleepDeadline = minutes?.let { System.currentTimeMillis() + it * 60_000L }, stopAtEnd = false) }
+    fun stopAtEnd() { engine.value = engine.value.copy(stopAtEnd = !engine.value.stopAtEnd, sleepDeadline = null) }
+    fun loop() {
+        val e = engine.value; val position = controller?.currentPosition ?: return
+        engine.value = when { e.loopA == null -> e.copy(loopA = position); e.loopB == null && position > e.loopA -> e.copy(loopB = position); else -> e.copy(loopA = null, loopB = null) }
+    }
+    fun follow(artist: MusicArtist) = save { app.library.follow(artist) }
+    fun searchArtists(query: String) { searchJob?.cancel(); searchJob = viewModelScope.launch { try { delay(400); artistResults.value = withContext(Dispatchers.IO) { app.api.artists(query) } } catch (e: Exception) { if (e !is CancellationException) searchError.value = e.localizedMessage } } }
+    fun openArtist(artist: MusicArtist) = viewModelScope.launch {
+        artistLoading.value = true; artistProfile.value = ArtistProfile(artist, "", emptyList())
+        try { artistProfile.value = withContext(Dispatchers.IO) { app.api.artist(artist) } } catch (e: Exception) { if (e !is CancellationException) message.value = e.localizedMessage } finally { artistLoading.value = false }
+    }
+    fun importDocument(uri: Uri) = save { message.value = app.library.importDocument(uri) }
+    fun export(uri: Uri) = save { app.library.export(uri); message.value = "Sauvegarde exportée" }
+    fun importLyrics(uri: Uri, track: Track) = save { app.library.importLyrics(uri, track); message.value = "Paroles enregistrées" }
+    fun importRemote(address: String) = save { val result = app.api.importRemote(address, library.value.instance); app.library.importPlaylist(result.first, result.second); message.value = "${result.second.size} titres importés" }
+    fun editPlaylist(id: String, name: String? = null, removeTrack: String? = null, delete: Boolean = false) = save { app.library.editPlaylist(id, name, removeTrack, delete) }
+    fun removeTrack(track: Track) = save { withContext(Dispatchers.Main) { controller?.let { p -> for (i in p.mediaItemCount - 1 downTo 0) if (p.getMediaItemAt(i).mediaId == track.id) p.removeMediaItem(i) } }; app.library.remove(track) }
+    fun associate(reference: Track, selected: Track) = save { val replacement = selected.copy(id = reference.id); app.library.replaceSource(reference, replacement); matchReference.value = null; withContext(Dispatchers.Main) { play(replacement, listOf(replacement)) } }
     suspend fun lyrics(track: Track): String? = withContext(Dispatchers.IO) {
         val text = app.api.lyrics(track)
         if (!text.isNullOrBlank()) { app.library.add(listOf(track)); app.library.cacheLyrics(track, text) }

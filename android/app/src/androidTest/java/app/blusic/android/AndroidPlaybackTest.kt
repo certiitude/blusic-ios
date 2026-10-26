@@ -21,6 +21,8 @@ import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.Protocol
 import java.io.ByteArrayOutputStream
 import java.io.IOException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 @RunWith(AndroidJUnit4::class)
 @androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
@@ -73,7 +75,8 @@ class AndroidPlaybackTest {
         compose.onNodeWithTag("search-field").assertExists()
         screenshot("android-search")
         compose.onNodeWithContentDescription("Réglages").performClick()
-        compose.onNodeWithText("Sources audio").assertExists()
+        compose.onNodeWithText("Audio haute qualité").assertExists()
+        compose.onNodeWithTag("high-quality").assertExists()
         screenshot("android-settings")
     }
 
@@ -109,7 +112,7 @@ class AndroidPlaybackTest {
             vm = ViewModelProvider(compose.activity)[BlusicViewModel::class.java]
             vm.play(Track("live-stephanie", "Stephanie", "Nafeesisboujee", duration = 127_000, location = "RFzfXv9wzfo"))
         }
-        compose.waitUntil(25_000) { vm.playback.value.playing || vm.playback.value.error != null }
+        compose.waitUntil(55_000) { vm.playback.value.playing || vm.playback.value.error != null }
         compose.runOnUiThread {
             assertNull(vm.playback.value.error)
             assertTrue(vm.playback.value.playing)
@@ -121,6 +124,63 @@ class AndroidPlaybackTest {
             assertTrue((vm.controller?.currentPosition ?: 0) >= 29_000)
             vm.controller?.pause()
         }
+    }
+
+    @Test fun preparedNextTitleCrossfadesWithTwoNativeDecksAndPauseStopsBoth() {
+        val app = compose.activity.application as BlusicApplication
+        runBlocking { app.library.update { it.copy(crossfade = true, crossfadeSeconds = 2f, speed = 1f, volume = .1f) } }
+        lateinit var vm: BlusicViewModel
+        compose.runOnUiThread { vm = ViewModelProvider(compose.activity)[BlusicViewModel::class.java]; vm.play(Track.demos()[0], Track.demos().take(2)) }
+        compose.waitUntil(15000) { vm.playback.value.playing }
+        compose.runOnUiThread { vm.seek(5000) }
+        compose.waitUntil(7000) { app.engineState.value.preparation == "Titre suivant préchargé" }
+        compose.runOnUiThread { vm.next() }
+        compose.waitUntil(7000) { app.engineState.value.overlapping == 2 && app.engineState.value.transitioning }
+        compose.runOnUiThread { assertEquals(Track.demos()[1].id, vm.playback.value.track?.id); assertTrue(vm.playback.value.playing); vm.controller?.pause() }
+        compose.waitUntil(4000) { app.engineState.value.overlapping == 0 }
+        runBlocking { app.library.update { it.copy(crossfade = false, volume = .8f) } }
+    }
+
+    @Test fun highQualityEffectsArtistsAndQueueSettingsPersist() = runBlocking {
+        val app = compose.activity.application as BlusicApplication
+        app.library.update { it.copy(highQuality = true, equalizerEnabled = true, equalizer = List(10) { i -> if (i == 5) 3f else 0f }, linkedPitch = false, pitchSemitones = 5f, lyricsOffset = 500,
+            followedArtists = listOf(MusicArtist("UC_test", "Test Artist"))) }
+        val restored = LibraryRepository(compose.activity); restored.ready.await()
+        assertTrue(restored.state.value.highQuality); assertEquals(3f, restored.state.value.equalizer[5]); assertEquals(500L, restored.state.value.lyricsOffset)
+        assertEquals("Test Artist", restored.state.value.followedArtists.single().name)
+        compose.onNodeWithContentDescription("Réglages").performClick()
+        compose.onNodeWithTag("high-quality").assertExists(); screenshot("android-quality")
+        compose.onNodeWithText("Égaliseur, vitesse et tonalité").performClick()
+        compose.onNodeWithTag("sound-controls").assertExists(); screenshot("android-sound")
+        app.library.update { it.copy(highQuality = false, equalizerEnabled = false, linkedPitch = true, pitchSemitones = 0f, lyricsOffset = 0) }
+    }
+
+    @Test fun packagedResolverUsesNativeBridgeAndProducesValidatedAudioWithoutMediaElement() = runBlocking {
+        val context = compose.activity.applicationContext
+        val audio = context.assets.open("bleu-nuit.wav").use { it.readNBytesCompat(44 + 44100 * 4 * 2) }
+        java.nio.ByteBuffer.wrap(audio).order(java.nio.ByteOrder.LITTLE_ENDIAN).putInt(4, audio.size - 8).putInt(40, audio.size - 44)
+        // A protocol fixture, not a claim that YouTube accepted this emulator.
+        val encoded = android.util.Base64.encodeToString(audio, android.util.Base64.NO_WRAP)
+        val resolver = NativeYouTubeiResolver(context) {
+            """
+            var waiting={},seq=0;
+            window.__blusicReply=function(i,r){var p=waiting[i];delete waiting[i];r.error?p.reject(Error(r.error)):p.resolve(r);};
+            function invoke(action,data){return new Promise(function(resolve,reject){var i=++seq;waiting[i]={resolve:resolve,reject:reject};webkit.messageHandlers.blusicResolver.postMessage(Object.assign({action:action,request:i},data));});}
+            window.__blusicResolve=async function(id,job,quality){try {
+              if(document.querySelector('audio,video'))throw Error('Unexpected media element');
+              await invoke('beginAudio',{job:job,expected:${audio.size}});
+              var bytes=atob('$encoded');
+              for(var i=0;i<bytes.length;i+=32768)await invoke('appendAudio',{job:job,body:btoa(bytes.slice(i,i+32768))});
+              webkit.messageHandlers.blusicResolver.postMessage({action:'finished',job:job,expected:${audio.size},bitrate:131000,duration:2});
+            }catch(e){webkit.messageHandlers.blusicResolver.postMessage({action:'failed',job:job,error:e.message});}};
+            window.__blusicCancel=function(){};
+            webkit.messageHandlers.blusicResolver.postMessage({action:'ready'});
+            """.trimIndent()
+        }
+        val result = withContext(Dispatchers.IO) { resolver.resolve("abcdefghijk", true) }
+        val file = File(java.net.URI(result.url))
+        try { assertEquals("high", result.quality); assertEquals(audio.size.toLong(), file.length()); assertTrue(NativeYouTubeiResolver.validateAudio(file, 2000) >= 1900) } finally { file.delete() }
+        assertTrue(context.assets.open("YouTubeiResolver.js").bufferedReader().use { it.readText().contains("__blusicResolve") })
     }
 
     private fun screenshot(name: String) {

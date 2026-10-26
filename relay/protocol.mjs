@@ -8,16 +8,18 @@ export function bearerMatches(header, key) {
 }
 // The IPA receives a non-expiring application access token, never the server's
 // HMAC master key. It cannot sign audio tickets or change configuration.
-export function applicationAccess(key) {
-  return `app.ios.${createHmac('sha256', key).update('application:ios|v1').digest('hex')}`;
+export function applicationAccess(key, platform='ios') {
+  if(!['ios','android'].includes(platform))throw Error('Unknown application platform');
+  return `app.${platform}.${createHmac('sha256', key).update(`application:${platform}|v1`).digest('hex')}`;
 }
 export function clientCapability(key, expiry) {
   return `ios.${expiry}.${createHmac('sha256', key).update(`client:ios|${expiry}`).digest('hex')}`;
 }
 export function verifyClientCapability(key, header, now = Date.now()) {
   const value = typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : '';
-  if (/^app\.ios\.[a-f0-9]{64}$/.test(value)) {
-    const expected = Buffer.from(applicationAccess(key));
+  const application=/^app\.(ios|android)\.[a-f0-9]{64}$/.exec(value);
+  if (application) {
+    const expected = Buffer.from(applicationAccess(key,application[1]));
     return timingSafeEqual(Buffer.from(value), expected);
   }
   const match = /^ios\.(\d+)\.([a-f0-9]{64})$/.exec(value);

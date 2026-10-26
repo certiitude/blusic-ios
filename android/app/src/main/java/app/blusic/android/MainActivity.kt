@@ -54,10 +54,12 @@ import coil.request.ImageRequest
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private val Ink = Color(0xFF09090B)
-private val Panel = Color(0xFF18181E)
-private val Accent = Color(0xFFAD93FF)
-private val Muted = Color(0xFF9999A6)
+internal val Ink: Color @Composable get() = MaterialTheme.colorScheme.background
+internal val Panel: Color @Composable get() = MaterialTheme.colorScheme.surface
+internal val Accent: Color @Composable get() = MaterialTheme.colorScheme.primary
+internal val Muted: Color @Composable get() = MaterialTheme.colorScheme.onSurfaceVariant
+internal val LocalBlusicSettings = compositionLocalOf { LibraryState() }
+internal fun accentColor(name: String) = when (name) { "blue" -> Color(0xFF529EFF); "rose" -> Color(0xFFFF598A); "mint" -> Color(0xFF38CFAC); "orange" -> Color(0xFFFF9E47); "white" -> Color(0xFFE5E5EA); else -> Color(0xFFAD93FF) }
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -65,8 +67,11 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge(statusBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT),
             navigationBarStyle = SystemBarStyle.dark(android.graphics.Color.TRANSPARENT))
         setContent {
-            MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Ink, surface = Panel, onSurface = Color.White)) {
-                BlusicApp()
+            val library by (application as BlusicApplication).library.state.collectAsStateWithLifecycle()
+            val dark = library.appearance == "dark" || library.appearance == "system" && androidx.compose.foundation.isSystemInDarkTheme()
+            val color = accentColor(library.accent)
+            MaterialTheme(colorScheme = if (dark) darkColorScheme(primary = color, background = Color(0xFF09090B), surface = Color(0xFF18181E), onSurface = Color.White) else lightColorScheme(primary = if (library.accent == "white") Color.DarkGray else color, background = Color(0xFFF5F5FA), surface = Color.White)) {
+                CompositionLocalProvider(LocalBlusicSettings provides library) { BlusicApp() }
             }
         }
     }
@@ -78,34 +83,40 @@ fun BlusicApp(vm: BlusicViewModel = viewModel()) {
     val playback by vm.playback.collectAsStateWithLifecycle()
     val message by vm.message.collectAsStateWithLifecycle()
     val libraryError by vm.libraryError.collectAsStateWithLifecycle()
+    val engine by vm.engine.collectAsStateWithLifecycle()
+    val artist by vm.artistProfile.collectAsStateWithLifecycle()
+    val reference by vm.matchReference.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var showPlayer by rememberSaveable { mutableStateOf(false) }
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var selection by remember { mutableStateOf<Playlist?>(null) }
+    var showStats by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
     val notifications = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
     LaunchedEffect(Unit) { if (Build.VERSION.SDK_INT >= 33) notifications.launch(Manifest.permission.POST_NOTIFICATIONS) }
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(message) { message?.let { snackbar.showSnackbar(it); vm.message.value = null } }
     LaunchedEffect(libraryError) { libraryError?.let { snackbar.showSnackbar(it) } }
+    LaunchedEffect(library.playlists) { if (selection != null && library.playlists.none { it.id == selection?.id }) selection = null }
     BackHandler(showSettings || selection != null) { showSettings = false; selection = null }
     Scaffold(containerColor = Ink, snackbarHost = { SnackbarHost(snackbar) }, topBar = {
         Row(Modifier.fillMaxWidth().statusBarsPadding().padding(horizontal = 20.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
             Image(painterResource(R.drawable.blusic_icon), "Logo Blusic", Modifier.size(36.dp))
             Text(" blusic", fontSize = 29.sp, fontWeight = FontWeight.Bold, letterSpacing = (-1).sp)
             Spacer(Modifier.weight(1f))
+            Action(Icons.Rounded.BarChart, "Statistiques", { showStats = true })
             Action(Icons.Rounded.Tune, "Réglages", { showSettings = !showSettings })
         }
     }, bottomBar = {
         Column(Modifier.navigationBarsPadding().padding(horizontal = 12.dp)) {
             playback.track?.let { track ->
-                Surface(shape = RoundedCornerShape(22.dp), color = Color(0xFF24232F), modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).testTag("mini-player").clickable { showPlayer = true }) {
+                Surface(shape = RoundedCornerShape(22.dp), color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp).testTag("mini-player").clickable { showPlayer = true }) {
                     Row(Modifier.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
                         Row(Modifier.weight(1f).clickable { showPlayer = true }, verticalAlignment = Alignment.CenterVertically) {
                             Cover(track, Modifier.size(44.dp), 160)
                             Column(Modifier.padding(horizontal = 12.dp)) {
                                 Text(track.title, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold)
-                                Text(if (playback.loading) "Connexion à l’audio…" else track.artist, fontSize = 12.sp, color = Muted, maxLines = 1)
+                                Text(if (playback.loading) "Connexion à l’audio…" else if (engine.transitioning) "Fondu en cours…" else track.artist, fontSize = 12.sp, color = Muted, maxLines = 1)
                             }
                         }
                         Action(if (playback.loading) Icons.Rounded.Close else if (playback.playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, if (playback.loading) "Annuler" else if (playback.playing) "Pause" else "Lire", vm::toggle)
@@ -138,21 +149,24 @@ fun BlusicApp(vm: BlusicViewModel = viewModel()) {
     }
     if (showPlayer && playback.track != null) {
         Dialog(onDismissRequest = { showPlayer = false }, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
-            Surface(color = Ink, contentColor = Color.White, modifier = Modifier.fillMaxSize()) {
-                PlayerScreen(vm, playback, library) { showPlayer = false }
+            MaterialTheme(colorScheme = darkColorScheme(primary = accentColor(library.accent), background = Color(0xFF09090B), surface = Color(0xFF18181E))) {
+                Surface(color = Ink, contentColor = Color.White, modifier = Modifier.fillMaxSize()) { PlayerScreen(vm, playback, library) { showPlayer = false } }
             }
         }
     } else if (playback.error != null) {
         // Keep playback failures visible without a repeated blocking alert.
         LaunchedEffect(playback.error) { snackbar.showSnackbar(playback.error!!, duration = SnackbarDuration.Long) }
     }
+    if (showStats) AdvancedDialog("Statistiques", { showStats = false }) { StatisticsScreen(library) }
+    artist?.let { profile -> AdvancedDialog(profile.artist.name, { vm.artistProfile.value = null }) { ArtistScreen(profile, vm, library) } }
+    reference?.let { MatchDialog(it, vm) }
 }
 
 @Composable
 private fun HomeScreen(vm: BlusicViewModel, library: LibraryState) {
     val online by vm.home.collectAsStateWithLifecycle()
     val error by vm.homeError.collectAsStateWithLifecycle()
-    val byId = remember(library.tracks) { library.tracks.associateBy { it.id } }
+    val byId = library.byId
     val recent = remember(library.recent, byId) { library.recent.mapNotNull { byId[it] } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(22.dp)) {
         item { Heading("Accès rapide", Icons.Rounded.Bolt) }
@@ -182,15 +196,20 @@ private fun HomeScreen(vm: BlusicViewModel, library: LibraryState) {
 private fun SearchScreen(vm: BlusicViewModel, library: LibraryState) {
     var query by rememberSaveable { mutableStateOf("") }
     var local by rememberSaveable { mutableStateOf(false) }
+    var artists by rememberSaveable { mutableStateOf(false) }
+    val artistResults by vm.artistResults.collectAsStateWithLifecycle()
     val results by vm.search.collectAsStateWithLifecycle()
     val loading by vm.searchLoading.collectAsStateWithLifecycle()
     val error by vm.searchError.collectAsStateWithLifecycle()
     val tracks = remember(local, query, library.tracks, results) { if (local) library.tracks.filter { "${it.title} ${it.artist}".contains(query, true) } else results.tracks }
-    LaunchedEffect(query, local) { if (!local) vm.search(query) }
+    LaunchedEffect(query, local, artists) { if (artists && query.isNotBlank()) vm.searchArtists(query) else if (!local) vm.search(query) }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title("Recherche") }
         item { OutlinedTextField(query, { query = it }, label = { Text("Un titre ou un artiste…") }, singleLine = true, modifier = Modifier.fillMaxWidth().testTag("search-field"), leadingIcon = { Icon(Icons.Rounded.Search, null) }, shape = RoundedCornerShape(18.dp)) }
-        item { Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { FilterChip(!local, { local = false }, { Text("Catalogue") }); FilterChip(local, { local = true }, { Text("Bibliothèque") }) } }
+        item { LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { item { FilterChip(!local && !artists, { local = false; artists = false }, { Text("Catalogue") }) }; item { FilterChip(local, { local = true; artists = false }, { Text("Bibliothèque") }) }; item { FilterChip(artists, { local = false; artists = true }, { Text("Artistes") }) } } }
+        if (artists && query.isNotBlank()) {
+            items(artistResults, key = { it.id }) { artist -> ArtistRow(artist, vm, library) }
+        } else
         if (query.isBlank() && !local) {
             item { Text("Qu’est-ce qui te fait vibrer ?", fontSize = 22.sp, fontWeight = FontWeight.Bold) }
             items(listOf("Rap français", "Jazz", "Électronique", "Piano", "Soul")) { genre -> Surface(onClick = { query = genre }, shape = RoundedCornerShape(14.dp), color = Panel, modifier = Modifier.fillMaxWidth()) { Text(genre, Modifier.padding(20.dp)) } }
@@ -210,14 +229,17 @@ private fun LibraryScreen(vm: BlusicViewModel, library: LibraryState, open: (Pla
     var creating by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
     val importer = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { vm.importAudio(it) }
-    val tracks = remember(section, library.tracks, library.favorites) { when (section) { "Favoris" -> library.tracks.filter { it.id in library.favorites }; "Hors ligne" -> library.tracks.filter { it.source != "online" }; else -> library.tracks } }
+    val tracks = remember(section, library.tracks, library.favorites) { when (section) { "Favoris" -> library.likedTracks; "Hors ligne" -> library.tracks.filter { it.source in listOf("local", "bundled") }; else -> library.tracks } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Row(verticalAlignment = Alignment.CenterVertically) { Title("Bibliothèque"); Spacer(Modifier.weight(1f)); Action(Icons.Rounded.Add, "Importer des fichiers", { importer.launch(arrayOf("audio/*")) }) } }
         item { Text("${library.tracks.size} titres · ta musique, simplement", color = Muted, fontSize = 13.sp) }
-        item { LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(listOf("Titres", "Favoris", "Playlists", "Hors ligne")) { value -> FilterChip(section == value, { section = value }, { Text(value) }) } } }
+        item { ImportControls(vm) }
+        item { LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) { items(listOf("Titres", "Favoris", "Playlists", "Artistes", "Hors ligne")) { value -> FilterChip(section == value, { section = value }, { Text(value) }) } } }
         if (section == "Playlists") {
             item { OutlinedButton(onClick = { creating = true }) { Icon(Icons.Rounded.Add, null); Text("Créer une playlist") } }
             items(library.playlists, key = { it.id }) { p -> ListItem(headlineContent = { Text(p.name) }, supportingContent = { Text("${p.tracks.size} titres") }, leadingContent = { Icon(Icons.Rounded.QueueMusic, null) }, modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable { open(p) }) }
+        } else if (section == "Artistes") {
+            items(library.followedArtists, key = { it.id }) { ArtistRow(it, vm, library) }
         } else {
             items(tracks, key = { it.id }) { track -> TrackRow(track, vm, library) { vm.play(track, tracks) } }
         }
@@ -229,6 +251,7 @@ private fun LibraryScreen(vm: BlusicViewModel, library: LibraryState, open: (Pla
 private fun TrackListScreen(title: String, tracks: List<Track>, vm: BlusicViewModel, library: LibraryState) {
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         item { Title(title); Text("${tracks.size} titres", color = Muted) }
+        item { library.playlists.firstOrNull { it.name == title }?.let { PlaylistEditControls(it, vm) } }
         item { Button(onClick = { tracks.firstOrNull()?.let { vm.play(it, tracks) } }, enabled = tracks.isNotEmpty()) { Text("Écouter") } }
         items(tracks, key = { it.id }) { track -> TrackRow(track, vm, library) { vm.play(track, tracks) } }
     }
@@ -238,26 +261,38 @@ private fun TrackListScreen(title: String, tracks: List<Track>, vm: BlusicViewMo
 private fun PlayerScreen(vm: BlusicViewModel, state: PlaybackUi, library: LibraryState, close: () -> Unit) {
     val track = state.track ?: return
     var mode by rememberSaveable { mutableStateOf("artwork") }
+    val engine by vm.engine.collectAsStateWithLifecycle()
+    var sound by remember { mutableStateOf(false) }
+    var options by remember { mutableStateOf(false) }
     val context = LocalContext.current
     Column(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF26334A), Color(0xFF171B28), Ink))).systemBarsPadding().padding(horizontal = 26.dp)) {
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Action(Icons.Rounded.KeyboardArrowDown, "Fermer le lecteur", close)
             Text("À L’ÉCOUTE", Modifier.weight(1f), fontSize = 11.sp, color = Muted, letterSpacing = 3.sp)
-            Favorite(track, library, vm)
+            Action(Icons.Rounded.MoreVert, "Options du lecteur", { options = true })
         }
         if (mode == "lyrics") {
             Text(track.title, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 1)
             Text(track.artist, color = Muted, fontSize = 14.sp)
             LyricsPanel(track, vm, Modifier.weight(1f))
         } else if (mode == "queue") {
-            LazyColumn(Modifier.weight(1f)) { item { Title("À suivre") }; items(state.queue, key = { it.id }) { item -> TrackRow(item, vm, library) { vm.play(item, state.queue) } } }
+            LazyColumn(Modifier.weight(1f)) {
+                item { Title("À suivre"); TextButton(onClick = vm::clearQueue) { Text("Vider la file") } }
+                items(state.queue.size, key = { state.queue[it].id }) { index -> val item = state.queue[index]
+                    TrackRow(item, vm, library) { vm.play(item, state.queue) }
+                    Row { Action(Icons.Rounded.KeyboardArrowUp, "Monter dans la file", { vm.moveQueue(index, -1) }); Action(Icons.Rounded.KeyboardArrowDown, "Descendre dans la file", { vm.moveQueue(index, 1) }); Action(Icons.Rounded.Close, "Retirer de la file", { vm.removeQueue(index) }) }
+                }
+            }
         } else {
             Spacer(Modifier.weight(.3f))
             Cover(track, Modifier.fillMaxWidth().weight(2f, fill = false).aspectRatio(1f).testTag("player-artwork"), 1024)
             Spacer(Modifier.height(24.dp))
             Text(track.title, fontSize = 28.sp, fontWeight = FontWeight.Bold, maxLines = 2, lineHeight = 32.sp)
-            Text(track.artist, color = Color.White.copy(alpha = .6f), fontSize = 19.sp, maxLines = 1)
+            Text(track.artist, color = Color.White.copy(alpha = .6f), fontSize = 19.sp, maxLines = 1, modifier = Modifier.clickable { track.artistId?.let { close(); vm.openArtist(MusicArtist(it, track.artist, track.artworkUrl)) } })
             Text(track.album, color = Muted, fontSize = 12.sp, maxLines = 1, modifier = Modifier.padding(top = 7.dp))
+            Text(engine.format, color = Muted, fontSize = 11.sp, maxLines = 1)
+            engine.firstAudioMs?.let { Text("Démarrage : ${"%.1f".format(it / 1000.0)} s", color = Muted, fontSize = 10.sp) }
+            engine.preparation?.let { Text(it, color = Muted, fontSize = 10.sp, modifier = Modifier.testTag("preparation-status")) }
             Spacer(Modifier.weight(.25f))
         }
         if (state.loading) Row(Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) { CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp); Text("  Connexion à l’audio…", fontSize = 12.sp) }
@@ -282,10 +317,13 @@ private fun PlayerScreen(vm: BlusicViewModel, state: PlaybackUi, library: Librar
         }
         Row(Modifier.fillMaxWidth().padding(bottom = 12.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             Action(Icons.Rounded.Lyrics, "Paroles", { mode = if (mode == "lyrics") "artwork" else "lyrics" }, if (mode == "lyrics") Accent else Muted)
-            TextButton(onClick = { vm.audio(if (library.speed >= 1.5f) .75f else library.speed + .25f, library.linkedPitch) }) { Text("${library.speed}×") }
+            Action(Icons.Rounded.Tune, "Égaliseur et tonalité", { sound = true })
+            Favorite(track, library, vm)
             Action(Icons.Rounded.QueueMusic, "File d’attente", { mode = if (mode == "queue") "artwork" else "queue" }, if (mode == "queue") Accent else Muted)
         }
     }
+    if (sound) AdvancedDialog("Le son, à ta façon", { sound = false }) { SoundControls(vm, library) }
+    if (options) AlertDialog(onDismissRequest = { options = false }, title = { Text("Options d’écoute") }, text = { PlaybackOptions(vm, track) }, confirmButton = { TextButton(onClick = { options = false }) { Text("Terminé") } })
 }
 
 @Composable
@@ -305,16 +343,23 @@ private fun PlaybackProgress(vm: BlusicViewModel, track: Track) {
 
 @Composable
 private fun LyricsPanel(track: Track, vm: BlusicViewModel, modifier: Modifier) {
-    var raw by remember(track.id) { mutableStateOf(track.lyrics.orEmpty()) }
+    val style = LocalBlusicSettings.current
+    val cached = style.byId[track.id]?.lyrics ?: track.lyrics
+    var raw by remember(track.id, cached) { mutableStateOf(cached.orEmpty()) }
     var status by remember(track.id) { mutableStateOf("Recherche des paroles…") }
     var position by remember { mutableLongStateOf(0) }
     var auto by remember(track.id) { mutableStateOf(true) }
     val list = rememberLazyListState()
-    LaunchedEffect(track.id) { try { raw = vm.lyrics(track).orEmpty(); status = if (track.source == "bundled") "Un instrumental. Juste les notes." else "Paroles introuvables pour ce titre." } catch (e: Exception) { status = e.localizedMessage.orEmpty() } }
+    LaunchedEffect(track.id, cached) { try { raw = vm.lyrics(track.copy(lyrics = cached)).orEmpty(); status = if (track.source == "bundled") "Un instrumental. Juste les notes." else "Paroles introuvables pour ce titre." } catch (e: Exception) { status = e.localizedMessage.orEmpty() } }
     LaunchedEffect(track.id) { while (true) { position = vm.controller?.currentPosition ?: 0; delay(250) } }
     val lines = remember(raw) { LyricsParser.parse(raw) }
-    val active = lines.indexOfLast { it.time <= position }
-    LaunchedEffect(active, auto, lines) { if (auto && active >= 0 && !list.isScrollInProgress) list.animateScrollToItem(active, -180) }
+    val active by remember(lines, style.lyricsOffset) { derivedStateOf { lines.indexOfLast { it.time <= position + style.lyricsOffset } } }
+    val viewport = list.layoutInfo.viewportSize.height
+    LaunchedEffect(active, auto, lines, viewport) { if (auto && active >= 0 && !list.isScrollInProgress) {
+        val row = list.layoutInfo.visibleItemsInfo.firstOrNull { it.index == active }?.size ?: 100
+        val center = ((viewport - row) / 2).coerceAtLeast(0)
+        if (android.animation.ValueAnimator.areAnimatorsEnabled()) list.animateScrollToItem(active, -center) else list.scrollToItem(active, -center)
+    } }
     LaunchedEffect(list.interactionSource) { list.interactionSource.interactions.collect { if (it is androidx.compose.foundation.interaction.DragInteraction.Start) auto = false } }
     Column(modifier.padding(top = 12.dp)) {
         if (!auto) TextButton(onClick = { auto = true }) { Text("Recentrer") }
@@ -323,8 +368,8 @@ private fun LyricsPanel(track: Track, vm: BlusicViewModel, modifier: Modifier) {
             else items(lines.size) { index ->
                 val color by animateColorAsState(if (index == active) Color.White else Color.White.copy(alpha = .35f), label = "lyric color")
                 val scale by animateFloatAsState(if (index == active) 1f else .95f, label = "lyric size")
-                Text(lines[index].text.ifBlank { "♪ ♪ ♪" }, fontSize = 31.sp, lineHeight = 40.sp, fontWeight = FontWeight.Bold, color = color,
-                    modifier = Modifier.scale(scale).clickable { vm.seek(lines[index].time); auto = true })
+                Text(lines[index].text.ifBlank { "♪ ♪ ♪" }, fontSize = 34.sp, lineHeight = 44.sp, fontWeight = FontWeight.Bold, color = color,
+                    modifier = Modifier.scale(scale).clickable { vm.seek((lines[index].time - style.lyricsOffset).coerceAtLeast(0)); auto = true })
             }
         }
     }
@@ -339,8 +384,13 @@ private fun SettingsScreen(vm: BlusicViewModel, library: LibraryState) {
     var relayKey by remember { mutableStateOf("") }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(20.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         item { Title("À ton image") }
+        item { QualityControls(vm, library) }
+        item { ListeningSettings(vm, library) }
+        item { AppearanceControls(vm, library) }
+        item { BackupControls(vm) }
         item { Text("Sources audio", fontWeight = FontWeight.Bold, fontSize = 19.sp) }
-        item { Column { listOf("auto" to "Automatique", "direct" to "YouTube direct", "invidious" to "Relais Invidious").forEach { (key, label) -> Row(Modifier.fillMaxWidth().clickable { mode = key }, verticalAlignment = Alignment.CenterVertically) { RadioButton(mode == key, { mode = key }); Text(label) } } } }
+        item { Column { listOf("auto" to "Automatique", "youtubei" to "youtubei.js · sur cet appareil + relais", "direct" to "YouTube direct", "invidious" to "Relais Invidious").forEach { (key, label) -> Row(Modifier.fillMaxWidth().clickable { mode = key }, verticalAlignment = Alignment.CenterVertically) { RadioButton(mode == key, { mode = key }); Text(label) } } } }
+        item { SettingSwitch("Instances de secours automatiques", library.automaticFallback) { value -> vm.settings { it.copy(automaticFallback = value) } } }
         item { OutlinedTextField(instance, { instance = it }, label = { Text("Adresse HTTPS Invidious") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
         item { Button(onClick = { vm.source(mode, instance) }) { Text("Enregistrer les sources") } }
         item { Text("Les flux publics peuvent être indisponibles ou refusés par leur fournisseur. Blusic vérifie l’audio et utilise des plages HTTP bornées. Aucun compte Google n’est connecté.", color = Muted, fontSize = 13.sp) }
@@ -348,7 +398,8 @@ private fun SettingsScreen(vm: BlusicViewModel, library: LibraryState) {
         item { Text("Relais youtubei.js", fontWeight = FontWeight.Bold, fontSize = 19.sp) }
         item { OutlinedTextField(relay, { relay = it }, label = { Text("Adresse HTTPS du relais") }, singleLine = true, modifier = Modifier.fillMaxWidth()) }
         item { OutlinedTextField(relayKey, { relayKey = it }, label = { Text("Clé du relais") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth()) }
-        item { Button(onClick = { vm.relay(relay, relayKey) }) { Text("Enregistrer le relais") }; Text("Nécessite le service Node déployé. La clé est protégée par Android Keystore ; aucun serveur n’est déclaré fonctionnel avant son test audio complet.", color = Muted, fontSize = 13.sp) }
+        item { Button(onClick = { vm.relay(relay, relayKey) }) { Text("Enregistrer le relais") }; Text("youtubei.js/SABR embarqué résout l’audio sur cet Android. Le relais Blusic est préconfiguré avec un accès application sans expiration ni quota d’écoutes Blusic. Les restrictions du fournisseur et les limites de Render Free restent applicables. Aucun PC à laisser allumé.", color = Muted, fontSize = 13.sp) }
+        item { OutlinedButton(onClick = { vm.relay("", "") }) { Text("Désactiver le relais distant") } }
         item { HorizontalDivider() }
         item { Text("Vitesse et tonalité", fontWeight = FontWeight.Bold, fontSize = 19.sp); Text("${"%.2f".format(speed)}×", color = Accent); Slider(speed, { speed = it }, valueRange = .5f..2f, onValueChangeFinished = { vm.audio(speed, library.linkedPitch) }) }
         item { Row(verticalAlignment = Alignment.CenterVertically) { Text("Lier vitesse et tonalité", Modifier.weight(1f)); Switch(library.linkedPitch, { vm.audio(speed, it) }) } }
@@ -360,30 +411,35 @@ private fun SettingsScreen(vm: BlusicViewModel, library: LibraryState) {
 }
 
 @Composable
-private fun TrackRow(track: Track, vm: BlusicViewModel, library: LibraryState, play: () -> Unit) {
+internal fun TrackRow(track: Track, vm: BlusicViewModel, library: LibraryState, play: () -> Unit) {
     var menu by remember { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
         Row(Modifier.weight(1f).clickable(onClick = play), verticalAlignment = Alignment.CenterVertically) {
-            Cover(track, Modifier.size(52.dp), 160)
+            Cover(track, Modifier.size(if (library.compactRows) 36.dp else 52.dp), 160)
             Column(Modifier.padding(start = 12.dp).weight(1f)) { Text(track.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis); Text(track.artist, color = Muted, fontSize = 12.sp, maxLines = 1) }
         }
         Favorite(track, library, vm)
         Box {
             Action(Icons.Rounded.MoreVert, "Options pour ${track.title}", { menu = true })
             DropdownMenu(menu, { menu = false }) {
+                DropdownMenuItem(text = { Text("Lire ensuite") }, onClick = { vm.enqueue(track, true); menu = false })
+                DropdownMenuItem(text = { Text("Ajouter à la file") }, onClick = { vm.enqueue(track, false); menu = false })
+                track.artistId?.let { id -> DropdownMenuItem(text = { Text("Voir l’artiste") }, onClick = { vm.openArtist(MusicArtist(id, track.artist, track.artworkUrl)); menu = false }) }
                 library.playlists.forEach { playlist -> DropdownMenuItem(text = { Text("Ajouter à ${playlist.name}") }, onClick = { vm.addToPlaylist(track, playlist); menu = false }) }
                 if (library.playlists.isEmpty()) DropdownMenuItem(text = { Text("Crée une playlist dans Bibliothèque") }, onClick = { menu = false })
+                library.playlists.filter { track.id in it.tracks }.forEach { p -> DropdownMenuItem(text = { Text("Retirer de ${p.name}") }, onClick = { vm.editPlaylist(p.id, removeTrack = track.id); menu = false }) }
+                DropdownMenuItem(text = { Text("Retirer de la bibliothèque") }, onClick = { vm.removeTrack(track); menu = false })
             }
         }
     }
 }
 @Composable
 private fun Favorite(track: Track, library: LibraryState, vm: BlusicViewModel) {
-    val liked = library.tracks.firstOrNull { it.identity == track.identity }?.id in library.favorites
+    val liked = library.byIdentity[track.identity]?.id in library.favorites
     Action(if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, if (liked) "Retirer des favoris" else "Ajouter aux favoris", { vm.favorite(track) }, if (liked) Accent else Muted)
 }
 @Composable
-private fun Cover(track: Track, modifier: Modifier, pixels: Int) {
+internal fun Cover(track: Track, modifier: Modifier, pixels: Int) {
     val context = LocalContext.current
     val url = track.artworkUrl ?: if (track.source == "bundled") "file:///android_asset/${track.artwork}.imageset/${track.artwork}.png" else null
     if (url == null) {
@@ -392,8 +448,9 @@ private fun Cover(track: Track, modifier: Modifier, pixels: Int) {
         }
         return
     }
-    AsyncImage(ImageRequest.Builder(context).data(url).size(pixels).crossfade(false).build(), contentDescription = "Pochette de ${track.title}",
-        modifier = modifier.clip(RoundedCornerShape(14.dp)).background(Panel), contentScale = ContentScale.Crop)
+    val style = LocalBlusicSettings.current
+    AsyncImage(ImageRequest.Builder(context).data(url).size(pixels).crossfade(style.animateArtwork && android.animation.ValueAnimator.areAnimatorsEnabled()).build(), contentDescription = "Pochette de ${track.title}",
+        modifier = modifier.clip(RoundedCornerShape(style.artworkRadius.dp)).background(Panel), contentScale = ContentScale.Crop)
 }
 @Composable
 private fun AlbumShelf(title: String, tracks: List<Track>, vm: BlusicViewModel) {
@@ -411,8 +468,11 @@ private fun AlbumShelf(title: String, tracks: List<Track>, vm: BlusicViewModel) 
 @Composable
 private fun Heading(text: String, icon: ImageVector) { Row(Modifier.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) { Icon(icon, null); Text(text, Modifier.padding(start = 8.dp), fontSize = 24.sp, fontWeight = FontWeight.Bold) } }
 @Composable
-private fun Title(text: String) { Text(text, fontSize = 27.sp, fontWeight = FontWeight.Bold, letterSpacing = (-.7).sp) }
+internal fun Title(text: String) { Text(text, fontSize = 27.sp, fontWeight = FontWeight.Bold, letterSpacing = (-.7).sp) }
 @Composable
 private fun QuickCard(title: String, detail: String, icon: ImageVector, modifier: Modifier, click: () -> Unit) { Surface(color = Panel, shape = RoundedCornerShape(12.dp), modifier = modifier.clickable(onClick = click)) { Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) { Icon(icon, null, tint = Accent); Column(Modifier.padding(start = 10.dp)) { Text(title, fontSize = 12.sp, fontWeight = FontWeight.SemiBold); Text(detail, color = Muted, fontSize = 10.sp) } } } }
 @Composable
-private fun Action(icon: ImageVector, label: String, action: () -> Unit, tint: Color = Color.White) { IconButton(onClick = action) { Icon(icon, contentDescription = label, tint = tint) } }
+internal fun Action(icon: ImageVector, label: String, action: () -> Unit, tint: Color = LocalContentColor.current) {
+    val view = androidx.compose.ui.platform.LocalView.current; val haptics = LocalBlusicSettings.current.haptics
+    IconButton(onClick = { if (haptics) view.performHapticFeedback(android.view.HapticFeedbackConstants.CLOCK_TICK); action() }) { Icon(icon, contentDescription = label, tint = tint) }
+}

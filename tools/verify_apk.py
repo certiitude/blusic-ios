@@ -60,6 +60,15 @@ def inspect(path):
         assert sdk["minSdkVersion"] == 26
         assert sdk["targetSdkVersion"] == 35
         assert any(v.get("name") == "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" for v in elements["uses-permission"])
+        if app["versionCode"] >= 13:
+            import re
+            import urllib.parse
+            script = archive.read("assets/YouTubeiResolver.js")
+            assert len(script) > 100_000 and b"__blusicResolve" in script and b"SabrStream" in script
+            assert archive.getinfo("assets/ThirdPartyResolverLicenses.txt").file_size > 1000
+            config = json.loads(archive.read("assets/bundled-relay.json"))
+            assert re.fullmatch(r"app\.android\.[a-f0-9]{64}", config["access"]) and config["expiresAt"] == 0
+            assert urllib.parse.urlsplit(config["url"]).hostname == "blusic-audio-relay.onrender.com"
     data = path.read_bytes()
     eocd = data.rfind(b"PK\x05\x06")
     assert eocd >= 0
@@ -67,7 +76,8 @@ def inspect(path):
     assert data[central-16:central] == b"APK Sig Block 42", "APK signing block missing"
     return {"package": app["package"], "version": app["versionName"], "version_code": app["versionCode"],
         "minimum_android_api": sdk["minSdkVersion"], "target_android_api": sdk["targetSdkVersion"],
-        "size": len(data), "sha256": hashlib.sha256(data).hexdigest(), "signing_block_present": True}
+        "size": len(data), "sha256": hashlib.sha256(data).hexdigest(), "signing_block_present": True,
+        "youtubei_on_device_and_preconfigured": app["versionCode"] >= 13}
 
 
 if __name__ == "__main__":

@@ -12,6 +12,10 @@ test('application access has no expiry and cannot act as the master signing key'
   assert.equal(verifyClientCapability(key,`Bearer ${access.slice(0,-1)}x`),false);
   assert.equal(verifyTicket(key,'abcdefghijk',ticket(access,'abcdefghijk',Date.now()+10000)),false);
   assert.equal(access.includes(key),false);
+  const android=applicationAccess(key,'android');
+  assert.equal(verifyClientCapability(key,`Bearer ${android}`,Date.now()+50*365*86400000),true);
+  assert.notEqual(android,access);
+  assert.equal(verifyClientCapability(key,`Bearer ${android.replace('app.android.','app.ios.')}`),false);
 });
 test('IPA capabilities expire and cannot forge media tickets', () => {
   const now = Date.now(), expiry = now + 86400000;

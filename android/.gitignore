@@ -4,3 +4,7 @@
 /.idea/
 /*.jks
 /*.keystore
+# Generated in CI; client access must never enter source control.
+app/src/main/assets/bundled-relay.json
+app/src/main/assets/YouTubeiResolver.js
+app/src/main/assets/ThirdPartyResolverLicenses.txt
