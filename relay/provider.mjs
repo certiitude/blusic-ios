@@ -6,9 +6,10 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pipeline} from 'node:stream/promises';
 import {Readable, Transform} from 'node:stream';
+import {SabrAudioSource} from './sabr.mjs';
 
 // youtubei.js's extracted public player transform, isolated from Node globals.
-// No account cookies, PO token generation, or challenge-solving service.
+// No account cookies or external challenge-solving service.
 Platform.shim.eval = async data => vm.runInNewContext(`(() => { ${data.output} })()`, Object.create(null), {timeout: 1500});
 
 export class YouTubeProvider {
@@ -17,6 +18,7 @@ export class YouTubeProvider {
     this.maxFileBytes = maxFileBytes;
     this.cache = new Map();
     this.pending = new Map();
+    this.sabr = new SabrAudioSource();
   }
   async prepare(id) {
     const cached = this.cache.get(id);
@@ -29,12 +31,22 @@ export class YouTubeProvider {
   async download(id) {
     if (!this.root) this.root = await mkdtemp(join(tmpdir(), 'blusic-relay-'));
     const errors = [];
+    const sabrDirectory=await mkdtemp(join(this.root,'sabr-'));
+    try {
+      const result=await this.sabr.download(id,join(sabrDirectory,'audio.m4a'),this.maxFileBytes);
+      const entry={...result,directory:sabrDirectory,expiry:Date.now()+10*60000};
+      this.cache.set(id,entry);await this.prune();return entry;
+    } catch(error) {
+      await rm(sabrDirectory,{recursive:true,force:true});
+      errors.push(`SABR: ${String(error.message).replace(/https?:\/\/\S+/g,'[upstream]').slice(0,250)}`);
+    }
+    const signal = AbortSignal.timeout(12_000);
     for (const client of this.clients) {
       const directory = await mkdtemp(join(this.root, 'track-'));
       const path = join(directory, 'audio.m4a');
       let phase = 'session';
       try {
-        const signal = AbortSignal.timeout(18_000);
+        signal.throwIfAborted();
         const yt = await Innertube.create({lang: 'fr', location: 'FR', generate_session_locally: true, retrieve_player: client === 'WEB',
           fetch: (input, init = {}) => fetch(input, {...init, signal: AbortSignal.any([signal, AbortSignal.timeout(10_000), ...(init.signal ? [init.signal] : [])])})});
         phase = 'metadata';
@@ -84,5 +96,5 @@ export class YouTubeProvider {
       if (entry.expiry <= Date.now() || this.cache.size > 5) { this.cache.delete(id); await rm(entry.directory, {recursive:true, force:true}); }
     }
   }
-  async close() { if (this.root) await rm(this.root, {recursive: true, force: true}); }
+  async close() { await this.sabr.close();if (this.root) await rm(this.root, {recursive: true, force: true}); }
 }

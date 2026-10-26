@@ -2,33 +2,27 @@ import {createServer} from 'node:http';
 import {createReadStream} from 'node:fs';
 import {pathToFileURL} from 'node:url';
 import {pipeline} from 'node:stream/promises';
-import {bearerMatches, ticket, verifyTicket, validVideo, parseRange} from './protocol.mjs';
+import {bearerMatches, verifyClientCapability, ticket, verifyTicket, validVideo, parseRange} from './protocol.mjs';
 import {YouTubeProvider} from './provider.mjs';
 
 export function makeServer({key, provider = new YouTubeProvider(), now = () => Date.now()} = {}) {
   if (!key || key.length < 24) throw Error('BLUSIC_RELAY_KEY doit contenir au moins 24 caractères');
   let preparing = 0;
-  const limits = new Map();
   const server = createServer(async (request, response) => {
     response.setHeader('Cache-Control', 'no-store');
     response.setHeader('X-Content-Type-Options', 'nosniff');
     const send = (status, payload) => { response.writeHead(status, {'Content-Type':'application/json; charset=utf-8'}); response.end(JSON.stringify(payload)); };
     try {
       const url = new URL(request.url, 'http://localhost');
-      if (url.pathname === '/health') { send(200, {ok:true, provider:'youtubei.js', version:'18.3.0'}); return; }
+      if (url.pathname === '/health') { send(200, {ok:true, provider:'youtubei.js', version:'18.3.0', audioProtocol:'SABR', applicationAccessExpires:false}); return; }
       if (!['GET','HEAD'].includes(request.method)) { send(405, {error:'Méthode non autorisée'}); return; }
       const match = /^\/v1\/(streams|audio)\/([A-Za-z0-9_-]{11})$/.exec(url.pathname);
       if (!match || !validVideo(match[2])) { send(404, {error:'Route inconnue'}); return; }
       const [, kind, id] = match;
       if (kind === 'streams') {
-        if (!bearerMatches(request.headers.authorization, key)) { send(401, {error:'Clé du relais manquante ou invalide'}); return; }
-        const ip = request.socket.remoteAddress;
-        const window = Math.floor(now() / 60000);
-        const entry = limits.get(ip) || {window, count:0};
-        if (entry.window !== window) { entry.window = window; entry.count = 0; }
-        entry.count++; limits.set(ip, entry);
-        if (limits.size > 1000) limits.clear();
-        if (entry.count > 30 || preparing >= 2) { send(429, {error:'Relais occupé, réessaie dans un instant'}); return; }
+        const owner = bearerMatches(request.headers.authorization, key);
+        if (!owner && !verifyClientCapability(key, request.headers.authorization, now())) { send(401, {error:'Accès au relais manquant, invalide ou expiré'}); return; }
+        if (preparing >= 2) { response.setHeader('Retry-After', '3'); send(429, {error:'Relais occupé par deux préparations audio, réessaie dans un instant'}); return; }
         preparing++;
         let file;
         try { file = await provider.prepare(id); } finally { preparing--; }

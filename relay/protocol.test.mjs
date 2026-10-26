@@ -4,8 +4,24 @@ import {mkdtemp, writeFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {makeServer} from './server.mjs';
-import {parseRange, ticket, verifyTicket} from './protocol.mjs';
+import {parseRange, ticket, verifyTicket, clientCapability, verifyClientCapability, applicationAccess} from './protocol.mjs';
 const key = 'test-key-not-a-real-secret-123456789';
+test('application access has no expiry and cannot act as the master signing key', () => {
+  const access = applicationAccess(key);
+  assert.equal(verifyClientCapability(key,`Bearer ${access}`,Date.now()+50*365*86400000),true);
+  assert.equal(verifyClientCapability(key,`Bearer ${access.slice(0,-1)}x`),false);
+  assert.equal(verifyTicket(key,'abcdefghijk',ticket(access,'abcdefghijk',Date.now()+10000)),false);
+  assert.equal(access.includes(key),false);
+});
+test('IPA capabilities expire and cannot forge media tickets', () => {
+  const now = Date.now(), expiry = now + 86400000;
+  const capability = clientCapability(key, expiry);
+  assert.equal(verifyClientCapability(key,`Bearer ${capability}`,now),true);
+  assert.equal(verifyClientCapability(key,`Bearer ${capability}`,expiry+1),false);
+  assert.equal(verifyClientCapability(key,`Bearer ${capability.slice(0,-1)}x`,now),false);
+  assert.equal(verifyTicket(key,'abcdefghijk',ticket(capability,'abcdefghijk',now+10000),now),false);
+  assert.equal(capability.includes(key),false);
+});
 test('tickets bind video and expire; byte ranges keep exact boundaries', () => {
   const now = 100000, value = ticket(key,'abcdefghijk',now+1000);
   assert.equal(verifyTicket(key,'abcdefghijk',value,now),true);
@@ -31,6 +47,13 @@ test('authenticated resolver serves exact media ranges; never arbitrary upstream
     const result = await fetch(base+'/v1/streams/abcdefghijk',{headers:{Authorization:`Bearer ${key}`}});
     assert.equal(result.status,200); const body = await result.json();
     assert.equal(body.bitrate,128000);
+    const configuredClient = await fetch(base+'/v1/streams/abcdefghijk',{headers:{Authorization:`Bearer ${clientCapability(key,Date.now()+86400000)}`}});
+    assert.equal(configuredClient.status,200);
+    for (let i=0;i<32;i++) {
+      const request = await fetch(base+'/v1/streams/abcdefghijk',{headers:{Authorization:`Bearer ${applicationAccess(key)}`}});
+      assert.equal(request.status,200,'No artificial per-minute listening quota for the application');
+      await request.arrayBuffer();
+    }
     const part = await fetch(base+body.url,{headers:{Range:'bytes=4-11'}});
     assert.equal(part.status,206); assert.equal(part.headers.get('Content-Range'),`bytes 4-11/${audio.length}`);
     assert.deepEqual(Buffer.from(await part.arrayBuffer()),audio.subarray(4,12));
