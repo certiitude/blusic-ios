@@ -136,7 +136,8 @@ class NativeYouTubeiResolver(private val context: Context, private val scriptPro
                                 check(token == job); require(written == expected && expected == body.getLong("expected")) { "AAC incomplet" }
                                 output?.close(); output = null
                                 val prepared = checkNotNull(file); validateAudio(prepared, (body.optDouble("duration", 0.0) * 1000).toLong())
-                                result?.complete(AudioStream(prepared.toURI().toString(), body.optInt("bitrate"), "youtubei.js · Android", quality, (body.optDouble("duration", 0.0) * 1000).toLong())); file = null
+                                if (token == job && result?.complete(AudioStream(prepared.toURI().toString(), body.optInt("bitrate"), "youtubei.js · Android", quality, (body.optDouble("duration", 0.0) * 1000).toLong())) == true) file = null
+                                else { prepared.delete(); file = null }
                             }; return@launch
                         }
                         "failed" -> { result?.completeExceptionally(java.io.IOException(body.optString("error").replace(Regex("https?://\\S+"), "[source]").take(600))); return@launch }

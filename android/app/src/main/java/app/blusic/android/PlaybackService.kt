@@ -59,7 +59,7 @@ class PlaybackService : MediaSessionService() {
     private var tickAt = 0L
     private var listening = 0.0
     private var shuffleSeed = 261026L
-    private var suppressTimeline = false
+    private var queueSignature = emptyList<String>()
     private var focusResume = false
     private val manager by lazy { getSystemService(AudioManager::class.java) }
     private val focus by lazy { AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
@@ -124,11 +124,16 @@ class PlaybackService : MediaSessionService() {
                     if (!transitionStarting && outgoing == null) invalidatePreparation()
                     app.engineState.value = app.engineState.value.copy(loopA = null, loopB = null, firstAudioMs = null)
                     track?.let { scope.launch(Dispatchers.IO) { app.library.record(it) } }
+                    persistQueue()
                 }
                 if (p.playWhenReady) manager.requestAudioFocus(focus)
                 else { cancelTransition(); invalidatePreparation() }
-                if (events.contains(Player.EVENT_TIMELINE_CHANGED) && !suppressTimeline) {
-                    invalidatePreparation(); shuffleSeed += 1; main.setShuffleOrder(ShuffleOrder.DefaultShuffleOrder(main.mediaItemCount, shuffleSeed)); persistQueue()
+                if (events.contains(Player.EVENT_TIMELINE_CHANGED)) {
+                    val ids = (0 until main.mediaItemCount).map { main.getMediaItemAt(it).mediaId }
+                    if (ids != queueSignature) {
+                        queueSignature = ids
+                        invalidatePreparation(); shuffleSeed += 1; main.setShuffleOrder(ShuffleOrder.DefaultShuffleOrder(main.mediaItemCount, shuffleSeed)); persistQueue()
+                    }
                 }
                 if (events.contains(Player.EVENT_SHUFFLE_MODE_ENABLED_CHANGED) || events.contains(Player.EVENT_REPEAT_MODE_CHANGED)) invalidatePreparation()
                 if (p.playbackState == Player.STATE_ENDED) { flushListening(); if (app.engineState.value.stopAtEnd) app.engineState.value = app.engineState.value.copy(stopAtEnd = false) }

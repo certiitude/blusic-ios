@@ -47,8 +47,14 @@ class LibraryRepository(private val context: Context) {
     }
     suspend fun add(tracks: List<Track>) {
         update { old ->
-            val identities = old.tracks.map { it.identity }.toMutableSet()
-            old.copy(tracks = old.tracks + tracks.filter { identities.add(it.identity) })
+            val updated = old.tracks.toMutableList(); val indices = updated.withIndex().associate { it.value.identity to it.index }.toMutableMap()
+            for (track in tracks) {
+                val index = indices[track.identity]
+                if (index == null) { indices[track.identity] = updated.size; updated += track }
+                else { val saved = updated[index]; updated[index] = saved.copy(artistId = saved.artistId ?: track.artistId, artworkUrl = saved.artworkUrl ?: track.artworkUrl,
+                    album = saved.album.ifBlank { track.album }, duration = if (saved.duration > 0) saved.duration else track.duration) }
+            }
+            old.copy(tracks = updated)
         }
     }
     suspend fun favorite(track: Track) {

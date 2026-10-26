@@ -70,6 +70,10 @@ class MainActivity : ComponentActivity() {
             val library by (application as BlusicApplication).library.state.collectAsStateWithLifecycle()
             val dark = library.appearance == "dark" || library.appearance == "system" && androidx.compose.foundation.isSystemInDarkTheme()
             val color = accentColor(library.accent)
+            SideEffect {
+                enableEdgeToEdge(statusBarStyle = if (dark) SystemBarStyle.dark(android.graphics.Color.TRANSPARENT) else SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT),
+                    navigationBarStyle = if (dark) SystemBarStyle.dark(android.graphics.Color.TRANSPARENT) else SystemBarStyle.light(android.graphics.Color.TRANSPARENT, android.graphics.Color.TRANSPARENT))
+            }
             MaterialTheme(colorScheme = if (dark) darkColorScheme(primary = color, background = Color(0xFF09090B), surface = Color(0xFF18181E), onSurface = Color.White) else lightColorScheme(primary = if (library.accent == "white") Color.DarkGray else color, background = Color(0xFFF5F5FA), surface = Color.White)) {
                 CompositionLocalProvider(LocalBlusicSettings provides library) { BlusicApp() }
             }

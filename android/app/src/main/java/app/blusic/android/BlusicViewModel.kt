@@ -111,8 +111,10 @@ class BlusicViewModel(application: Application) : AndroidViewModel(application) 
                 catch (e: Exception) { if (e is CancellationException) throw e; matchReference.value = requested; mutablePlayback.update { it.copy(loading = false) }; return@launch }
                 app.library.replaceSource(requested, track)
             }
-            val queue = context.ifEmpty { listOf(track) }.map { if (it.id == requested.id) track else it }.distinctBy { it.identity }
+            var queue = context.ifEmpty { listOf(track) }.map { if (it.id == requested.id) track else it }.distinctBy { it.identity }
             app.library.add(queue)
+            queue = queue.map { app.library.state.value.byIdentity[it.identity] ?: it }
+            track = app.library.state.value.byIdentity[track.identity] ?: track
             mutablePlayback.value = PlaybackUi(track = track, loading = true, queue = queue, shuffle = player.shuffleModeEnabled, repeat = player.repeatMode)
             app.api.invalidate(track.location)
             player.setMediaItems(queue.map(Track::mediaItem), queue.indexOfFirst { it.identity == track.identity }.coerceAtLeast(0), 0)
