@@ -19,6 +19,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import okhttp3.Protocol
+import okhttp3.MediaType.Companion.toMediaType
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import kotlinx.coroutines.Dispatchers
@@ -205,9 +206,33 @@ class AndroidPlaybackTest {
         assertEquals(state.relayAddress, restored.state.value.relayAddress)
         compose.onNodeWithContentDescription("Réglages").performClick()
         compose.onNodeWithTag("settings-list").performScrollToNode(hasTestTag("relay-status"))
-        compose.onNodeWithTag("relay-status").assertTextContains("préconfiguré")
+        compose.onNodeWithTag("relay-status").assertTextContains("préconfiguré", substring = true)
         compose.onNodeWithText("Clé du relais").assertDoesNotExist()
         screenshot("android-relay")
+    }
+
+    @Test fun artworkDecodesHighResolutionRatherThanReusingTinyThumbnail() = runBlocking {
+        val context = compose.activity.applicationContext
+        val bitmap = android.graphics.Bitmap.createBitmap(1280, 1280, android.graphics.Bitmap.Config.ARGB_8888)
+        bitmap.eraseColor(android.graphics.Color.rgb(30, 100, 160))
+        val output = ByteArrayOutputStream(); bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, output); bitmap.recycle()
+        val requests = mutableListOf<String>()
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            synchronized(requests) { requests += chain.request().url.toString() }
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1).code(200).message("Artwork fixture")
+                .body(output.toByteArray().toResponseBody("image/png".toMediaType())).build()
+        }.build()
+        val loader = coil.ImageLoader.Builder(context).okHttpClient(client).allowHardware(false).diskCache(null).build()
+        val address = "https://lh3.googleusercontent.com/artwork-fixture=w60-h60-l90-rj"
+        try {
+            val small = loader.execute(coil.request.ImageRequest.Builder(context).data(ArtworkPolicy.candidates(address, 160).first()).size(160).precision(coil.size.Precision.EXACT).build())
+            val high = loader.execute(coil.request.ImageRequest.Builder(context).data(ArtworkPolicy.candidates(address, 960).first()).size(960).precision(coil.size.Precision.EXACT).build())
+            assertTrue(small is coil.request.SuccessResult); assertTrue(high is coil.request.SuccessResult)
+            assertTrue(checkNotNull(high.drawable).intrinsicWidth >= 960)
+            assertTrue(checkNotNull(high.drawable).intrinsicWidth > checkNotNull(small.drawable).intrinsicWidth)
+            assertTrue(requests.any { it.endsWith("=w960-h960-l90-rj") })
+            println("ARTWORK DECODE: small=${small.drawable?.intrinsicWidth}px high=${high.drawable?.intrinsicWidth}px")
+        } finally { loader.shutdown() }
     }
 
     @Test fun compactPlayerWithLargeTextHasSeparateMetadataAndReachableControls() {

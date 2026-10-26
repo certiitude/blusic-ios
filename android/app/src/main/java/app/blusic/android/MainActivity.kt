@@ -274,7 +274,7 @@ private fun PlayerScreen(vm: BlusicViewModel, state: PlaybackUi, library: Librar
     val context = LocalContext.current
     BoxWithConstraints(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color(0xFF26334A), Color(0xFF171B28), Ink))).systemBarsPadding()) {
       val compact = maxHeight < 620.dp || LocalDensity.current.fontScale > 1.2f
-      val coverSize = minOf(maxWidth - 48.dp, (maxHeight - if (compact) 340.dp else 380.dp).coerceIn(128.dp, 340.dp))
+      val coverSize = minOf(maxWidth - 48.dp, if (compact) (maxHeight * .22f).coerceIn(96.dp, 144.dp) else (maxHeight - 380.dp).coerceIn(128.dp, 340.dp))
       Column(Modifier.fillMaxSize().padding(horizontal = if (maxWidth < 360.dp) 16.dp else 24.dp).testTag("player-layout")) {
         Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
             Action(Icons.Rounded.KeyboardArrowDown, "Fermer le lecteur", close)
