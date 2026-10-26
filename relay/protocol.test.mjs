@@ -69,3 +69,23 @@ test('upstream refusal stays a 502 instead of fake playable audio', async () => 
     assert.equal(response.status,502); assert.match((await response.json()).error,/403/);
   } finally { await new Promise(resolve=>server.close(resolve)); }
 });
+test('high quality reaches the provider and stays bound to its media ticket',async()=>{
+  const dir=await mkdtemp(join(tmpdir(),'blusic-quality-test-'));
+  const path=join(dir,'fixture.m4a'),audio=Buffer.from('0000ftypM4A quality protocol fixture');
+  await writeFile(path,audio);
+  const qualities=[];
+  const provider={prepare:async(id,quality)=>{qualities.push(quality);return {path,size:audio.length,bitrate:quality==='high'?256000:131000,duration:48};}};
+  const server=makeServer({key,provider});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const base=`http://127.0.0.1:${server.address().port}`,headers={Authorization:`Bearer ${applicationAccess(key)}`};
+  try{
+    const response=await fetch(base+'/v1/streams/abcdefghijk?quality=high',{headers});
+    assert.equal(response.status,200);
+    const payload=await response.json();assert.equal(payload.bitrate,256000);assert.equal(payload.requestedQuality,'high');
+    assert.equal(new URL(payload.url,base).searchParams.get('quality'),'high');
+    const media=await fetch(base+payload.url);assert.equal(media.status,200);assert.deepEqual(Buffer.from(await media.arrayBuffer()),audio);
+    const tampered=new URL(payload.url,base);tampered.searchParams.delete('quality');
+    assert.equal((await fetch(tampered)).status,403,'A high-quality ticket must not serve another variant');
+    assert.deepEqual(qualities,['high','high']);
+    assert.equal((await fetch(base+'/v1/streams/abcdefghijk?quality=lossless',{headers})).status,400);
+  }finally{await new Promise(resolve=>server.close(resolve));await rm(dir,{recursive:true,force:true});}
+});

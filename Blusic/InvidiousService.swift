@@ -71,6 +71,7 @@ struct InvidiousAudio: Sendable {
     var instance: URL
     var duration: Double? = nil
     var provider: String? = nil
+    var quality: OnlineAudioQuality = .standard
 }
 
 struct AudioLoadUpdate: Sendable {
@@ -88,6 +89,7 @@ struct InvidiousStream: Sendable {
     var instance: URL
     var duration: Double
     var provider: String? = nil
+    var quality: OnlineAudioQuality = .standard
     var isYouTubeDirect: Bool { instance.host == "www.youtube.com" }
     var providerLabel: String { provider ?? (isYouTubeDirect ? "YouTube direct" : "Invidious") }
 }
@@ -108,10 +110,10 @@ extension StreamingAudioLoading {
         try await withThrowingTaskGroup(of: InvidiousAudio.self) { group in
             group.addTask {
                 let file = try await AudioCache.shared.localCopy(of: stream.url,
-                    cacheKey: "invidious:\(track.location):aac:\(stream.bitrate)", fileExtension: "m4a",
+                    cacheKey: stream.quality.fileKey(videoID: track.location, bitrate: stream.bitrate), fileExtension: "m4a",
                     expectedDuration: stream.duration, session: InvidiousService.mediaSession)
-                await AudioCache.shared.storeInvidiousInfo(track: track, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration)
-                return InvidiousAudio(fileURL: file, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration)
+                await AudioCache.shared.storeInvidiousInfo(track: track, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration, quality: stream.quality)
+                return InvidiousAudio(fileURL: file, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration, quality: stream.quality)
             }
             group.addTask {
                 try await Task.sleep(for: .seconds(8))
@@ -129,21 +131,21 @@ struct InvidiousAudioLoader: StreamingAudioLoading {
         await InvidiousStreamCache.shared.invalidate(track, settings: settings)
     }
     func load(_ track: Track, settings: AppSettings, progress: @escaping @Sendable (AudioLoadUpdate) -> Void) async throws -> InvidiousAudio {
-        if let cached = await AudioCache.shared.cachedInvidious(track: track) { return cached }
+        if let cached = await AudioCache.shared.cachedInvidious(track: track, quality: settings.audioQuality) { return cached }
         let stream = try await InvidiousStreamCache.shared.resolve(track, settings: settings, direct: false)
         progress(AudioLoadUpdate(message: "Préparation du fichier audio…"))
         let file = try await AudioCache.shared.localCopy(of: stream.url,
-            cacheKey: "invidious:\(track.location):aac:\(stream.bitrate)", fileExtension: "m4a",
+            cacheKey: stream.quality.fileKey(videoID: track.location, bitrate: stream.bitrate), fileExtension: "m4a",
             expectedDuration: stream.duration, session: InvidiousService.mediaSession,
             progress: { progress(AudioLoadUpdate(message: "Préparation du fichier audio…", fraction: $0)) })
-        await AudioCache.shared.storeInvidiousInfo(track: track, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration)
-        return InvidiousAudio(fileURL: file, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration)
+        await AudioCache.shared.storeInvidiousInfo(track: track, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration, quality: stream.quality)
+        return InvidiousAudio(fileURL: file, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration, quality: stream.quality)
     }
     func playback(_ track: Track, settings: AppSettings, direct: Bool = false) async throws -> OnlinePlaybackResource {
-        if let cached = await AudioCache.shared.cachedInvidious(track: track) { return .file(cached) }
+        if let cached = await AudioCache.shared.cachedInvidious(track: track, quality: settings.audioQuality) { return .file(cached) }
         if !direct, ["auto", "youtubei"].contains(settings.audioSourceMode) {
             do {
-                let audio = try await NativeYouTubeiResolver.shared.resolve(track)
+                let audio = try await NativeYouTubeiResolver.shared.resolve(track, quality: settings.audioQuality)
                 return .file(try await AudioCache.shared.adoptNativeYouTubei(audio, track: track))
             } catch {
                 if Task.isCancelled || error is CancellationError { throw CancellationError() }
@@ -228,11 +230,11 @@ actor InvidiousStreamCache {
     private var values: [String: (Date, InvidiousStream)] = [:]
     private var pending: [String: Pending] = [:]
     func invalidate(_ track: Track, settings: AppSettings) {
-        let prefix = "\(settings.youtubeiRelayAddress ?? "")|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(track.location)|"
+        let prefix = "\(settings.youtubeiRelayAddress ?? "")|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(settings.audioQuality.rawValue)|\(track.location)|"
         values = values.filter { !$0.key.hasPrefix(prefix) }
     }
     func resolve(_ track: Track, settings: AppSettings, direct: Bool) async throws -> InvidiousStream {
-        let baseKey = "\(settings.youtubeiRelayAddress ?? "")|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(track.location)"
+        let baseKey = "\(settings.youtubeiRelayAddress ?? "")|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(settings.audioQuality.rawValue)|\(track.location)"
         let key = "\(baseKey)|\(direct)"
         if let (expiry, value) = values[key], expiry > Date() { return value }
         let waiter = UUID()
@@ -302,16 +304,16 @@ struct InvidiousService {
     static func isVideoID(_ id: String) -> Bool { id.range(of: #"^[A-Za-z0-9_-]{11}$"#, options: .regularExpression) != nil }
 
     /// Resolve a progressive AAC URL without downloading the whole song.
-    func stream(for track: Track, preferProxy: Bool) async throws -> InvidiousStream {
+    func stream(for track: Track, preferProxy: Bool, quality: OnlineAudioQuality = .standard) async throws -> InvidiousStream {
         guard Self.isVideoID(track.location) else { throw BlusicError.message("Identifiant de chanson invalide.") }
         func usableStream(on server: URL) async throws -> InvidiousStream {
             var failure = "Aucun flux AAC progressif disponible sur cette instance."
             for proxy in preferProxy ? [true, false] : [false, true] {
                 do {
                     let details: InvidiousDetails = try await get("videos/\(track.location)", on: server, parameters: proxy ? ["local": "true"] : [:])
-                    for format in details.compatibleFormats.prefix(2) {
+                    for format in quality.preferred(details.compatibleFormats, bitrate: \.bitrate).prefix(2) {
                         guard let url = URL(string: format.url, relativeTo: server)?.absoluteURL, url.scheme == "https" else { continue }
-                        let stream = InvidiousStream(url: url, bitrate: format.bitrate, instance: server, duration: Double(details.lengthSeconds ?? 0))
+                        let stream = InvidiousStream(url: url, bitrate: format.bitrate, instance: server, duration: Double(details.lengthSeconds ?? 0), quality: quality)
                         do { try await OnlineStreamResolver.validateMedia(stream, session: session); return stream }
                         catch { try Self.rethrowCancellation(error); failure = error.localizedDescription }
                     }
@@ -372,9 +374,9 @@ struct InvidiousService {
 
     /// Resolve URLs afresh, download AAC and retry through the same instance's proxy.
     /// Only the video ID and discovery origin are persisted by the library.
-    func audio(for track: Track, progress: @escaping @Sendable (AudioLoadUpdate) -> Void = { _ in }) async throws -> InvidiousAudio {
+    func audio(for track: Track, quality: OnlineAudioQuality = .standard, progress: @escaping @Sendable (AudioLoadUpdate) -> Void = { _ in }) async throws -> InvidiousAudio {
         guard Self.isVideoID(track.location) else { throw BlusicError.message("Identifiant YouTube invalide.") }
-        if let cached = await AudioCache.shared.cachedInvidious(track: track) {
+        if let cached = await AudioCache.shared.cachedInvidious(track: track, quality: quality) {
             progress(AudioLoadUpdate(message: "Audio en cache", fraction: 1))
             return cached
         }
@@ -396,7 +398,7 @@ struct InvidiousService {
                     let details: InvidiousDetails = try await get("videos/\(track.location)", on: server,
                                                                  parameters: local ? ["local": "true"] : [:])
                     if let error = details.error { throw BlusicError.message(error) }
-                    let formats = details.compatibleFormats
+                    let formats = quality.preferred(details.compatibleFormats, bitrate: \.bitrate)
                     hasAAC = hasAAC || !formats.isEmpty
                     for format in formats.prefix(2) {
                         try Task.checkCancellation()
@@ -404,12 +406,12 @@ struct InvidiousService {
                         do {
                             progress(AudioLoadUpdate(message: "Chargement de l’audio…"))
                             let file = try await AudioCache.shared.localCopy(of: url,
-                                cacheKey: "invidious:\(track.location):aac:\(format.bitrate)", fileExtension: "m4a",
+                                cacheKey: quality.fileKey(videoID: track.location, bitrate: format.bitrate), fileExtension: "m4a",
                                 expectedDuration: Double(details.lengthSeconds ?? 0), session: Self.mediaSession,
                                 progress: { fraction in progress(AudioLoadUpdate(message: "Chargement de l’audio…", fraction: fraction)) })
                             let duration = Double(details.lengthSeconds ?? 0)
-                            await AudioCache.shared.storeInvidiousInfo(track: track, bitrate: format.bitrate, instance: server, duration: duration)
-                            return InvidiousAudio(fileURL: file, bitrate: format.bitrate, instance: server, duration: duration)
+                            await AudioCache.shared.storeInvidiousInfo(track: track, bitrate: format.bitrate, instance: server, duration: duration, quality: quality)
+                            return InvidiousAudio(fileURL: file, bitrate: format.bitrate, instance: server, duration: duration, quality: quality)
                         } catch {
                             try Self.rethrowCancellation(error)
                             failures.append("\(server.host ?? "Instance") : flux \(local ? "relayé" : "direct") inaccessible")

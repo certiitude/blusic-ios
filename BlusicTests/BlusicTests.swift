@@ -102,6 +102,63 @@ final class BlusicTests: XCTestCase {
         XCTAssertEqual(decoded.playbackRate, 1.25)
         XCTAssertEqual(decoded.invidiousAddress, InvidiousService.defaultInstance)
         XCTAssertTrue(decoded.usesInvidiousFallback)
+        XCTAssertEqual(decoded.audioQuality, .standard)
+    }
+
+    func testHighQualitySettingPersistsAndSelectsOnlyRealCompatibleAAC() throws {
+        var settings = AppSettings(); settings.highQualityAudio = true
+        XCTAssertEqual(try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings)).audioQuality, .high)
+        let track = Track(title: "Quality fixture", artist: "Test", source: .invidious, location: "abcdefghijk")
+        let data = Data(#"{"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"url":"https://media.googlevideo.com/normal","mimeType":"audio/mp4; codecs=mp4a.40.2","bitrate":131000},{"url":"https://media.googlevideo.com/high","mimeType":"audio/mp4; codecs=mp4a.40.2","bitrate":256000},{"url":"https://media.googlevideo.com/opus","mimeType":"audio/webm; codecs=opus","bitrate":300000}]}}"#.utf8)
+        let standard = try DirectAudioService.parse(data, track: track)
+        let high = try DirectAudioService.parse(data, track: track, quality: .high)
+        XCTAssertEqual(standard.url.path, "/normal"); XCTAssertEqual(standard.bitrate, 131000)
+        XCTAssertEqual(high.url.path, "/high"); XCTAssertEqual(high.bitrate, 256000); XCTAssertEqual(high.quality, .high)
+        XCTAssertEqual(OnlineAudioQuality.high.preferred([131000], bitrate: { $0 }), [131000], "High quality must not invent a higher rate when none is offered")
+    }
+
+    func testHighQualityNeverReusesAStandardResolvedURL() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        let calls = NetworkRequestCounter()
+        InvidiousStubProtocol.handler = { request in
+            if request.url?.path == "/youtubei/v1/player" {
+                calls.increment()
+                return (200, Data(#"{"playabilityStatus":{"status":"OK"},"streamingData":{"adaptiveFormats":[{"url":"https://media.googlevideo.com/normal","mimeType":"audio/mp4; codecs=mp4a.40.2","bitrate":131000},{"url":"https://media.googlevideo.com/high","mimeType":"audio/mp4; codecs=mp4a.40.2","bitrate":256000}]}}"#.utf8))
+            }
+            return (206, Data([0,0,0,20]) + Data("ftypM4A ".utf8) + Data(repeating: 0, count: 64))
+        }
+        let cache = InvidiousStreamCache(resolver: OnlineStreamResolver(session: session))
+        var settings = AppSettings(); settings.onlineAudioMode = "direct"
+        let track = Track(title: "Variant cache fixture", artist: "Test", source: .invidious, location: "abcdefghijk")
+        let standard = try await cache.resolve(track, settings: settings, direct: false)
+        settings.highQualityAudio = true
+        let high = try await cache.resolve(track, settings: settings, direct: false)
+        let cached = try await cache.resolve(track, settings: settings, direct: false)
+        XCTAssertEqual(standard.bitrate, 131000); XCTAssertEqual(high.bitrate, 256000); XCTAssertEqual(cached.url, high.url)
+        XCTAssertEqual(calls.count, 2, "Changing quality must resolve a fresh variant once, then cache it")
+    }
+
+    func testHighQualityFileCacheDoesNotUseTheOldStandardDownload() async throws {
+        let cache = AudioCache()
+        let fixture = try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "orbite", withExtension: "wav"))
+        let id = String(UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(11))
+        let track = Track(title: "File quality fixture", artist: "Test", duration: 48, source: .invidious, location: id)
+        let temp = FileManager.default.temporaryDirectory.appendingPathComponent("quality-\(UUID().uuidString).m4a")
+        defer { try? FileManager.default.removeItem(at: temp) }
+        try FileManager.default.copyItem(at: fixture, to: temp)
+        let source = URL(string: "https://www.youtube.com")!
+        let standard = try await cache.adoptNativeYouTubei(InvidiousAudio(fileURL: temp, bitrate: 131000, instance: source, duration: 48), track: track)
+        defer { try? FileManager.default.removeItem(at: standard.fileURL) }
+        let missingHigh = await cache.cachedInvidious(track: track, quality: .high)
+        XCTAssertNil(missingHigh, "An existing standard download must not hide a fresh best-format lookup")
+        try FileManager.default.copyItem(at: fixture, to: temp)
+        let high = try await cache.adoptNativeYouTubei(InvidiousAudio(fileURL: temp, bitrate: 256000, instance: source, duration: 48, quality: .high), track: track)
+        defer { try? FileManager.default.removeItem(at: high.fileURL) }
+        let cachedHigh = await cache.cachedInvidious(track: track, quality: .high)
+        let cachedStandard = await cache.cachedInvidious(track: track)
+        XCTAssertEqual(cachedHigh?.bitrate, 256000); XCTAssertEqual(cachedStandard?.bitrate, 131000)
+        XCTAssertNotEqual(cachedHigh?.fileURL, cachedStandard?.fileURL)
     }
 
     func testInvidiousAddressValidation() throws {
@@ -1106,6 +1163,24 @@ final class BlusicTests: XCTestCase {
         XCTAssertEqual(stream.url.host,"relay.fixture.invalid")
     }
 
+    func testHighQualityRequestReachesYouTubeiRelayAndRetainsItsRealBitrate() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        InvidiousStubProtocol.handler = { request in
+            let items = URLComponents(url: request.url!, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            XCTAssertEqual(items.first { $0.name == "quality" }?.value, "high")
+            if request.url?.path.hasPrefix("/v1/streams/") == true {
+                return (200, Data(#"{"url":"/v1/audio/abcdefghijk?ticket=fixture&quality=high","bitrate":131042,"duration":166,"requestedQuality":"high"}"#.utf8))
+            }
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            return (206, Data([0,0,0,20]) + Data("ftypM4A ".utf8) + Data(repeating: 0, count: 64))
+        }
+        let track = Track(title: "Relay quality fixture", artist: "Test", source: .invidious, location: "abcdefghijk")
+        let stream = try await YouTubeRelayService(session: session).stream(for: track, server: URL(string: "https://relay.fixture.invalid")!, key: "fixture", quality: .high)
+        XCTAssertEqual(stream.quality, .high)
+        XCTAssertEqual(stream.bitrate, 131042, "A high-quality preference must retain the actual bitrate when no higher format is offered")
+    }
+
     func testRelayUpstream403RemainsVisibleInsteadOfBecomingAnUnknownPlayerError() async throws {
         let session = stubSession()
         defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
@@ -1235,13 +1310,47 @@ final class BlusicTests: XCTestCase {
         let repeated = await calls.calls(for: prepared ?? "")
         XCTAssertEqual(repeated, 1, "The prepared title must not be resolved again; the following title may now begin its own preparation")
     }
+
+    @MainActor
+    func testChangingQualityRepreparesTheNextTitleWithoutInterruptingCurrentAudio() async throws {
+        let store = LibraryStore(inMemory: true); store.tracks = []
+        let file = try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "orbite", withExtension: "wav"))
+        let calls = UpcomingPreparationCounter()
+        let player = AudioPlayer(library: store, onlineLoader: UpcomingPreparationLoader(file: file, calls: calls))
+        let current = Track(title: "Quality current", artist: "Test", duration: 48, source: .bundled, location: "bleu-nuit.wav")
+        let next = Track(title: "Quality next", artist: "Test", duration: 5, source: .invidious, location: "bbbbbbbbbbb")
+        defer { player.forget(current.id); player.forget(next.id) }
+        player.play(current, in: [current,next])
+        try await Task.sleep(for: .milliseconds(450)); player.seek(to: 4)
+        for _ in 0..<40 {
+            if player.upcomingPreparationStatus == "Titre suivant préchargé" { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        store.settings.highQualityAudio = true; player.apply(store.settings)
+        for _ in 0..<40 {
+            if player.upcomingPreparationStatus == "Titre suivant préchargé" { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let qualities = await calls.qualities
+        XCTAssertEqual(qualities, [.standard,.high])
+        XCTAssertEqual(player.current?.id, current.id); XCTAssertTrue(player.isPlaying); XCTAssertNil(player.error)
+        player.next()
+        for _ in 0..<20 {
+            if player.isPlaying, player.firstAudioLatency != nil { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertEqual(player.current?.location, next.location)
+        let count = await calls.count
+        XCTAssertEqual(count, 2, "The high-quality preparation must be reused, not resolved a third time")
+    }
 }
 
 private actor UpcomingPreparationCounter {
     private(set) var count = 0
     private(set) var lastLocation: String?
     private var locations: [String] = []
-    func record(_ location: String) { count += 1; lastLocation = location; locations.append(location) }
+    private(set) var qualities: [OnlineAudioQuality] = []
+    func record(_ location: String, quality: OnlineAudioQuality) { count += 1; lastLocation = location; locations.append(location); qualities.append(quality) }
     func calls(for location: String) -> Int { locations.filter { $0 == location }.count }
 }
 
@@ -1252,9 +1361,9 @@ private struct UpcomingPreparationLoader: StreamingAudioLoading {
         throw BlusicError.message("The test must use the streaming loader's prepared-file result")
     }
     func playback(_ track: Track, settings: AppSettings, direct: Bool) async throws -> OnlinePlaybackResource {
-        await calls.record(track.location)
+        await calls.record(track.location, quality: settings.audioQuality)
         try await Task.sleep(for: .milliseconds(180))
-        return .file(InvidiousAudio(fileURL: file, bitrate: 0, instance: URL(string: "https://fixture.invalid")!, duration: track.duration, provider: "Prepared test fixture"))
+        return .file(InvidiousAudio(fileURL: file, bitrate: 0, instance: URL(string: "https://fixture.invalid")!, duration: track.duration, provider: "Prepared test fixture", quality: settings.audioQuality))
     }
 }
 

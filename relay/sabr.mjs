@@ -9,6 +9,7 @@ import {createWriteStream} from 'node:fs';
 import {stat} from 'node:fs/promises';
 import {GuestHTTP} from './guest-http.mjs';
 import {USER_AGENT} from 'bgutils-js/utils';
+import {preferredAAC} from './audio-quality.mjs';
 
 Platform.shim.eval = async data => vm.runInNewContext(`(() => { ${data.output} })()`,Object.create(null),{timeout:1500});
 const guest=new GuestHTTP();
@@ -46,7 +47,7 @@ export class SabrAudioSource {
     this.context=work; this.expires=Date.now()+45*60000;
     try {return await work;} catch(error) {if(this.context===work)this.context=undefined;throw error;}
   }
-  async download(id,path,maxFileBytes) {
+  async download(id,path,maxFileBytes,quality='standard') {
     const {yt,origin}=await this.session();
     const proof=await origin.mint(id);
     // Bind origin proof to this specific title, not to an unrelated old session.
@@ -56,11 +57,13 @@ export class SabrAudioSource {
     const config=info.player_config?.media_common_config?.media_ustreamer_request_config?.video_playback_ustreamer_config;
     const server=info.streaming_data?.server_abr_streaming_url;
     if(!server || !config) throw Error('Le fournisseur ne propose pas de flux SABR');
+    const formats=preferredAAC(info.streaming_data.adaptive_formats,quality,maxFileBytes);
+    if(!formats.length)throw Error('Aucun AAC public avec taille vérifiable');
     const url=await yt.session.player.decipher(server);
     const controller=new AbortController();
     const timeout=setTimeout(()=>controller.abort(Error('Préparation SABR trop lente')),25000);
     const stream=new SabrStream({videoId:id,serverAbrStreamingUrl:url,videoPlaybackUstreamerConfig:config,
-      formats:info.streaming_data.adaptive_formats.map(buildSabrFormat),fetchFunction:boundedFetch,
+      formats:formats.map(buildSabrFormat),fetchFunction:boundedFetch,
       poToken:po_token,clientInfo:{clientName:Number(Constants.CLIENT_NAME_IDS[yt.session.context.client.clientName]),clientVersion:yt.session.context.client.clientVersion},
       callbacks:{onMintPoToken:()=>origin.mint(id)}});
     let failure;

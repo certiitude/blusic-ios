@@ -92,6 +92,9 @@ struct RootView: View {
                 library.requestedArtist = MusicArtist(id: "UC2ISePqOr39OQ90kNN1WLjA", name: "Niska")
             } else if ProcessInfo.processInfo.arguments.contains("--blusic-preview-sound") {
                 sheet = .sound
+            } else if ProcessInfo.processInfo.arguments.contains("--blusic-preview-settings") {
+                if ProcessInfo.processInfo.arguments.contains("--blusic-high-quality") { library.settings.highQualityAudio = true }
+                sheet = .settings
             } else if ProcessInfo.processInfo.arguments.contains("--blusic-preview-mini"), let demo = library.tracks.first(where: { $0.source == .bundled }) {
                 player.play(demo, in: [demo]); player.pause()
             }

@@ -19,18 +19,20 @@ export function makeServer({key, provider = new YouTubeProvider(), now = () => D
       const match = /^\/v1\/(streams|audio)\/([A-Za-z0-9_-]{11})$/.exec(url.pathname);
       if (!match || !validVideo(match[2])) { send(404, {error:'Route inconnue'}); return; }
       const [, kind, id] = match;
+      const quality=url.searchParams.get('quality')||'standard';
+      if(!['standard','high'].includes(quality)){send(400,{error:'Qualité audio inconnue'});return;}
       if (kind === 'streams') {
         const owner = bearerMatches(request.headers.authorization, key);
         if (!owner && !verifyClientCapability(key, request.headers.authorization, now())) { send(401, {error:'Accès au relais manquant, invalide ou expiré'}); return; }
         if (preparing >= 2) { response.setHeader('Retry-After', '3'); send(429, {error:'Relais occupé par deux préparations audio, réessaie dans un instant'}); return; }
         preparing++;
         let file;
-        try { file = await provider.prepare(id); } finally { preparing--; }
+        try { file = await provider.prepare(id,quality); } finally { preparing--; }
         const expiry = now() + 20 * 60000;
-        send(200, {url:`/v1/audio/${id}?ticket=${ticket(key,id,expiry)}`, bitrate:file.bitrate, duration:file.duration, size:file.size, provider:'youtubei.js'});
+        send(200, {url:`/v1/audio/${id}?ticket=${ticket(key,id,expiry,quality)}${quality==='high'?'&quality=high':''}`, bitrate:file.bitrate, duration:file.duration, size:file.size, provider:'youtubei.js',requestedQuality:quality});
       } else {
-        if (!verifyTicket(key,id,url.searchParams.get('ticket'),now())) { send(403,{error:'Lien audio expiré, résous à nouveau le titre'}); return; }
-        const file = await provider.prepare(id);
+        if (!verifyTicket(key,id,url.searchParams.get('ticket'),now(),quality)) { send(403,{error:'Lien audio expiré, résous à nouveau le titre'}); return; }
+        const file = await provider.prepare(id,quality);
         const range = parseRange(request.headers.range, file.size);
         if (!range) { response.writeHead(416, {'Content-Range':`bytes */${file.size}`}); response.end(); return; }
         const headers = {'Content-Type':'audio/mp4', 'Accept-Ranges':'bytes', 'Content-Length':range.end-range.start+1};

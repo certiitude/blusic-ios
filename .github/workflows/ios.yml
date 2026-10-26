@@ -21,6 +21,7 @@ on:
       - 'tools/verify_ipa.py'
       - 'tools/configure_ios_relay.py'
       - 'native-resolver/**'
+      - 'relay/audio-quality.mjs'
   pull_request:
 permissions:
   contents: read

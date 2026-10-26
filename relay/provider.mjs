@@ -7,6 +7,7 @@ import {join} from 'node:path';
 import {pipeline} from 'node:stream/promises';
 import {Readable, Transform} from 'node:stream';
 import {SabrAudioSource} from './sabr.mjs';
+import {audioQuality,preferredAAC} from './audio-quality.mjs';
 
 // youtubei.js's extracted public player transform, isolated from Node globals.
 // No account cookies or external challenge-solving service.
@@ -20,22 +21,23 @@ export class YouTubeProvider {
     this.pending = new Map();
     this.sabr = new SabrAudioSource();
   }
-  async prepare(id) {
-    const cached = this.cache.get(id);
+  async prepare(id,requestedQuality='standard') {
+    const quality=audioQuality(requestedQuality),key=`${id}|${quality}`;
+    const cached = this.cache.get(key);
     if (cached && cached.expiry > Date.now()) return cached;
-    if (this.pending.has(id)) return this.pending.get(id);
-    const work = this.download(id);
-    this.pending.set(id, work);
-    try { return await work; } finally { this.pending.delete(id); }
+    if (this.pending.has(key)) return this.pending.get(key);
+    const work = this.download(id,quality);
+    this.pending.set(key, work);
+    try { return await work; } finally { this.pending.delete(key); }
   }
-  async download(id) {
+  async download(id,quality='standard') {
     if (!this.root) this.root = await mkdtemp(join(tmpdir(), 'blusic-relay-'));
     const errors = [];
     const sabrDirectory=await mkdtemp(join(this.root,'sabr-'));
     try {
-      const result=await this.sabr.download(id,join(sabrDirectory,'audio.m4a'),this.maxFileBytes);
+      const result=await this.sabr.download(id,join(sabrDirectory,'audio.m4a'),this.maxFileBytes,quality);
       const entry={...result,directory:sabrDirectory,expiry:Date.now()+10*60000};
-      this.cache.set(id,entry);await this.prune();return entry;
+      this.cache.set(`${id}|${quality}`,entry);await this.prune();return entry;
     } catch(error) {
       await rm(sabrDirectory,{recursive:true,force:true});
       errors.push(`SABR: ${String(error.message).replace(/https?:\/\/\S+/g,'[upstream]').slice(0,250)}`);
@@ -52,8 +54,7 @@ export class YouTubeProvider {
         phase = 'metadata';
         const info = await yt.getBasicInfo(id, {client});
         if (info.playability_status?.status !== 'OK') throw Error(info.playability_status?.reason || 'Titre non accessible sans connexion');
-        const formats = (info.streaming_data?.adaptive_formats || []).filter(f => f.has_audio && !f.has_video && f.mime_type?.startsWith('audio/mp4') && !f.drm_families?.length)
-          .sort((a,b) => b.bitrate - a.bitrate);
+        const formats = preferredAAC(info.streaming_data?.adaptive_formats,quality,this.maxFileBytes);
         const format = formats.find(f => f.content_length > 0 && f.content_length <= this.maxFileBytes);
         if (!format) throw Error('Aucun AAC public avec taille vérifiable');
         phase = 'audio';
@@ -80,7 +81,7 @@ export class YouTubeProvider {
         const size = (await stat(path)).size;
         if (size !== format.content_length || !head.includes(Buffer.from('ftyp'))) throw Error('Fichier audio incomplet ou non M4A');
         const entry = {path, directory, size, bitrate: format.bitrate, duration: info.basic_info.duration || 0, client, expiry: Date.now() + 10 * 60_000};
-        this.cache.set(id, entry);
+        this.cache.set(`${id}|${quality}`, entry);
         await this.prune();
         return entry;
       } catch (error) {

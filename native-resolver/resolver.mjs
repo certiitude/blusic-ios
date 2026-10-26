@@ -5,6 +5,7 @@ import {BotGuardClient} from 'bgutils-js/botguard';
 import {WebPoMinter} from 'bgutils-js/webpo';
 import {getHeaders,buildURL,USER_AGENT,parseLooseJSON} from 'bgutils-js/utils';
 import {VideoPlaybackAbrRequest} from 'googlevideo/protos';
+import {preferredAAC,audioQuality} from '../relay/audio-quality.mjs';
 
 // This WebKit document is a resolver, never a video/audio player. Only the
 // prepared AAC bytes are passed back to AVAudioEngine/AVPlayer on the iPhone.
@@ -69,7 +70,7 @@ async function context(){
   })();
   try{return await contextPromise;}catch(error){contextPromise=undefined;throw error;}
 }
-window.__blusicResolve=async(id,job)=>{
+window.__blusicResolve=async(id,job,quality='standard')=>{
   if(!/^[A-Za-z0-9_-]{11}$/.test(id))return post({action:'failed',job,error:'Identifiant invalide'});
   activeJob=job;
   let stream;
@@ -82,9 +83,11 @@ window.__blusicResolve=async(id,job)=>{
     const config=info.player_config?.media_common_config?.media_ustreamer_request_config?.video_playback_ustreamer_config;
     const source=info.streaming_data?.server_abr_streaming_url;
     if(!config||!source)throw Error('Flux audio SABR indisponible');
+    const formats=preferredAAC(info.streaming_data.adaptive_formats,audioQuality(quality));
+    if(!formats.length)throw Error('Aucun format AAC natif avec taille vérifiable');
     currentController=new AbortController();
     stream=new SabrStream({videoId:id,serverAbrStreamingUrl:await yt.session.player.decipher(source),videoPlaybackUstreamerConfig:config,
-      formats:info.streaming_data.adaptive_formats.map(buildSabrFormat),poToken:encode(proof),fetchFunction:nativeFetch,
+      formats:formats.map(buildSabrFormat),poToken:encode(proof),fetchFunction:nativeFetch,
       clientInfo:{clientName:Number(Constants.CLIENT_NAME_IDS[yt.session.context.client.clientName]),clientVersion:yt.session.context.client.clientVersion},callbacks:{onMintPoToken:()=>minter.mint(id)}});
     currentStream=stream;
     stream.on('streamProtectionStatusUpdate',state=>post({action:'diagnostic',job,phase:'stream-protection',status:state.status}));

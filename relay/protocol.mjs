@@ -28,15 +28,16 @@ export function verifyClientCapability(key, header, now = Date.now()) {
   const actual = Buffer.from(value);
   return actual.length === expected.length && timingSafeEqual(actual, expected);
 }
-export function ticket(key, id, expiry) {
-  return `${expiry}.${createHmac('sha256', key).update(`${id}|${expiry}`).digest('hex')}`;
+export function ticket(key, id, expiry, quality='standard') {
+  const binding=`${id}|${expiry}`+(quality==='high'?'|high':'');
+  return `${expiry}.${createHmac('sha256', key).update(binding).digest('hex')}`;
 }
-export function verifyTicket(key, id, value, now = Date.now()) {
+export function verifyTicket(key, id, value, now = Date.now(), quality='standard') {
   if (typeof value !== 'string') return false;
   const [time] = value.split('.');
   const expiry = Number(time);
   if (!Number.isSafeInteger(expiry) || expiry < now || expiry > now + 21 * 60 * 1000) return false;
-  const expected = ticket(key, id, expiry);
+  const expected = ticket(key, id, expiry, quality);
   const actual = Buffer.from(value);
   return actual.length === expected.length && timingSafeEqual(actual, Buffer.from(expected));
 }

@@ -25,6 +25,12 @@ struct SettingsView: View {
                     }
                 }.padding(.vertical, 8)
             }.listRowBackground(Color.clear)
+            Section {
+                Toggle("Audio haute qualité", isOn: Binding(get: { library.settings.audioQuality == .high }, set: { library.settings.highQualityAudio = $0 }))
+                    .accessibilityIdentifier("audio-high-quality")
+            } header: { Text("Qualité audio") } footer: {
+                Text("Meilleur débit AAC disponible, selon le titre et l’accès ; 256 kbit/s n’est pas garanti. Le lecteur affiche le débit obtenu. S’applique aux prochaines lectures et au préchargement. Peut utiliser davantage de données.")
+            }
             Section("Ton univers") {
                 Picker("Apparence", selection: $library.settings.appearance) {
                     Text("Sombre").tag("dark"); Text("Claire").tag("light"); Text("Système").tag("system")
@@ -150,7 +156,7 @@ struct SettingsView: View {
             }
             Section("À propos") {
                 NavigationLink("Confidentialité et sources") { privacy }
-                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.0")
+                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.1")
                 Text("Fait pour écouter. Pas pour te distraire.").font(.caption).foregroundStyle(.secondary)
             }
         }

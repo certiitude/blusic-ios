@@ -35,13 +35,13 @@ final class NativeYouTubeiResolver: NSObject, WKScriptMessageHandler {
         return URLSession(configuration: configuration)
     }()
 
-    func resolve(_ track: Track) async throws -> InvidiousAudio {
+    func resolve(_ track: Track, quality: OnlineAudioQuality = .standard) async throws -> InvidiousAudio {
         guard InvidiousService.isVideoID(track.location) else { throw BlusicError.message("Identifiant musical invalide.") }
         while job != nil { try Task.checkCancellation(); try await Task.sleep(for: .milliseconds(50)) }
         let token = UUID().uuidString
         job = token
         do {
-            await spool.start(token: token)
+            await spool.start(token: token, quality: quality)
             try Task.checkCancellation()
             try prepareDocument()
             for _ in 0..<120 {
@@ -58,7 +58,7 @@ final class NativeYouTubeiResolver: NSObject, WKScriptMessageHandler {
                         do { try await Task.sleep(for: .seconds(35)) } catch { return }
                         self?.fail(BlusicError.message("youtubei.js : la préparation audio a dépassé 35 secondes."), token: token, reset: true)
                     }
-                    let arguments = "'\(track.location)','\(token)'"
+                    let arguments = "'\(track.location)','\(token)','\(quality.rawValue)'"
                     web?.evaluateJavaScript("window.__blusicResolve(\(arguments)); void 0") { [weak self] _, error in
                         if let error { Task { @MainActor in self?.fail(BlusicError.message("youtubei.js n’a pas pu lancer la résolution : \(error.localizedDescription)"), token: token, reset: true) } }
                     }
@@ -215,11 +215,12 @@ private actor NativeResolverNetworkStream {
 
 actor NativeYouTubeSpool {
     private var token: String?
+    private var quality: OnlineAudioQuality = .standard
     private var handle: FileHandle?
     private var url: URL?
     private var expected = 0
     private var written = 0
-    func start(token: String) { discard(); self.token = token }
+    func start(token: String, quality: OnlineAudioQuality = .standard) { discard(); self.token = token; self.quality = quality }
     func begin(expected: Int, token: String) throws {
         guard self.token == token else { throw CancellationError() }
         discard()
@@ -241,7 +242,7 @@ actor NativeYouTubeSpool {
         let seconds = Double(file.length) / file.processingFormat.sampleRate
         guard file.length > 0, duration > 0, seconds.isFinite, seconds >= duration * 0.8 else { throw BlusicError.message("Le fichier AAC n’est pas décodable ou est tronqué.") }
         self.url = nil
-        return InvidiousAudio(fileURL: url, bitrate: bitrate, instance: URL(string: "https://www.youtube.com")!, duration: duration, provider: "youtubei.js · iPhone")
+        return InvidiousAudio(fileURL: url, bitrate: bitrate, instance: URL(string: "https://www.youtube.com")!, duration: duration, provider: "youtubei.js · iPhone", quality: quality)
     }
     func cancel(token: String) { guard self.token == token else { return }; discard(); self.token = nil }
     private func discard() { try? handle?.close(); handle = nil; if let url { try? FileManager.default.removeItem(at: url) }; url = nil; written = 0 }

@@ -637,9 +637,9 @@ final class AudioPlayer {
             guard let self else { return }
             do {
                 let file = try await AudioCache.shared.localCopy(of: source.url,
-                    cacheKey: "invidious:\(current.location):aac:\(source.bitrate)", fileExtension: "m4a", expectedDuration: source.duration,
+                    cacheKey: source.quality.fileKey(videoID: current.location, bitrate: source.bitrate), fileExtension: "m4a", expectedDuration: source.duration,
                     session: InvidiousService.mediaSession)
-                await AudioCache.shared.storeInvidiousInfo(track: current, bitrate: source.bitrate, instance: source.instance, duration: source.duration)
+                await AudioCache.shared.storeInvidiousInfo(track: current, bitrate: source.bitrate, instance: source.instance, duration: source.duration, quality: source.quality)
                 try Task.checkCancellation()
                 guard generation == token, isStreaming else { return }
                 let seconds = streamPlayer?.currentTime().seconds ?? position
@@ -725,7 +725,7 @@ final class AudioPlayer {
         library.savedQueue = queue.map(\.id); library.savedCurrentID = current?.id
     }
     private static func preparationKey(_ track: Track, settings: AppSettings) -> String {
-        "\(track.source.rawValue)|\(track.location)|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(settings.youtubeiRelayAddress ?? "")|\(settings.youtubeiRelayDisabled ?? false)"
+        "\(track.source.rawValue)|\(track.location)|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(settings.youtubeiRelayAddress ?? "")|\(settings.youtubeiRelayDisabled ?? false)|\(settings.audioQuality.rawValue)"
     }
     private func invalidateUpcomingPreparation() {
         upcomingTask?.cancel(); upcomingTask = nil
@@ -880,20 +880,20 @@ actor AudioCache {
         let hash = SHA256.hash(data: Data(key.utf8)).map { String(format: "%02x", $0) }.joined()
         return directory.appendingPathComponent(hash).appendingPathExtension(ext)
     }
-    func cachedInvidious(track: Track) -> InvidiousAudio? {
-        let metadata = destination(key: "invidious:\(track.location):aac", ext: "json")
+    func cachedInvidious(track: Track, quality: OnlineAudioQuality = .standard) -> InvidiousAudio? {
+        let metadata = destination(key: quality.metadataKey(videoID: track.location), ext: "json")
         guard let data = try? Data(contentsOf: metadata), let source = try? JSONDecoder().decode(CachedSource.self, from: data),
               source.expires > Date() else { return nil }
-        let file = destination(key: "invidious:\(track.location):aac:\(source.bitrate)", ext: "m4a")
+        let file = destination(key: quality.fileKey(videoID: track.location, bitrate: source.bitrate), ext: "m4a")
         let expected = track.duration > 0 ? track.duration : source.duration ?? 0
         guard expected > 0 else { return nil }
         do {
             try validate(file, expectedDuration: expected)
-            return InvidiousAudio(fileURL: file, bitrate: source.bitrate, instance: source.instance, duration: expected, provider: source.provider)
+            return InvidiousAudio(fileURL: file, bitrate: source.bitrate, instance: source.instance, duration: expected, provider: source.provider, quality: quality)
         } catch { return nil }
     }
-    func storeInvidiousInfo(track: Track, bitrate: Int, instance: URL, duration: Double? = nil, provider: String? = nil) {
-        let metadata = destination(key: "invidious:\(track.location):aac", ext: "json")
+    func storeInvidiousInfo(track: Track, bitrate: Int, instance: URL, duration: Double? = nil, provider: String? = nil, quality: OnlineAudioQuality = .standard) {
+        let metadata = destination(key: quality.metadataKey(videoID: track.location), ext: "json")
         let source = CachedSource(bitrate: bitrate, instance: instance, expires: Date().addingTimeInterval(bitrate >= 90000 ? 86400 : 600), duration: duration ?? track.duration, provider: provider)
         if let data = try? JSONEncoder().encode(source) { try? data.write(to: metadata, options: .atomic) }
     }
@@ -901,10 +901,10 @@ actor AudioCache {
         guard audio.fileURL.isFileURL, audio.fileURL.deletingLastPathComponent().standardizedFileURL == FileManager.default.temporaryDirectory.standardizedFileURL else { throw BlusicError.message("Fichier youtubei.js hors du répertoire temporaire.") }
         try validate(audio.fileURL, expectedDuration: audio.duration ?? track.duration)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let target = destination(key: "invidious:\(track.location):aac:\(audio.bitrate)", ext: "m4a")
+        let target = destination(key: audio.quality.fileKey(videoID: track.location, bitrate: audio.bitrate), ext: "m4a")
         if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
         try FileManager.default.moveItem(at: audio.fileURL, to: target)
-        storeInvidiousInfo(track: track, bitrate: audio.bitrate, instance: audio.instance, duration: audio.duration, provider: audio.provider)
+        storeInvidiousInfo(track: track, bitrate: audio.bitrate, instance: audio.instance, duration: audio.duration, provider: audio.provider, quality: audio.quality)
         var result = audio; result.fileURL = target; return result
     }
     func localCopy(of url: URL, cacheKey: String? = nil, fileExtension: String? = nil,

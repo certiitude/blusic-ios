@@ -6,7 +6,7 @@ import Security
 struct DirectAudioService: Sendable {
     var session: URLSession = .shared
 
-    func stream(for track: Track) async throws -> InvidiousStream {
+    func stream(for track: Track, quality: OnlineAudioQuality = .standard) async throws -> InvidiousStream {
         guard InvidiousService.isVideoID(track.location) else { throw BlusicError.message("Identifiant de chanson invalide.") }
         var request = URLRequest(url: URL(string: "https://www.youtube.com/youtubei/v1/player?prettyPrint=false")!)
         request.httpMethod = "POST"
@@ -25,10 +25,10 @@ struct DirectAudioService: Sendable {
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             throw BlusicError.message("L’accès audio direct est indisponible (HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)).")
         }
-        return try Self.parse(data, track: track)
+        return try Self.parse(data, track: track, quality: quality)
     }
 
-    static func parse(_ data: Data, track: Track) throws -> InvidiousStream {
+    static func parse(_ data: Data, track: Track, quality: OnlineAudioQuality = .standard) throws -> InvidiousStream {
         guard let body = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             throw BlusicError.message("Réponse audio directe invalide.")
         }
@@ -46,12 +46,12 @@ struct DirectAudioService: Sendable {
             return mime.hasPrefix("audio/mp4") && mime.contains("mp4a") && $0["url"] is String
                 && $0["drmFamilies"] == nil && $0["drmTrackType"] == nil
         }.sorted { ($0["bitrate"] as? Int ?? 0) > ($1["bitrate"] as? Int ?? 0) }
-        for format in compatible {
+        for format in quality.preferred(compatible, bitrate: { $0["bitrate"] as? Int ?? 0 }) {
             guard let address = format["url"] as? String, let url = URL(string: address), url.scheme == "https",
                   let host = url.host?.lowercased(), host.hasSuffix(".googlevideo.com"), url.user == nil, url.password == nil else { continue }
             let seconds = (details?["lengthSeconds"] as? String).flatMap(Double.init) ?? track.duration
             return InvidiousStream(url: url, bitrate: format["bitrate"] as? Int ?? 0,
-                instance: URL(string: "https://www.youtube.com")!, duration: seconds)
+                instance: URL(string: "https://www.youtube.com")!, duration: seconds, quality: quality)
         }
         throw BlusicError.message("Aucun flux AAC direct disponible pour ce titre. Essaie le relais Invidious ou le lecteur officiel.")
     }
@@ -77,14 +77,14 @@ struct OnlineStreamResolver: Sendable {
             if ["auto", "youtubei"].contains(mode), previous?.provider != "youtubei.js" || mode == "youtubei", let address = configuredAddress,
                let server = try? InvidiousService.instanceURL(address), let key = configuredKey {
                 group.addTask {
-                    do { return .success(try await YouTubeRelayService(session: session).stream(for: track, server: server, key: key)) }
+                    do { return .success(try await YouTubeRelayService(session: session).stream(for: track, server: server, key: key, quality: settings.audioQuality)) }
                     catch { return .failure(error) }
                 }
             }
             if useDirect {
                 group.addTask {
                     do {
-                        let stream = try await DirectAudioService(session: session).stream(for: track)
+                        let stream = try await DirectAudioService(session: session).stream(for: track, quality: settings.audioQuality)
                         try await Self.validateMedia(stream, session: session)
                         return .success(stream)
                     } catch { return .failure(error) }
@@ -97,7 +97,7 @@ struct OnlineStreamResolver: Sendable {
                         if useDirect { try await Task.sleep(for: .milliseconds(350)) }
                         let service = try InvidiousService(address: settings.invidiousAddress,
                             automaticFallback: settings.usesInvidiousFallback, session: session)
-                        let stream = try await service.stream(for: track, preferProxy: true)
+                        let stream = try await service.stream(for: track, preferProxy: true, quality: settings.audioQuality)
                         return .success(stream)
                     } catch { return .failure(error) }
                 }
@@ -153,9 +153,11 @@ struct OnlineStreamResolver: Sendable {
 
 struct YouTubeRelayService {
     var session: URLSession = .shared
-    func stream(for track: Track, server: URL, key: String) async throws -> InvidiousStream {
+    func stream(for track: Track, server: URL, key: String, quality: OnlineAudioQuality = .standard) async throws -> InvidiousStream {
         guard InvidiousService.isVideoID(track.location) else { throw BlusicError.message("Identifiant musical invalide.") }
-        var request = URLRequest(url: server.appendingPathComponent("v1/streams/\(track.location)"))
+        var endpoint = URLComponents(url: server.appendingPathComponent("v1/streams/\(track.location)"), resolvingAgainstBaseURL: false)!
+        if quality == .high { endpoint.queryItems = [URLQueryItem(name: "quality", value: "high")] }
+        var request = URLRequest(url: endpoint.url!)
         request.timeoutInterval = 15
         request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
         let (data, response) = try await session.data(for: request)
@@ -167,13 +169,16 @@ struct YouTubeRelayService {
             throw BlusicError.message("Relais youtubei.js : HTTP \((response as? HTTPURLResponse)?.statusCode ?? 0)." + (detail.map { "\n" + $0 } ?? ""))
         }
         let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        guard quality != .high || payload?["requestedQuality"] as? String == "high" else {
+            throw BlusicError.message("Ce relais youtubei.js ne prend pas encore en charge le réglage haute qualité.")
+        }
         guard let path = payload?["url"] as? String, let url = URL(string: path, relativeTo: server)?.absoluteURL,
               url.scheme == "https", url.host == server.host, url.port == server.port,
               url.user == nil, url.password == nil, url.path.hasPrefix("/v1/audio/") else {
             throw BlusicError.message("Le relais youtubei.js n’a pas renvoyé un lien audio du même serveur.")
         }
         let stream = InvidiousStream(url: url, bitrate: payload?["bitrate"] as? Int ?? 0, instance: server,
-            duration: payload?["duration"] as? Double ?? track.duration, provider: "youtubei.js")
+            duration: payload?["duration"] as? Double ?? track.duration, provider: "youtubei.js", quality: quality)
         try await OnlineStreamResolver.validateMedia(stream, session: session)
         return stream
     }
