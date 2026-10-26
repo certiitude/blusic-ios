@@ -33,7 +33,17 @@ Diagnostic local **FUTUR AMOUR — L’ange**, identifiant `qMAzmGNeDxc` :
 - La préparation complète du prochain titre commence à **45 secondes réelles de la fin**, en tenant compte de la vitesse. Le titre choisi est conservé en mode aléatoire et le fichier préparé est transmis au lecteur natif lors de Suivant/du fondu. Une modification de la file ou de la source invalide la préparation.
 - Vérifications locales : **6 tests Node réussis**, syntaxe des 22 fichiers Swift et ressources vérifiées. FUTUR AMOUR est encore récupéré entièrement par Node : **2 687 251 octets en 8,38 s**.
 - Le test du même bundle navigateur avec transport Node et session invitée reste en échec : **1 132 349 / 2 687 251 octets**, statut d’attestation `2` et arrêt du flux. La présence d’une preuve n’est pas présentée comme son acceptation.
+- Une attestation fraîche via l’API YouTube WAA `Create`, ainsi que l’installation de son interpréteur par un élément script du DOM, ont également été essayées dans le diagnostic navigateur : même blocage. Ces essais n’ont pas été conservés comme correctifs dans le moteur livré.
 
-## Vérifications à terminer
+## Résultat Xcode du build 12
 
-La compilation iPhone arm64 du build 11 avait réussi, mais son test réseau FUTUR AMOUR avait échoué (73 tests réussis, 3 échecs). Le build 12 doit encore être compilé et exécuté sur iPhone Simulator, notamment les tests de préchargement/réutilisation/fondu et d’isolation des annulations, ainsi que la lecture native et le déplacement à 90 s sur FUTUR AMOUR. **Aucun succès sur l’iPhone physique de l’utilisateur n’est encore affirmé.**
+- [Exécution GitHub Actions 40401811662](https://github.com/certiitude/blusic-ios/actions/runs/40401811662), commit `79241e4`, macOS 15.7.9 / Xcode 26.3 / iPhone 17 Pro Max Simulator iOS 26.2.
+- **Compilation iPhone arm64 réussie**, paquet vérifié : version **1.9.0, build 12**, minimum iOS 17.0, **35 855 738 octets**, moteur et licences embarqués, accès application préconfiguré non expirant. IPA non signée à `dist/github/40401811662/Blusic-unsigned.ipa`.
+- **77 tests réussis, 3 échoués, 0 ignoré sur 80**. Les quatre nouveaux tests passent : seuil de 45 secondes avec vitesse variable ; réutilisation du fichier lors de Suivant avec chevauchement des deux lecteurs natifs ; même titre préchargé en lecture aléatoire ; callbacks d’annulation ne pouvant pas supprimer le fichier du travail suivant.
+- Le premier essai du test de fondu observait l’état sortant conservé pendant le chargement, avant que le titre entrant commence. L’attente a été corrigée pour exiger la première progression audio entrante ; les exigences de chevauchement et d’absence de seconde résolution sont conservées.
+- Réseaux démarre depuis le préchargement de test en **0,25 s** et Stephanie passe la lecture native et le déplacement à **30,87 s**, via Invidious. Ces réussites ne sont pas attribuées au chemin SABR sur l’appareil.
+- Les échecs restent **Damso en accès direct**, **Salé via l’instance Invidious historique**, et **FUTUR AMOUR via le moteur embarqué/secours**. Pour FUTUR AMOUR, YouTube répond encore « Connectez-vous pour confirmer que vous n’êtes pas un robot » sur le réseau du simulateur ; le relais de secours expire.
+- Le service Render a reçu les changements de session (`1b96265`) et est démarré, mais le test avec l’accès application échoue encore en HTTP 502 après **53,8 s**, avec refus YouTube 403 et expiration de secours.
+- Treize captures natives grand/compact ont été récupérées à `dist/tests/40401811662/screenshots/`. Les vues lecteur et paroles ont été inspectées. Elles montrent les fichiers démo de l’application et ne constituent pas une preuve de lecture des titres refusés.
+
+**Le préchargement et le paquet sont vérifiés ; la correction générale des refus du fournisseur n’est pas validée. Aucun succès sur l’iPhone physique de l’utilisateur n’est affirmé.**

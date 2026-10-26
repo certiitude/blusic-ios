@@ -4,6 +4,8 @@ Ce module est compilé en une ressource JavaScript iOS. Il utilise **youtubei.js
 
 WebKit exécute le protocole et son environnement DOM. **Il ne contient pas de lecteur vidéo ou audio utilisé pour la lecture** : les octets AAC sont transmis avec acquittement à Swift, validés avec AVAudioFile puis lus par AVAudioEngine. Les accès réseau sont effectués par URLSession depuis l’iPhone, avec une liste d’hôtes HTTPS autorisés, sans cookies de compte ni clé Render transmise à Google.
 
+Le transport garde les cookies anonymes de sa propre session éphémère, lit les réponses par blocs de 32 Kio et lie les callbacks/fichiers temporaires à chaque travail. Il ne partage pas les cookies Safari. Une annulation ancienne ne peut pas effacer le fichier d’une nouvelle résolution.
+
 Cette exécution locale évite que la lecture dépende uniquement d’une adresse IP de datacenter Render. Le fournisseur peut néanmoins refuser l’attestation ou le contenu ; ces échecs doivent rester visibles dans les tests. Aucun résultat n’est déclaré fonctionnel uniquement parce qu’un jeton a été généré ou qu’une réponse HTTP 200 a été reçue.
 
 ```text
