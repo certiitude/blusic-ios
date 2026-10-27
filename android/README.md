@@ -2,7 +2,9 @@
 
 Application native **Kotlin / Jetpack Compose**, Android **8.0 minimum (API 26)**, cible Android 15 (API 35). Lecteur **Media3 / ExoPlayer** dans un service média : lecture en arrière-plan, commandes de notification et écran verrouillé, focus audio, Bluetooth et arrêt quand la sortie se déconnecte.
 
-## Version 1.9.1
+## Version 1.9.2
+
+Dernier correctif : pochettes adaptées à la densité et variante HD lorsque proposée, mise en page petit écran/police agrandie, suppression des textes superposés, index et écritures optimisés, relais préconfiguré avec récupération de clé, préchargement réessayé sans limite de nombre et secours réseau en parallèle. [Résultats détaillés 1.9.2](../docs/CORRECTIF-1.9.2.md).
 
 - Accueil sombre, pochettes, accès rapide, récents et démonstrations Blusic Studio.
 - Recherche de **chansons YouTube Music**, pagination et recherche locale ; filtre ATV pour ne pas confondre chanson et clip vidéo.
@@ -29,7 +31,9 @@ APK : `app/build/outputs/apk/debug/app-debug.apk`. Il s’agit d’un APK de tes
 
 ## Validation
 
-Version actuelle **1.9.1** : [exécution `40414033885`](https://github.com/certiitude/blusic-ios/actions/runs/40414033885), **succès global**, **15 tests JVM + 8 tests sur émulateur Android 15**, aucun échec/ignoré. Le fondu avec deux lecteurs, la pause, les nouvelles préférences, l’annulation/reprise du pont et la lecture réseau de Stephanie sont couverts. APK récupéré et vérifié à `dist/github/android-40414033885/app-debug.apk` (58 097 530 octets) ; sept captures inspectées. [Rapport détaillé](../docs/ANDROID-PARITE-1.9.1.md).
+**1.9.2** : compilation locale, lint et signature réussis ; **20 tests JVM et 11 tests Android 15 émulé passent**, aucun ignoré. Nouvel APK : `dist/local/android-1.9.2/Blusic-1.9.2.apk`. La limite de facturation GitHub ayant bloqué les nouveaux runners, les dernières vérifications ont été réalisées sur ce PC. [Rapport de livraison](../docs/CORRECTIF-1.9.2.md).
+
+Version précédente **1.9.1** : [exécution `40414033885`](https://github.com/certiitude/blusic-ios/actions/runs/40414033885), **succès global**, **15 tests JVM + 8 tests sur émulateur Android 15**, aucun échec/ignoré. Le fondu avec deux lecteurs, la pause, les nouvelles préférences, l’annulation/reprise du pont et la lecture réseau de Stephanie sont couverts. APK récupéré et vérifié à `dist/github/android-40414033885/app-debug.apk` (58 097 530 octets) ; sept captures inspectées. [Rapport détaillé](../docs/ANDROID-PARITE-1.9.1.md).
 
 Les tests unitaires couvrent les métadonnées musicales, l’exclusion des vidéos, les URLs, les plages HTTP, la persistance JSON et les paroles. Les tests sur émulateur Android lisent un vrai instrumental via le service, vérifient l’avancement et le déplacement à 30 s, la pause, les écrans et une restauration de favoris/playlist. Captures réelles extraites de l’émulateur.
 
