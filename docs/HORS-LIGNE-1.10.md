@@ -24,4 +24,10 @@ Tests iOS ajoutés : copie persistante et relecture après réouverture du stock
 
 Ces scénarios emploient les fichiers originaux de démonstration comme fixtures. Ils ne remplacent pas une validation de téléchargement depuis chaque fournisseur.
 
-Compilation et résultats : en attente de l’exécution Xcode.
+## État de vérification et de compilation
+
+- Contrôles statiques Windows réussis : syntaxe des **24 fichiers Swift**, références Xcode, plist et ressources. Cela ne constitue **pas** un type-check Xcode ni une exécution des nouveaux tests.
+- Version préparée : **1.10.0 build 15**, iPhone iOS 17 minimum. Quatre scénarios de test ajoutés, dont lecture sans appel au chargeur réseau, reprise après réouverture du stockage, gestion des échecs et annulation.
+- [Exécution GitHub Actions 40501346409](https://github.com/certiitude/blusic-ios/actions/runs/40501346409), commit `0a9d840` : **bloquée avant démarrage**, aucune étape Xcode exécutée. Annotation GitHub : paiements récents échoués ou limite de dépenses nécessitant une vérification dans la facturation du compte.
+- **Aucune nouvelle IPA produite, aucun test simulateur des téléchargements annoncé réussi.** La dernière IPA 1.9.2 n’inclut pas cette fonction. Il faut rétablir l’accès aux runners macOS puis compiler, exécuter les tests et inspecter les captures pour livrer l’IPA 1.10.0.
+- Aucun paiement ni changement de budget n’a été effectué. La compilation iOS ne peut pas être remplacée par le build Android local sur ce PC Windows.

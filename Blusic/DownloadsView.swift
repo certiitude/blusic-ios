@@ -28,7 +28,7 @@ struct DownloadsView: View {
                                     Button { downloads.enqueue([track]) } label: { Image(systemName: "arrow.clockwise") }.accessibilityLabel("Réessayer \(track.title)")
                                 }
                                 Button { downloads.cancel(track) } label: { Image(systemName: "xmark.circle") }.accessibilityLabel("Annuler \(track.title)")
-                            }
+                            }.buttonStyle(.borderless)
                             if let state = downloads.status(for: track) {
                                 Text(state.label).font(.caption).foregroundStyle(.secondary).lineLimit(3)
                                 if case .downloading(_, let fraction) = state { ProgressView(value: fraction).accessibilityLabel("Téléchargement de \(track.title)") }
