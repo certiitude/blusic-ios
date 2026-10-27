@@ -194,6 +194,14 @@ final class AudioPlayer {
             guard let self else { return }
             do {
                 var playingTrack = track
+                if let downloaded = try await library.downloads.audio(for: track) {
+                    incomingPreparation?.cancel()
+                    try Task.checkCancellation()
+                    guard generation == token else { return }
+                    if declaredDuration <= 0 { declaredDuration = downloaded.duration ?? 0 }
+                    try startNativeFile(downloaded.fileURL, track: track, bitrate: downloaded.bitrate, at: 0, autoplay: true, provider: downloaded.provider)
+                    return
+                }
                 if track.source == .catalogReference {
                     loadingMessage = "Association au catalogue YouTube Music…"
                     do {
@@ -749,12 +757,14 @@ final class AudioPlayer {
         plannedNextID = next.id
         guard [.invidious, .remote].contains(next.source) else { return } // Local files already need no network preparation.
         let settings = library.settings, loader = onlineLoader, currentID = current.id
+        let downloads = library.downloads
         let key = Self.preparationKey(next, settings: settings)
         upcomingKey = key; upcomingPreparationStatus = "Préparation du titre suivant…"
         let task = Task.detached(priority: .utility) { [weak self] () throws -> InvidiousAudio in
             try await QueuePreparationPolicy.retry(operation: {
               try await withThrowingTaskGroup(of: InvidiousAudio.self) { group in
                 group.addTask {
+                    if let audio = try await downloads.audio(for: next) { return audio }
                     if next.source == .remote, let url = URL(string: next.location) {
                         let file = try await AudioCache.shared.localCopy(of: url, expectedDuration: next.duration)
                         return InvidiousAudio(fileURL: file, bitrate: 0, instance: url, duration: next.duration)

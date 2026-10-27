@@ -146,6 +146,7 @@ struct SettingsView: View {
                 Text("Le relais utilise youtubei.js et vérifie le fichier complet avant de relayer l’audio au lecteur natif. L’IPA contient un accès application, copié dans le trousseau et exclu des sauvegardes JSON ; elle ne contient ni la clé d’administration Render ni la clé maître du serveur. Le fournisseur peut encore refuser certains titres.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Ta bibliothèque") {
+                NavigationLink { DownloadsView() } label: { Label("Téléchargements hors ligne", systemImage: "arrow.down.circle") }
                 NavigationLink { ManageFilesView() } label: { Label("Gérer les fichiers importés", systemImage: "internaldrive") }
                 Button {
                     do { exportURL = try library.exportBackup(); sharing = true }
@@ -156,7 +157,7 @@ struct SettingsView: View {
             }
             Section("À propos") {
                 NavigationLink("Confidentialité et sources") { privacy }
-                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.9.1")
+                LabeledContent("Version", value: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.10.0")
                 Text("Fait pour écouter. Pas pour te distraire.").font(.caption).foregroundStyle(.secondary)
             }
         }

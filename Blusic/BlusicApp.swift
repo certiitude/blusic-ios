@@ -17,6 +17,7 @@ struct BlusicApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                .task { await library.downloads.waitUntilReady() }
                 .environment(library)
                 .environment(player)
                 .tint(library.settings.color)

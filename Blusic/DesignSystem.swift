@@ -81,6 +81,7 @@ extension View {
 
 struct ArtworkView: View {
     @Environment(\.displayScale) private var displayScale
+    @Environment(LibraryStore.self) private var library
     @State private var loadedImage: UIImage?
     @State private var loadedRequest: ArtworkRequest?
     var track: Track?
@@ -100,7 +101,7 @@ struct ArtworkView: View {
                     ZStack {
                         Image(track?.artwork ?? "cover-night").resizable().scaledToFill()
                             .frame(width: geometry.size.width, height: geometry.size.height).clipped()
-                        if let url = artworkURL ?? track?.artworkURL {
+                        if let url = artworkURL ?? track.flatMap({ library.downloads.artworkURL(for: $0) }) ?? track?.artworkURL {
                             let pixels = ArtworkRequest.pixelSize(points: max(geometry.size.width, geometry.size.height), scale: displayScale, maximum: maximumPixels)
                             let request = ArtworkRequest(url: url, pixels: pixels, square: square)
                             Group {
@@ -240,7 +241,8 @@ struct TrackRow: View {
                             if track.isExplicit { Image(systemName: "e.square.fill").font(.system(size: 10)) }
                             Text(track.subtitle).lineLimit(1)
                             if track.source == .unresolved || track.source == .catalogReference { Image(systemName: "link.badge.plus").accessibilityLabel("Source à associer") }
-                            if track.isYouTubeContent { Image(systemName: track.source == .invidious ? "network" : "play.rectangle").accessibilityLabel(track.sourceLabel) }
+                            if library.downloads.record(for: track) != nil { Image(systemName: "arrow.down.circle.fill").accessibilityLabel("Téléchargé pour l’écoute hors ligne") }
+                            else if track.isYouTubeContent { Image(systemName: track.source == .invidious ? "network" : "play.rectangle").accessibilityLabel(track.sourceLabel) }
                         }.font(.system(size: 12)).foregroundStyle(.secondary)
                     }
                     Spacer(minLength: 0)
@@ -265,6 +267,13 @@ struct TrackActions: View {
         }
         Button { player.enqueue(track, next: true) } label: { Label("Écouter ensuite", systemImage: "text.line.first.and.arrowtriangle.forward") }
         Button { player.enqueue(track) } label: { Label("Ajouter à la file", systemImage: "text.badge.plus") }
+        if library.downloads.record(for: track) != nil {
+            Button(role: .destructive) { Task { await library.downloads.remove(track) } } label: { Label("Supprimer le téléchargement", systemImage: "trash") }
+        } else if library.downloads.status(for: track)?.isActive == true {
+            Button { library.downloads.cancel(track) } label: { Label("Annuler le téléchargement", systemImage: "xmark.circle") }
+        } else if [.invidious, .remote, .catalogReference].contains(track.source) {
+            Button { library.downloads.enqueue([track]) } label: { Label("Télécharger pour écouter hors ligne", systemImage: "arrow.down.circle") }
+        }
         Menu {
             if library.playlists.isEmpty { Text("Crée une playlist dans la bibliothèque") }
             ForEach(library.playlists) { playlist in Button(playlist.name) { library.add(track, to: playlist) } }

@@ -1234,6 +1234,102 @@ final class BlusicTests: XCTestCase {
         XCTAssertFalse(QueuePreparationPolicy.shouldStart(duration: .nan, position: 0, rate: 1))
     }
 
+    func testOfflineDownloadPersistsAfterRestartAndPlaysWithoutAnyNetworkLoader() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("offline-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "orbite", withExtension: "wav"))
+        let track = Track(title: "Offline fixture", artist: "Blusic test", duration: 48, source: .invidious, location: "aaaaaaaaaaa")
+        let storage = OfflineAudioStore(root: root)
+        let entry = try await storage.save(InvidiousAudio(fileURL: file, bitrate: 131000, instance: URL(string: "https://fixture.invalid")!, duration: 48), track: track)
+        XCTAssertGreaterThan(entry.bytes, 1_000_000)
+        let reopened = OfflineAudioStore(root: root)
+        let audio = try await reopened.audio(for: track)
+        XCTAssertTrue(audio?.fileURL.isFileURL == true)
+        XCTAssertEqual(audio?.provider, "Téléchargé · hors ligne")
+        XCTAssertNotEqual(audio?.fileURL, file, "An explicit download must copy the file outside its original cache/bundle location")
+        let store = await LibraryStore(inMemory: true)
+        let calls = OfflineDownloadFixtureCounter()
+        let downloads = await OfflineDownloads(library: store, store: reopened, loader: OfflineFixtureLoader(file: file, calls: calls, failures: [track.location]))
+        await MainActor.run { store.downloads = downloads }
+        await downloads.waitUntilReady()
+        let player = await AudioPlayer(library: store, onlineLoader: OfflineFixtureLoader(file: file, calls: calls, failures: [track.location]))
+        await player.play(track, in: [track])
+        for _ in 0..<40 {
+            let latency = await player.firstAudioLatency
+            if latency != nil { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        let result = await MainActor.run { (player.isPlaying, player.firstAudioLatency, player.formatLabel, player.error) }
+        XCTAssertTrue(result.0); XCTAssertNotNil(result.1); XCTAssertTrue(result.2.contains("hors ligne")); XCTAssertNil(result.3)
+        await player.seek(to: 30); try await Task.sleep(for: .milliseconds(300))
+        let position = await player.position; XCTAssertGreaterThanOrEqual(position, 29)
+        let networkCalls = await calls.locations; XCTAssertTrue(networkCalls.isEmpty, "Offline playback must never ask the network loader to resolve a title")
+        await player.pause()
+        await downloads.remove(track)
+        let removed = try await OfflineAudioStore(root: root).audio(for: track)
+        XCTAssertNil(removed)
+        let stillInLibrary = await store.track(track.id)
+        XCTAssertNotNil(stillInLibrary, "Removing a download must keep its library entry")
+    }
+
+    @MainActor
+    func testPlaylistDownloadsContinueAfterOneFailureAndDoNotDownloadDuplicates() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("offline-playlist-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "orbite", withExtension: "wav"))
+        let library = LibraryStore(inMemory: true), calls = OfflineDownloadFixtureCounter()
+        let first = Track(title: "First", artist: "Test", duration: 48, source: .invidious, location: "aaaaaaaaaaa")
+        let failed = Track(title: "Unavailable", artist: "Test", duration: 48, source: .invidious, location: "bbbbbbbbbbb")
+        let last = Track(title: "Last", artist: "Test", duration: 48, source: .invidious, location: "ccccccccccc")
+        let downloads = OfflineDownloads(library: library, store: OfflineAudioStore(root: root), loader: OfflineFixtureLoader(file: file, calls: calls, failures: [failed.location]))
+        library.downloads = downloads
+        let playlist = library.createPlaylist("Offline playlist", tracks: [first, failed, last])
+        downloads.enqueue(library.tracks(in: playlist)); downloads.enqueue([first, last])
+        await downloads.waitUntilIdle()
+        XCTAssertEqual(downloads.records.count, 2); XCTAssertEqual(downloads.pendingCount, 0)
+        XCTAssertNotNil(downloads.record(for: first)); XCTAssertNotNil(downloads.record(for: last)); XCTAssertNil(downloads.record(for: failed))
+        if case .failed? = downloads.status(for: failed) {} else { XCTFail("A failed title needs a visible retry state") }
+        let locations = await calls.locations; XCTAssertEqual(locations, [first.location, failed.location, last.location])
+        downloads.enqueue([first]); await downloads.waitUntilIdle()
+        let after = await calls.locations; XCTAssertEqual(after, locations)
+        await downloads.removeAll()
+        XCTAssertTrue(downloads.records.isEmpty)
+        XCTAssertEqual(library.playlists.first { $0.id == playlist.id }?.trackIDs.count, 3)
+    }
+
+    func testOfflineStoreRejectsIncompleteAudioAndUntrustedManifestPaths() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("offline-invalid-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "orbite", withExtension: "wav"))
+        let track = Track(title: "Too long fixture", artist: "Test", duration: 300, source: .invidious, location: "aaaaaaaaaaa")
+        let storage = OfflineAudioStore(root: root)
+        do { _ = try await storage.save(InvidiousAudio(fileURL: file, bitrate: 131000, instance: URL(string: "https://fixture.invalid")!, duration: 300), track: track); XCTFail("Truncated audio must not become an offline download") } catch {}
+        let empty = try await storage.all(); XCTAssertTrue(empty.isEmpty)
+        let malicious = OfflineAudioRecord(id: OfflineAudioRecord.key(track), track: track, filename: "../orbite.wav", bytes: 100,
+            bitrate: 131000, duration: 48, quality: "standard", downloadedAt: Date())
+        try JSONEncoder().encode([malicious]).write(to: root.appendingPathComponent("downloads.json"))
+        let loaded = try await OfflineAudioStore(root: root).all(); XCTAssertTrue(loaded.isEmpty)
+    }
+
+    @MainActor
+    func testCancellingAnOfflineDownloadDoesNotLeaveACompletedEntry() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("offline-cancel-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "orbite", withExtension: "wav"))
+        let library = LibraryStore(inMemory: true), calls = OfflineDownloadFixtureCounter()
+        let track = Track(title: "Cancel fixture", artist: "Test", duration: 48, source: .invidious, location: "aaaaaaaaaaa")
+        let downloads = OfflineDownloads(library: library, store: OfflineAudioStore(root: root), loader: OfflineFixtureLoader(file: file, calls: calls, delay: 5))
+        downloads.enqueue([track])
+        for _ in 0..<30 {
+            let started = await calls.locations
+            if !started.isEmpty { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        downloads.cancel(track); await downloads.waitUntilIdle()
+        XCTAssertTrue(downloads.records.isEmpty); XCTAssertNil(downloads.status(for: track)); XCTAssertEqual(downloads.pendingCount, 0)
+        let persisted = try await OfflineAudioStore(root: root).all(); XCTAssertTrue(persisted.isEmpty)
+    }
+
     func testPreparationRetriesBeyondTwentyFailuresAndUsesBoundedBackoff() async throws {
         let fixture = RetryingPreparationFixture(failures: 20)
         let result = try await QueuePreparationPolicy.retry(operation: { try await fixture.attempt() }, sleep: { _ in })
@@ -1394,6 +1490,23 @@ private actor UpcomingPreparationCounter {
     private(set) var qualities: [OnlineAudioQuality] = []
     func record(_ location: String, quality: OnlineAudioQuality) { count += 1; lastLocation = location; locations.append(location); qualities.append(quality) }
     func calls(for location: String) -> Int { locations.filter { $0 == location }.count }
+}
+
+private actor OfflineDownloadFixtureCounter {
+    private(set) var locations: [String] = []
+    func record(_ location: String) { locations.append(location) }
+}
+private struct OfflineFixtureLoader: OnlineAudioLoading {
+    let file: URL
+    let calls: OfflineDownloadFixtureCounter
+    var failures: Set<String> = []
+    var delay: Double = 0
+    func load(_ track: Track, settings: AppSettings, progress: @escaping @Sendable (AudioLoadUpdate) -> Void) async throws -> InvidiousAudio {
+        await calls.record(track.location)
+        if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
+        if failures.contains(track.location) { throw BlusicError.message("Fixture source unavailable") }
+        return InvidiousAudio(fileURL: file, bitrate: 131000, instance: URL(string: "https://fixture.invalid")!, duration: track.duration)
+    }
 }
 
 private actor RetryingPreparationFixture {

@@ -36,6 +36,18 @@ struct LibraryView: View {
                     }
                 }.buttonStyle(.plain)
 
+                NavigationLink { DownloadsView() } label: {
+                    HStack(spacing: 14) {
+                        Image(systemName: "arrow.down.circle.fill").font(.title2).foregroundStyle(library.settings.color)
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text("Téléchargements").font(.headline)
+                            Text("\(library.downloads.records.count) titres · \(ByteCountFormatter.string(fromByteCount: library.downloads.totalBytes, countStyle: .file))" + (library.downloads.pendingCount > 0 ? " · \(library.downloads.pendingCount) en cours" : ""))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
+                    }.padding(16).surface()
+                }.buttonStyle(.plain).accessibilityIdentifier("open-downloads")
+
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(sections, id: \.self) { item in
@@ -51,7 +63,7 @@ struct LibraryView: View {
                 case "Playlists": playlists
                 case "Artistes": artists
                 default:
-                    let tracks = section == "Hors ligne" ? library.tracks.filter(\.isOffline) : library.tracks
+                    let tracks = section == "Hors ligne" ? library.tracks.filter { library.downloads.isAvailable($0) } : library.tracks
                     if tracks.isEmpty { EmptyState(symbol: "music.note", title: "Tout commence ici", message: "Ajoute tes premiers fichiers audio avec le bouton +.") }
                     ForEach(tracks) { TrackRow(track: $0, context: tracks) }
                 }
@@ -89,7 +101,10 @@ struct LibraryView: View {
                         Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(.tertiary)
                     }
                 }.buttonStyle(.plain)
-                    .contextMenu { Button("Supprimer la playlist", role: .destructive) { library.playlists.removeAll { $0.id == playlist.id } } }
+                    .contextMenu {
+                        Button("Télécharger la playlist", systemImage: "arrow.down.circle") { library.downloads.enqueue(library.tracks(in: playlist)) }
+                        Button("Supprimer la playlist", role: .destructive) { library.playlists.removeAll { $0.id == playlist.id } }
+                    }
             }
             Button { showPlaylistImport = true } label: {
                 HStack(spacing: 12) {
@@ -218,6 +233,11 @@ struct TrackCollectionView: View {
                             Label("Aléatoire", systemImage: "shuffle").frame(maxWidth: .infinity).padding(.vertical, 13)
                         }.buttonStyle(.plain).foregroundStyle(library.settings.color).surface(radius: 14)
                     }.font(.system(size: 14, weight: .semibold)).disabled(items.isEmpty)
+                    Button { library.downloads.enqueue(items) } label: {
+                        Label("Télécharger cette sélection", systemImage: "arrow.down.circle").font(.subheadline.weight(.semibold))
+                    }.disabled(items.isEmpty).accessibilityIdentifier("download-collection")
+                    let available = items.filter { library.downloads.isAvailable($0) }.count
+                    if available > 0 { Text("\(available)/\(items.count) disponibles hors ligne").font(.caption).foregroundStyle(.secondary) }
                 }.padding(.vertical, 20)
             }.listRowBackground(Color.clear).listRowSeparator(.hidden)
             Section {

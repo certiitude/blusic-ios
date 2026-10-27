@@ -28,6 +28,8 @@ final class LibraryStore {
     private let writer = LibraryPersistenceWorker()
     private let fileManager = FileManager.default
     private let persists: Bool
+    @ObservationIgnored lazy var downloads: OfflineDownloads = OfflineDownloads(library: self,
+        store: OfflineAudioStore(root: persists ? OfflineAudioStore.defaultRoot : FileManager.default.temporaryDirectory.appendingPathComponent("BlusicTestDownloads-\(UUID().uuidString)", isDirectory: true)))
 
     static var root: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -161,6 +163,7 @@ final class LibraryStore {
         notice = "Ajouté à « \(playlist.name) »"
     }
     func remove(_ track: Track) {
+        Task { await downloads.remove(track) }
         tracks.removeAll { $0.id == track.id }
         favorites.remove(track.id)
         for index in playlists.indices { playlists[index].trackIDs.removeAll { $0 == track.id } }
