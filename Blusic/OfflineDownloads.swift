@@ -28,7 +28,7 @@ actor OfflineAudioStore {
     nonisolated let root: URL
     private var records: [String: OfflineAudioRecord] = [:]
     private var loaded = false
-    init(root: URL = Self.defaultRoot) { self.root = root }
+    init(root: URL = OfflineAudioStore.defaultRoot) { self.root = root }
     private func path(_ filename: String) throws -> URL {
         guard !filename.isEmpty, filename == (filename as NSString).lastPathComponent,
               !filename.contains("\\"), filename != ".", filename != ".." else {
@@ -69,7 +69,7 @@ actor OfflineAudioStore {
         guard let record = records[OfflineAudioRecord.key(track)] else { return nil }
         let url = try path(record.filename)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        try Self.validate(url, expected: record.duration)
+        _ = try Self.validate(url, expected: record.duration)
         return InvidiousAudio(fileURL: url, bitrate: record.bitrate, instance: URL(string: "https://www.youtube.com")!,
             duration: record.duration, provider: "Téléchargé · hors ligne", quality: record.quality == "high" ? .high : .standard)
     }
