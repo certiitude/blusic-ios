@@ -82,8 +82,17 @@ jobs:
       - name: Export test summary
         if: always()
         run: xcrun xcresulttool get test-results summary --path build/BlusicTests.xcresult > build/test-summary.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Blusic-test-results
+          path: |
+            build/BlusicTests.xcresult
+            build/test-summary.json
+          retention-days: 7
       - name: Capture native layouts on large and compact iPhones
         if: always()
+        timeout-minutes: 7
         run: >-
           python3 tools/capture_simulator.py --device "$SIMULATOR_ID"
           --app build/DerivedData/Build/Products/Debug-iphonesimulator/Blusic.app
@@ -93,12 +102,4 @@ jobs:
         with:
           name: Blusic-iPhone-screenshots
           path: build/screenshots
-          retention-days: 7
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: Blusic-test-results
-          path: |
-            build/BlusicTests.xcresult
-            build/test-summary.json
           retention-days: 7
