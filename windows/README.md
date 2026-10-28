@@ -31,7 +31,7 @@ Le lien contient une clé aléatoire de 256 bits : ne pas le publier. La clé es
 ### Données partagées
 
 - Références de titres, métadonnées/paroles enregistrées, playlists, favoris, artistes suivis et historique.
-- Fusion à trois états par appareil, retraits de favoris et de playlists propagés. Les ajouts identiques du catalogue sont dédupliqués avec réaffectation des références. Historique de session fusionné par maximum, pas additionné deux fois.
+- Fusion à trois états par appareil, retraits de favoris et de playlists propagés. Les ajouts identiques du catalogue sont dédupliqués avec réaffectation des références. Historique de session fusionné par maximum, pas additionné deux fois. Le dernier état commun ne progresse qu’après confirmation de réception par l’iPhone : une réponse perdue ne peut pas faire passer un ajout PC jamais reçu pour une suppression côté iPhone.
 - Conflit simultané sur un même champ : priorité au PC ; suppression concurrente d’une entité modifiée : conservation de l’entité modifiée. Une modification effectuée sur l’iPhone pendant une requête reste locale jusqu’à l’échange suivant.
 
 ### Données qui restent locales

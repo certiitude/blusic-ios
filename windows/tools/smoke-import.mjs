@@ -1,0 +1,33 @@
+import {_electron as electron} from 'playwright-core';
+import {mkdtemp, writeFile, readFile, stat, mkdir} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join, resolve} from 'node:path';
+import assert from 'node:assert/strict';
+import {randomBytes, randomUUID} from 'node:crypto';
+import {seal, unseal} from '../core/sync.mjs';
+const directory=await mkdtemp(join(tmpdir(),'soryn-import-test-'));
+const invalid=join(directory,'invalid.wav');await writeFile(invalid,'not audio');
+const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
+const executablePath=process.env.SORYN_TEST_EXE||resolve('../dist/windows-soryn/win-unpacked/Soryn.exe');
+let app;
+try{
+  app=await electron.launch({executablePath,args:['--test-data',directory],env,timeout:60000});
+  const page=await app.firstWindow();await page.waitForSelector('.hero h1');
+  await app.evaluate(({dialog},paths)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:paths});},[resolve('../Blusic/Audio/bleu-nuit.wav'),invalid]);
+  const result=await page.evaluate(()=>window.soryn.call('import-audio'));assert.equal(result.count,1);assert.equal(result.errors.length,1);
+  let state=await page.evaluate(()=>window.soryn.call('state'));const local=state.library.tracks.find(t=>t.source==='local');assert.ok(local);assert.ok((await stat(join(directory,'Audio',local.location))).size>1000);
+  await page.click('[data-view=library]');await page.click(`[data-play="${local.id}"]`);await page.waitForFunction(()=>!document.querySelector('#audio').paused&&document.querySelector('#audio').currentTime>0.2,null,{timeout:15000});await page.click('#play');
+  const exported=join(directory,'Soryn-export.json');await app.evaluate(({dialog},path)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:path});},exported);
+  await page.evaluate(()=>window.soryn.call('backup-export'));const backup=JSON.parse(await readFile(exported,'utf8'));
+  for(const key of ['accent','appearance','haptics','animateArtwork','compactRows','artworkRadius','playbackRate','pitch','equalizer','equalizerEnabled','lyricsOffset','volume','restoreQueue'])assert.ok(key in backup.settings,key);
+  await app.evaluate(({dialog},path)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[path]});},exported);await page.evaluate(()=>window.soryn.call('backup-import'));
+  state=await page.evaluate(()=>window.soryn.call('state'));assert.equal(state.library.tracks.filter(t=>t.id===local.id).length,1);assert.equal(state.library.tracks.find(t=>t.id===local.id).source,'local');
+  const info=await page.evaluate(()=>window.soryn.call('sync-start')),link=new URL(info.pairing[0]),key=Buffer.from(link.searchParams.get('key'),'base64url'),deviceID=randomUUID();
+  let snapshot=structuredClone(state.library);snapshot.settings={};snapshot.queue=[];snapshot.tracks=snapshot.tracks.map(t=>t.source==='local'?{...t,source:'unresolved',location:''}:t);
+  const exchange=async(ack)=>{const packet={protocol:1,deviceID,requestID:randomUUID(),sentAt:Date.now(),snapshot,...(ack?{acknowledgedRequestID:ack}:{})};const response=await fetch(`http://127.0.0.1:${new URL(info.addresses[0]).port}/v1/sync`,{method:'POST',body:JSON.stringify(seal(packet,key))});assert.equal(response.status,200);return unseal(await response.json(),key);};
+  const first=await exchange();snapshot=first.snapshot;snapshot.tracks=snapshot.tracks.filter(t=>t.id!==local.id);await exchange(first.requestID);
+  state=await page.evaluate(()=>window.soryn.call('state'));assert.equal(state.library.tracks.find(t=>t.id===local.id).source,'local');assert.ok(await stat(join(directory,'Audio',local.location)));
+  await page.evaluate(()=>window.soryn.call('sync-stop'));
+  const passed=['actual audio import copies and plays a supported WAV','invalid audio rejected without blocking remaining imports','backup includes all required Swift AppSettings fields','reimport merges without replacing a valid local source','phone-side reference deletion never erases the personal Windows file'];
+  console.log(JSON.stringify({passed},null,2));await mkdir(resolve('test-output'),{recursive:true});await writeFile(resolve('test-output/import-results.json'),JSON.stringify({passed},null,2));
+}finally{await app?.close();}
