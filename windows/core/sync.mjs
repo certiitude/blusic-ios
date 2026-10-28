@@ -25,8 +25,11 @@ export class SyncServer {
   constructor(store, onChange = () => {}) { this.store = store; this.onChange = onChange; this.seen = new Map(); this.attempts = new Map(); this.serial = Promise.resolve(); }
   async start(key, port = 0) {
     if (this.server) return;
-    this.key = key; this.baselines = {};
-    try { this.baselines = JSON.parse(await readFile(join(this.store.directory, 'sync-baselines.json'), 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    this.key = key; this.baselines = {}; this.pendingBaselines = {};
+    try {
+      const saved = JSON.parse(await readFile(join(this.store.directory, 'sync-baselines.json'), 'utf8'));
+      this.baselines = saved.baselines || {}; this.pendingBaselines = saved.pending || {};
+    } catch (e) { if (e.code !== 'ENOENT') throw e; }
     this.server = createServer((req, res) => this.handle(req, res));
     this.server.headersTimeout = 8000; this.server.requestTimeout = 15000;
     this.server.maxConnections = 8;
@@ -60,14 +63,18 @@ export class SyncServer {
       const incoming = sharedSnapshot(validateLibrary(packet.snapshot));
       // Serialise concurrent exchanges; each peer has its own last common state.
       const exchange = this.serial.catch(() => {}).then(async () => {
+        // Advance the common ancestor only after the phone confirms receipt.
+        // A lost response must not turn unseen PC additions into phone deletions.
+        const pending = this.pendingBaselines[packet.deviceID];
+        if (pending && packet.acknowledgedRequestID === pending.requestID) this.baselines[packet.deviceID] = pending.snapshot;
         const before = sharedSnapshot(this.store.data);
         const merged = mergeLibraries(this.baselines[packet.deviceID], before, incoming);
         const locals = new Map(this.store.data.tracks.filter(t => t.source === 'local').map(t => [t.id, t]));
         await this.store.update(s => Object.assign(s, merged, {settings: s.settings, queue: s.queue, currentTrackID: s.currentTrackID,
           tracks: [...merged.tracks.map(t => locals.get(t.id) || t), ...[...locals.values()].filter(t => !merged.tracks.some(m => m.id === t.id))]}));
-        this.baselines[packet.deviceID] = sharedSnapshot(merged);
+        this.pendingBaselines[packet.deviceID] = {requestID: packet.requestID, snapshot: sharedSnapshot(merged)};
         const file = join(this.store.directory, 'sync-baselines.json');
-        await writeFile(file + '.tmp', JSON.stringify(this.baselines)); await rename(file + '.tmp', file);
+        await writeFile(file + '.tmp', JSON.stringify({baselines: this.baselines, pending: this.pendingBaselines})); await rename(file + '.tmp', file);
         this.onChange();
         return {protocol: 1, requestID: packet.requestID, snapshot: sharedSnapshot(merged), syncedAt: Date.now()};
       });

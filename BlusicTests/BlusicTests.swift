@@ -17,6 +17,24 @@ final class BlusicTests: XCTestCase {
         XCTAssertThrowsError(try SorynSyncClient.pairing("soryn://pair?address=http%3A%2F%2F192.168.1.20%3A48763&key=short"))
     }
 
+    @MainActor func testSorynPairedClientSyncsFavoritesAndRemovalsAgainstNode() async throws {
+        let suite = "soryn.sync.tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        let library = LibraryStore(inMemory: true)
+        let client = SorynSyncClient(library: library, defaults: defaults)
+        defer { client.forget(); defaults.removePersistentDomain(forName: suite) }
+        let key = Data(repeating: 0, count: 32).base64EncodedString().replacingOccurrences(of: "=", with: "")
+        await client.pair("soryn://pair?address=http%3A%2F%2F127.0.0.1%3A48764&key=\(key)")
+        XCTAssertNotNil(client.lastSync, client.status)
+        XCTAssertEqual(library.tracks.count, 4)
+        library.favorites.insert(library.tracks[0].id)
+        await client.sync()
+        XCTAssertTrue(library.favorites.contains(library.tracks[0].id), client.status)
+        library.favorites.remove(library.tracks[0].id)
+        await client.sync()
+        XCTAssertFalse(library.favorites.contains(library.tracks[0].id), client.status)
+    }
+
     func testSorynAuthenticatedEncryptionRejectsTamperingAndWrongKey() throws {
         let key = SymmetricKey(data: Data(repeating: 4, count: 32))
         let box = try SorynSyncBox.seal(["title": "Écoutez le moment."], key: key)

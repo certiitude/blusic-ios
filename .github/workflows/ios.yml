@@ -76,6 +76,29 @@ jobs:
         run: xcrun simctl bootstatus "$SIMULATOR_ID" -b
       - name: Start encrypted Windows protocol fixture for iPhone tests
         run: node windows/test/ios-server.mjs > build/soryn-sync-node.log 2>&1 &
+      - name: Verify actual iPhone to Windows encrypted pairing and merge
+        run: >-
+          xcodebuild test -project Blusic.xcodeproj -scheme Blusic
+          -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
+          -derivedDataPath build/DerivedData -resultBundlePath build/SorynSyncTests.xcresult
+          -only-testing:BlusicTests/BlusicTests/testSorynAuthenticatedEncryptionRejectsTamperingAndWrongKey
+          -only-testing:BlusicTests/BlusicTests/testSorynEncryptedWindowsProtocolAgainstNodeServer
+          -only-testing:BlusicTests/BlusicTests/testSorynMergePreservesPersonalFilesSettingsAndConcurrentEdits
+          -only-testing:BlusicTests/BlusicTests/testSorynPairingRejectsPublicAddressesAndInvalidKeys
+          -only-testing:BlusicTests/BlusicTests/testSorynPairedClientSyncsFavoritesAndRemovalsAgainstNode
+          -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+      - name: Export Soryn pairing test summary
+        if: always()
+        run: xcrun xcresulttool get test-results summary --path build/SorynSyncTests.xcresult > build/soryn-sync-summary.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Soryn-iPhone-Windows-sync-tests
+          path: |
+            build/soryn-sync-summary.json
+            build/soryn-sync-node.log
+            build/SorynSyncTests.xcresult
+          retention-days: 7
       - name: Unit tests on iPhone simulator
         id: iphone-tests
         run: >-

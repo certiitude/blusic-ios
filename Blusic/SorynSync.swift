@@ -167,7 +167,8 @@ final class SorynSyncClient {
         busy = true; defer { busy = false }
         do {
             let snapshot = SorynSharedLibrary(library), requestID = UUID().uuidString, key = SymmetricKey(data: bytes)
-            let packet = RequestPacket(deviceID: deviceID, requestID: requestID, sentAt: Date().timeIntervalSince1970 * 1000, snapshot: snapshot)
+            let packet = RequestPacket(deviceID: deviceID, requestID: requestID, sentAt: Date().timeIntervalSince1970 * 1000,
+                                       snapshot: snapshot, acknowledgedRequestID: defaults.string(forKey: "soryn.sync.acknowledgedRequestID"))
             var request = URLRequest(url: URL(string: address + "/v1/sync")!)
             request.httpMethod = "POST"; request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.httpBody = try JSONEncoder().encode(SorynSyncBox.seal(packet, key: key))
@@ -183,14 +184,15 @@ final class SorynSyncClient {
             try reply.snapshot.validate()
             try Task.checkCancellation()
             reply.snapshot.apply(to: library, sent: snapshot)
+            defaults.set(requestID, forKey: "soryn.sync.acknowledgedRequestID")
             lastSync = Date(); status = "Bibliothèque synchronisée avec Soryn Windows"
         } catch is CancellationError { status = "Synchronisation interrompue" }
         catch { status = "PC inaccessible ou échange refusé. Même Wi-Fi, Soryn ouvert et réseau privé autorisé dans le pare-feu Windows. \(error.localizedDescription)" }
     }
     private struct RequestPacket: Encodable {
         let protocolVersion = 1
-        var deviceID: String; var requestID: String; var sentAt: Double; var snapshot: SorynSharedLibrary
-        enum CodingKeys: String, CodingKey { case protocolVersion = "protocol", deviceID, requestID, sentAt, snapshot }
+        var deviceID: String; var requestID: String; var sentAt: Double; var snapshot: SorynSharedLibrary; var acknowledgedRequestID: String?
+        enum CodingKeys: String, CodingKey { case protocolVersion = "protocol", deviceID, requestID, sentAt, snapshot, acknowledgedRequestID }
     }
     private struct ReplyPacket: Decodable {
         var protocolVersion: Int; var requestID: String; var snapshot: SorynSharedLibrary

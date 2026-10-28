@@ -24,12 +24,24 @@ test('real encrypted HTTP exchange, replay rejection, restart baseline and favor
   async function exchange(body){return fetch(`http://127.0.0.1:${server.port}/v1/sync`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});}
   const packet=()=>({protocol:1,deviceID,requestID:randomUUID(),sentAt:Date.now(),snapshot});
   snapshot.favorites=[snapshot.tracks[0].id];let body=seal(packet(),key),response=await exchange(body);assert.equal(response.status,200);
-  snapshot=unseal(await response.json(),key).snapshot;assert.equal(store.data.favorites.length,1);
+  const firstReply=unseal(await response.json(),key);snapshot=firstReply.snapshot;assert.equal(store.data.favorites.length,1);
   assert.equal((await exchange(body)).status,409);
   assert.equal((await exchange(seal(packet(),randomBytes(32)))).status,400);
   assert.equal((await exchange(seal({...packet(),sentAt:1},key))).status,409);
   await server.stop();server=new SyncServer(store);await server.start(key);
-  snapshot.favorites=[];response=await exchange(seal(packet(),key));assert.equal(response.status,200);assert.equal(store.data.favorites.length,0);
+  snapshot.favorites=[];response=await exchange(seal({...packet(),acknowledgedRequestID:firstReply.requestID},key));assert.equal(response.status,200);assert.equal(store.data.favorites.length,0);
   assert.equal(unseal(await response.json(),key).snapshot.tracks.length,4);
   const fromBrowser=await fetch(`http://127.0.0.1:${server.port}/v1/sync`,{method:'POST',headers:{Origin:'https://attacker.invalid'},body:JSON.stringify(seal(packet(),key))});assert.equal(fromBrowser.status,404);
+});
+test('lost encrypted response cannot erase additions the phone has never received',async t=>{
+  const directory=await mkdtemp(join(tmpdir(),'soryn-lost-response-test-'));const store=new LibraryStore(directory);await store.load();
+  const server=new SyncServer(store),key=randomBytes(32);await server.start(key);
+  t.after(async()=>{await server.stop();await rm(directory,{recursive:true,force:true});});
+  const snapshot=sharedSnapshot(store.data),deviceID=randomUUID();
+  await store.update(s=>s.playlists.push({id:randomUUID().toUpperCase(),name:'Unseen PC addition',detail:'',trackIDs:[],createdAt:1,symbol:'waveform'}));
+  const exchange=()=>fetch(`http://127.0.0.1:${server.port}/v1/sync`,{method:'POST',body:JSON.stringify(seal({protocol:1,deviceID,requestID:randomUUID(),sentAt:Date.now(),snapshot},key))});
+  const lost=await exchange();assert.equal(lost.status,200);await lost.body.cancel();
+  const retry=await exchange();assert.equal(retry.status,200);const reply=unseal(await retry.json(),key);
+  assert.ok(reply.snapshot.playlists.some(p=>p.name==='Unseen PC addition'));
+  assert.ok(store.data.playlists.some(p=>p.name==='Unseen PC addition'));
 });

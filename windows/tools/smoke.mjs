@@ -33,7 +33,7 @@ try{
   let response=await fetch(`http://127.0.0.1:${new URL(info.addresses[0]).port}/v1/sync`,{method:'POST',body:JSON.stringify(seal(packet,key))});assert.equal(response.status,200);
   const reply=unseal(await response.json(),key);assert.equal(reply.requestID,packet.requestID);
   // Establish a common state then propagate a phone-side unlike.
-  packet.snapshot=reply.snapshot;packet.snapshot.favorites=[];packet.requestID=randomUUID();packet.sentAt=Date.now();
+  packet.snapshot=reply.snapshot;packet.snapshot.favorites=[];packet.acknowledgedRequestID=reply.requestID;packet.requestID=randomUUID();packet.sentAt=Date.now();
   response=await fetch(`http://127.0.0.1:${new URL(info.addresses[0]).port}/v1/sync`,{method:'POST',body:JSON.stringify(seal(packet,key))});assert.equal(response.status,200);
   assert.equal((await page.evaluate(()=>window.soryn.call('state'))).library.favorites.length,0);results.push('real running desktop accepts encrypted phone protocol and removal');
   await page.evaluate(()=>window.soryn.call('sync-stop'));
