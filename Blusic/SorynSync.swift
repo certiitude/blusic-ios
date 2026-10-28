@@ -56,7 +56,7 @@ struct SorynSharedLibrary: Codable, Sendable {
             var p = local
             if local.name == base?.name { p.name = remote.name }
             if local.detail == base?.detail { p.detail = remote.detail }
-            let kept = mergeSet(Set(base?.trackIDs ?? []), Set(local.trackIDs), Set(remote.trackIDs))
+            let kept = Self.mergeSet(Set(base?.trackIDs ?? []), Set(local.trackIDs), Set(remote.trackIDs))
             p.trackIDs = (local.trackIDs + remote.trackIDs).reduce(into: []) { ids, id in
                 if kept.contains(id), !ids.contains(id) { ids.append(id) }
             }
