@@ -4,6 +4,13 @@ import SwiftUI
 import CryptoKit
 @testable import Blusic
 
+@MainActor private final class SorynTestSyncCredentials: SorynSyncKeyStoring {
+    private var data: Data?
+    func read() -> Data? { data }
+    func write(_ value: Data) throws { data = value }
+    func forget() { data = nil }
+}
+
 final class BlusicTests: XCTestCase {
     @MainActor func testSorynPairingRejectsPublicAddressesAndInvalidKeys() throws {
         let key = Data(repeating: 0, count: 32).base64EncodedString().replacingOccurrences(of: "=", with: "")
@@ -21,7 +28,7 @@ final class BlusicTests: XCTestCase {
         let suite = "soryn.sync.tests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         let library = LibraryStore(inMemory: true)
-        let client = SorynSyncClient(library: library, defaults: defaults)
+        let client = SorynSyncClient(library: library, defaults: defaults, credentials: SorynTestSyncCredentials())
         defer { client.forget(); defaults.removePersistentDomain(forName: suite) }
         let key = Data(repeating: 0, count: 32).base64EncodedString().replacingOccurrences(of: "=", with: "")
         await client.pair("soryn://pair?address=http%3A%2F%2F127.0.0.1%3A48764&key=\(key)")

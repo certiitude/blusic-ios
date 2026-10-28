@@ -112,10 +112,12 @@ final class SorynSyncClient {
     @ObservationIgnored private let defaults: UserDefaults
     @ObservationIgnored private let session: URLSession
     @ObservationIgnored private let deviceID: String
-    var paired: Bool { !address.isEmpty && Self.readKey() != nil }
+    @ObservationIgnored private let credentials: any SorynSyncKeyStoring
+    var paired: Bool { !address.isEmpty && credentials.read() != nil }
 
-    init(library: LibraryStore, defaults: UserDefaults = .standard) {
+    init(library: LibraryStore, defaults: UserDefaults = .standard, credentials: (any SorynSyncKeyStoring)? = nil) {
         self.library = library; self.defaults = defaults
+        self.credentials = credentials ?? SorynSyncKeychain()
         address = defaults.string(forKey: "soryn.sync.address") ?? ""
         deviceID = defaults.string(forKey: "soryn.sync.deviceID") ?? UUID().uuidString
         defaults.set(deviceID, forKey: "soryn.sync.deviceID")
@@ -147,14 +149,15 @@ final class SorynSyncClient {
     func pair(_ input: String) async {
         do {
             let (endpoint, key) = try Self.pairing(input)
-            try Self.writeKey(key)
+            try credentials.write(key)
             address = endpoint; defaults.set(endpoint, forKey: "soryn.sync.address")
             await sync()
         } catch { status = error.localizedDescription }
     }
     func forget() {
         address = ""; defaults.removeObject(forKey: "soryn.sync.address")
-        SecItemDelete(Self.keyQuery as CFDictionary); status = "Association supprimée"; lastSync = nil
+        credentials.forget(); defaults.removeObject(forKey: "soryn.sync.acknowledgedRequestID")
+        status = "Association supprimée"; lastSync = nil
     }
     func runWhileActive() async {
         while !Task.isCancelled {
@@ -163,7 +166,7 @@ final class SorynSyncClient {
         }
     }
     func sync() async {
-        guard !busy, let library, let bytes = Self.readKey(), !address.isEmpty else { return }
+        guard !busy, let library, let bytes = credentials.read(), !address.isEmpty else { return }
         busy = true; defer { busy = false }
         do {
             let snapshot = SorynSharedLibrary(library), requestID = UUID().uuidString, key = SymmetricKey(data: bytes)
@@ -198,22 +201,35 @@ final class SorynSyncClient {
         var protocolVersion: Int; var requestID: String; var snapshot: SorynSharedLibrary
         enum CodingKeys: String, CodingKey { case protocolVersion = "protocol", requestID, snapshot }
     }
+}
+
+@MainActor protocol SorynSyncKeyStoring {
+    func read() -> Data?
+    func write(_ value: Data) throws
+    func forget()
+}
+
+/// Production always uses the protected system keychain. Tests may inject storage
+/// because an unsigned simulator has no keychain-access entitlement.
+@MainActor private struct SorynSyncKeychain: SorynSyncKeyStoring {
     private static var keyQuery: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "app.soryn.lan-sync", kSecAttrAccount as String: "paired-desktop"]
     }
-    private static func readKey() -> Data? {
-        var query = keyQuery; query[kSecReturnData as String] = true; query[kSecMatchLimit as String] = kSecMatchLimitOne
+    func read() -> Data? {
+        var query = Self.keyQuery; query[kSecReturnData as String] = true; query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: CFTypeRef?
         guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
         return result as? Data
     }
-    private static func writeKey(_ value: Data) throws {
+    func forget() { SecItemDelete(Self.keyQuery as CFDictionary) }
+    func write(_ value: Data) throws {
         let update = [kSecValueData as String: value]
-        let status = SecItemUpdate(keyQuery as CFDictionary, update as CFDictionary)
+        let status = SecItemUpdate(Self.keyQuery as CFDictionary, update as CFDictionary)
         if status == errSecItemNotFound {
-            var query = keyQuery; query[kSecValueData as String] = value; query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            guard SecItemAdd(query as CFDictionary, nil) == errSecSuccess else { throw BlusicError.message("Impossible de conserver l’appairage dans le trousseau.") }
-        } else if status != errSecSuccess { throw BlusicError.message("Impossible de modifier l’appairage.") }
+            var query = Self.keyQuery; query[kSecValueData as String] = value; query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            let added = SecItemAdd(query as CFDictionary, nil)
+            guard added == errSecSuccess else { throw BlusicError.message("Impossible de conserver l’appairage dans le trousseau (\(added)). Vérifie la signature de l’app.") }
+        } else if status != errSecSuccess { throw BlusicError.message("Impossible de modifier l’appairage (\(status)). Vérifie la signature de l’app.") }
     }
 }
 
