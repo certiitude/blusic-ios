@@ -18,10 +18,10 @@ struct SettingsView: View {
         Form {
             Section {
                 HStack(spacing: 18) {
-                    ZStack { RoundedRectangle(cornerRadius: 18).fill(.black).frame(width: 68, height: 68); BlusicMark().fill(.white, style: FillStyle(eoFill: true)).frame(width: 48, height: 48) }
+                    ZStack { RoundedRectangle(cornerRadius: 18).fill(.black).frame(width: 68, height: 68); BlusicMark().foregroundStyle(.white).frame(width: 48, height: 48) }
                     VStack(alignment: .leading, spacing: 5) {
-                        Text("blusic").font(.system(size: 29, weight: .bold, design: .rounded)).tracking(-1)
-                        Text("Ta musique, simplement.").font(.subheadline).foregroundStyle(.secondary)
+                        Text("soryn.").font(.system(size: 29, weight: .bold, design: .rounded)).tracking(-1)
+                        Text("La musique. Rien d’autre.").font(.subheadline).foregroundStyle(.secondary)
                     }
                 }.padding(.vertical, 8)
             }.listRowBackground(Color.clear)
@@ -116,16 +116,16 @@ struct SettingsView: View {
             } header: { Text("Invidious") } footer: { Text("Service communautaire non officiel : certaines instances bloquent l’API et certains titres sont indisponibles. La qualité AAC est compressée, pas lossless. Les serveurs de secours proviennent de l’annuaire public du projet et doivent annoncer leur API comme active.") }
             Section("Relais youtubei.js") {
                 if let bundled = BundledRelayConfiguration.load() {
-                    LabeledContent("Relais préconfiguré", value: bundled.server.host ?? "Blusic")
-                    Text("Accès application sans date d’expiration ni quota d’écoutes Blusic. Les limites de Render Free et les restrictions de YouTube restent applicables.").font(.caption).foregroundStyle(.secondary)
-                    Button("Utiliser le relais Blusic préconfiguré") {
+                    LabeledContent("Relais préconfiguré", value: bundled.server.host ?? "Soryn")
+                    Text("Accès application sans date d’expiration ni quota d’écoutes Soryn. Les limites de Render Free et les restrictions de YouTube restent applicables.").font(.caption).foregroundStyle(.secondary)
+                    Button("Utiliser le relais Soryn préconfiguré") {
                         do {
                             try RelayKeychain.save(bundled.applicationAccess, server: bundled.server.absoluteString)
                             library.settings.youtubeiRelayAddress = bundled.server.absoluteString
                             library.settings.youtubeiRelayDisabled = false
                             library.settings.onlineAudioMode = "auto"
                             relayAddress = bundled.server.absoluteString; relayKey = bundled.applicationAccess
-                            relayStatus = "Relais Blusic activé ; lecteur audio natif conservé."
+                            relayStatus = "Relais Soryn activé ; lecteur audio natif conservé."
                         } catch { relayStatus = error.localizedDescription }
                     }
                 }
@@ -146,6 +146,7 @@ struct SettingsView: View {
                 Text("Le relais utilise youtubei.js et vérifie le fichier complet avant de relayer l’audio au lecteur natif. L’IPA contient un accès application, copié dans le trousseau et exclu des sauvegardes JSON ; elle ne contient ni la clé d’administration Render ni la clé maître du serveur. Le fournisseur peut encore refuser certains titres.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Ta bibliothèque") {
+                NavigationLink { SorynSyncView() } label: { Label("Synchroniser avec Windows", systemImage: "desktopcomputer.and.iphone") }
                 NavigationLink { DownloadsView() } label: { Label("Téléchargements hors ligne", systemImage: "arrow.down.circle") }
                 NavigationLink { ManageFilesView() } label: { Label("Gérer les fichiers importés", systemImage: "internaldrive") }
                 Button {
@@ -173,7 +174,7 @@ struct SettingsView: View {
     private func color(_ accent: String) -> Color { var settings = AppSettings(); settings.accent = accent; return settings.color }
     private var privacy: some View {
         List {
-            Section("Sur ton iPhone") { Text("Aucun compte Blusic, aucune publicité ajoutée, aucun outil de mesure d’audience. Fichiers, favoris, réglages, paroles et historique sont enregistrés dans le conteneur de l’application. Les sauvegardes iCloud de l’iPhone peuvent les inclure selon tes réglages système.") }
+            Section("Sur ton iPhone") { Text("Aucun compte Soryn, aucune publicité ajoutée, aucun outil de mesure d’audience. Fichiers, favoris, réglages, paroles et historique sont enregistrés dans le conteneur de l’application. Les sauvegardes iCloud de l’iPhone peuvent les inclure selon tes réglages système. La synchronisation Windows est facultative, locale et chiffrée ; ses détails sont affichés dans Synchroniser avec Windows.") }
             Section("Connexions externes") {
                 Text("La recherche de chansons transmet la requête à music.youtube.com, sans connexion au compte Google. L’accès audio direct transmet l’identifiant de chanson à www.youtube.com avec un contexte de client iOS, puis lit un flux HTTPS Google. Le mode automatique peut aussi contacter l’instance Invidious choisie ; le mode direct n’utilise pas ce relais pour la lecture. Les imports YouTube utilisent Invidious. En cas de panne du relais, le secours consulte api.invidious.io et peut contacter d’autres instances publiques. Les pochettes peuvent contacter Google. Les fichiers validés sont mis en cache, avec une expiration de 24 heures pour la qualité normale ou de 10 minutes pour un flux bas débit. Une recherche de paroles transmet le titre et l’artiste à LRCLIB. Le lecteur vidéo officiel n’est ouvert que sur demande depuis le menu d’un titre.")
                 Link("Documentation Invidious", destination: URL(string: "https://docs.invidious.io/")!)
@@ -182,7 +183,7 @@ struct SettingsView: View {
                 Link("LRCLIB", destination: URL(string: "https://lrclib.net")!)
             }
             Section("Crédits") {
-                Text("Identité visuelle Blusic adaptée de l’icône fournie. Pochettes et quatre instrumentaux de démonstration créés pour ce projet. Ils sont explicitement présentés comme des originaux Blusic Studio. Les paroles obtenues via LRCLIB et les contenus YouTube appartiennent à leurs titulaires respectifs.")
+                Text("Identité visuelle Soryn fournie par le créateur. Pochettes et quatre instrumentaux de démonstration créés pour ce projet (anciennement Blusic Studio). Les paroles obtenues via LRCLIB et les contenus YouTube appartiennent à leurs titulaires respectifs.")
                 Text("Les fichiers lossless restent sans réencodage avec les effets désactivés et la vitesse normale. Les effets, le mixage iOS et la sortie audio peuvent convertir le signal. Aucune conversion MP3 → lossless et aucune garantie bit-perfect.")
             }
         }.font(.subheadline).navigationTitle("En toute transparence").navigationBarTitleDisplayMode(.inline)
@@ -203,7 +204,7 @@ struct ManageFilesView: View {
             }
         }
         .navigationTitle("Fichiers importés")
-        .confirmationDialog("Supprimer ce fichier de Blusic ?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
+        .confirmationDialog("Supprimer ce fichier de Soryn ?", isPresented: Binding(get: { removing != nil }, set: { if !$0 { removing = nil } }), titleVisibility: .visible) {
             Button("Supprimer le fichier et ses références", role: .destructive) {
                 if let removing { player.forget(removing.id); library.remove(removing) }
                 removing = nil

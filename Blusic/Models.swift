@@ -30,7 +30,7 @@ struct Track: Identifiable, Codable, Equatable, Hashable, Sendable {
     var subtitle: String { artist.isEmpty ? "Artiste inconnu" : artist }
     var sourceLabel: String {
         switch source {
-        case .bundled: return "Original Blusic"
+        case .bundled: return "Original Soryn"
         case .local: return "Sur cet iPhone"
         case .remote: return "Source HTTPS"
         case .youtube: return "YouTube"

@@ -59,7 +59,7 @@ struct HomeView: View {
                 }
                 let originals = library.tracks.filter { $0.source == .bundled }
                 if !originals.isEmpty {
-                    albumSection("Premières ondes", subtitle: "Démos Blusic · disponibles hors ligne", symbol: "waveform", tracks: originals)
+                    albumSection("Premières ondes", subtitle: "Démos Soryn · disponibles hors ligne", symbol: "waveform", tracks: originals)
                 }
             }
             .padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 24)

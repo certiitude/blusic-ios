@@ -1,7 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-    <key>CFBundleDisplayName</key><string>Blusic</string>
+    <key>CFBundleDisplayName</key><string>Soryn</string>
+    <key>NSLocalNetworkUsageDescription</key><string>Soryn synchronise ta bibliothèque avec le PC que tu associes, sur ton réseau local.</string>
+    <key>NSAppTransportSecurity</key><dict><key>NSAllowsLocalNetworking</key><true/></dict>
     <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
     <key>CFBundleDevelopmentRegion</key><string>fr</string>
     <key>CFBundleName</key><string>$(PRODUCT_NAME)</string>

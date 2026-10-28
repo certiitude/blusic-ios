@@ -125,7 +125,7 @@ struct LibraryView: View {
                 NavigationLink { ArtistView(name: artist.name, artistID: artist.id, initialArtworkURL: artist.artworkURL) } label: {
                     HStack(spacing: 14) {
                         ArtworkView(track: nil, size: 64, radius: 32, artworkURL: artist.artworkURL)
-                        VStack(alignment: .leading, spacing: 5) { Text(artist.name).font(.headline); Text("Suivi dans Blusic").font(.caption).foregroundStyle(.secondary) }
+                        VStack(alignment: .leading, spacing: 5) { Text(artist.name).font(.headline); Text("Suivi dans Soryn").font(.caption).foregroundStyle(.secondary) }
                         Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)
                     }
                 }.buttonStyle(.plain)

@@ -1,9 +1,77 @@
 import XCTest
 import AVFoundation
 import SwiftUI
+import CryptoKit
 @testable import Blusic
 
 final class BlusicTests: XCTestCase {
+    @MainActor func testSorynPairingRejectsPublicAddressesAndInvalidKeys() throws {
+        let key = Data(repeating: 0, count: 32).base64EncodedString().replacingOccurrences(of: "=", with: "")
+        let valid = "soryn://pair?address=http%3A%2F%2F192.168.1.20%3A48763&key=\(key)"
+        XCTAssertEqual(try SorynSyncClient.pairing(valid).0, "http://192.168.1.20:48763")
+        XCTAssertEqual(try SorynSyncClient.pairing(valid).1.count, 32)
+        for address in ["http://8.8.8.8:48763", "http://192.168.1.20:80", "https://192.168.1.20:48763", "http://192.168.1.20:48763/path", "http://user@192.168.1.20:48763", "http://example.com:48763"] {
+            let escaped = address.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+            XCTAssertThrowsError(try SorynSyncClient.pairing("soryn://pair?address=\(escaped)&key=\(key)"))
+        }
+        XCTAssertThrowsError(try SorynSyncClient.pairing("soryn://pair?address=http%3A%2F%2F192.168.1.20%3A48763&key=short"))
+    }
+
+    func testSorynAuthenticatedEncryptionRejectsTamperingAndWrongKey() throws {
+        let key = SymmetricKey(data: Data(repeating: 4, count: 32))
+        let box = try SorynSyncBox.seal(["title": "Écoutez le moment."], key: key)
+        XCTAssertEqual(try box.open([String: String].self, key: key)["title"], "Écoutez le moment.")
+        XCTAssertThrowsError(try box.open([String: String].self, key: SymmetricKey(data: Data(repeating: 5, count: 32))))
+        var bytes = Data(base64Encoded: box.box)!; bytes[15] ^= 1
+        XCTAssertThrowsError(try SorynSyncBox(box: bytes.base64EncodedString()).open([String: String].self, key: key))
+    }
+
+    @MainActor func testSorynMergePreservesPersonalFilesSettingsAndConcurrentEdits() throws {
+        let library = LibraryStore(inMemory: true)
+        let local = Track(title: "Personnel", artist: "Moi", duration: 48, source: .local, location: "personal.wav")
+        library.tracks.append(local); library.favorites.insert(local.id)
+        library.settings.playbackRate = 1.5
+        let sent = SorynSharedLibrary(library)
+        XCTAssertEqual(sent.tracks.first(where: { $0.id == local.id })?.source, .unresolved)
+        XCTAssertEqual(sent.tracks.first(where: { $0.id == local.id })?.location, "")
+        var reply = sent
+        reply.favorites.remove(local.id)
+        reply.playlists[0].name = "Renommée sur PC"
+        let added = Track(title: "Ajout pendant la requête", artist: "Moi", duration: 48, source: .bundled, location: "bleu-nuit.wav")
+        library.tracks.append(added); library.favorites.insert(added.id)
+        reply.apply(to: library, sent: sent)
+        XCTAssertEqual(library.track(local.id)?.source, .local)
+        XCTAssertEqual(library.track(local.id)?.location, "personal.wav")
+        XCTAssertEqual(library.settings.playbackRate, 1.5)
+        XCTAssertFalse(library.favorites.contains(local.id))
+        XCTAssertTrue(library.favorites.contains(added.id))
+        XCTAssertEqual(library.playlists[0].name, "Renommée sur PC")
+    }
+
+    @MainActor func testSorynEncryptedWindowsProtocolAgainstNodeServer() async throws {
+        let library = LibraryStore(inMemory: true)
+        let snapshot = SorynSharedLibrary(library), key = SymmetricKey(data: Data(repeating: 0, count: 32))
+        let device = UUID().uuidString, requestID = UUID().uuidString
+        struct Packet: Encodable {
+            var `protocol` = 1; var deviceID: String; var requestID: String; var sentAt: Double; var snapshot: SorynSharedLibrary
+        }
+        struct Reply: Decodable { var `protocol`: Int; var requestID: String; var snapshot: SorynSharedLibrary }
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:48764/v1/sync")!)
+        request.httpMethod = "POST"; request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(SorynSyncBox.seal(Packet(deviceID: device, requestID: requestID, sentAt: Date().timeIntervalSince1970 * 1000, snapshot: snapshot), key: key))
+        let (data, response) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+        let reply = try JSONDecoder().decode(SorynSyncBox.self, from: data).open(Reply.self, key: key)
+        XCTAssertEqual(reply.requestID, requestID)
+        try reply.snapshot.validate()
+        XCTAssertEqual(reply.snapshot.tracks.count, 4, "The independently seeded Node and Swift originals must deduplicate")
+        reply.snapshot.apply(to: library, sent: snapshot)
+        XCTAssertEqual(library.tracks.count, 4)
+        let (_, replay) = try await URLSession.shared.data(for: request)
+        XCTAssertEqual((replay as? HTTPURLResponse)?.statusCode, 409, "Authenticated requests must not be replayable")
+    }
+
     func testLRCMultipleTagsFractionsAndOffset() {
         let input = "[ar:Artist]\n[offset:-500]\n[00:01.25][00:05.250]Premier vers\n[01:02.5]Deuxième vers"
         let result = LRCParser.parse(input)

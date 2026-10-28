@@ -83,7 +83,7 @@ def main():
             content = plistlib.load(f)
         if name == "Info.plist":
             check("audio" in content.get("UIBackgroundModes", []), "Background audio entitlement missing")
-            check(content["CFBundleDisplayName"] == "Blusic", "Wrong app name")
+            check(content["CFBundleDisplayName"] == "Soryn", "Wrong app name")
             check(content.get("CFBundleShortVersionString") == "$(MARKETING_VERSION)", "App version must follow the Xcode marketing version")
             check(content.get("CFBundleVersion") == "$(CURRENT_PROJECT_VERSION)", "App build number must follow Xcode")
     ET.parse(ROOT/"Blusic.xcodeproj/xcshareddata/xcschemes/Blusic.xcscheme")

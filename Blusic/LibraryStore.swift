@@ -28,6 +28,7 @@ final class LibraryStore {
     private let writer = LibraryPersistenceWorker()
     private let fileManager = FileManager.default
     private let persists: Bool
+    @ObservationIgnored lazy var sync = SorynSyncClient(library: self)
     @ObservationIgnored lazy var downloads: OfflineDownloads = OfflineDownloads(library: self,
         store: OfflineAudioStore(root: persists ? OfflineAudioStore.defaultRoot : FileManager.default.temporaryDirectory.appendingPathComponent("BlusicTestDownloads-\(UUID().uuidString)", isDirectory: true)))
 
@@ -254,7 +255,7 @@ final class LibraryStore {
     }
 
     func exportBackup() throws -> URL {
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Blusic-bibliotheque.json")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("Soryn-bibliotheque.json")
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(snapshot()).write(to: url, options: .atomic)
@@ -262,7 +263,7 @@ final class LibraryStore {
     }
     func restoreBackup(_ data: Data) throws {
         let backup = try JSONDecoder().decode(LibrarySnapshot.self, from: data)
-        guard backup.version == 1 else { throw BlusicError.message("Cette sauvegarde nécessite une autre version de Blusic.") }
+        guard backup.version == 1 else { throw BlusicError.message("Cette sauvegarde nécessite une autre version de Soryn.") }
         // Merge rather than erase the current library. Native media files are not in a JSON export.
         var restored: [Track] = []
         var knownTrackIDs = Set(trackIndex.keys)

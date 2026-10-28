@@ -31,24 +31,9 @@ enum ArtworkURL {
     }
 }
 
-struct BlusicMark: Shape {
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        func pt(_ x: CGFloat, _ y: CGFloat) -> CGPoint { CGPoint(x: rect.minX + x * rect.width, y: rect.minY + y * rect.height) }
-        p.move(to: pt(0.30, 0.08))
-        p.addCurve(to: pt(0.91, 0.36), control1: pt(0.54, -0.01), control2: pt(0.88, 0.15))
-        p.addCurve(to: pt(0.65, 0.92), control1: pt(0.99, 0.53), control2: pt(0.83, 0.90))
-        p.addCurve(to: pt(0.08, 0.69), control1: pt(0.47, 1.01), control2: pt(0.09, 0.88))
-        p.addCurve(to: pt(0.30, 0.08), control1: pt(0.01, 0.56), control2: pt(0.14, 0.17)); p.closeSubpath()
-        p.move(to: pt(0.52, 0.29))
-        p.addCurve(to: pt(0.64, 0.60), control1: pt(0.59, 0.20), control2: pt(0.61, 0.44))
-        p.addCurve(to: pt(0.54, 0.63), control1: pt(0.65, 0.70), control2: pt(0.55, 0.71))
-        p.addCurve(to: pt(0.52, 0.29), control1: pt(0.51, 0.56), control2: pt(0.51, 0.38)); p.closeSubpath()
-        p.move(to: pt(0.72, 0.29))
-        p.addCurve(to: pt(0.82, 0.45), control1: pt(0.78, 0.24), control2: pt(0.82, 0.36))
-        p.addCurve(to: pt(0.76, 0.51), control1: pt(0.85, 0.53), control2: pt(0.78, 0.56))
-        p.addCurve(to: pt(0.72, 0.29), control1: pt(0.73, 0.46), control2: pt(0.72, 0.35)); p.closeSubpath()
-        return p
+struct BlusicMark: View {
+    var body: some View {
+        Image("SorynLogo").resizable().scaledToFit().clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
 

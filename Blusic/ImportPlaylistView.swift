@@ -47,7 +47,7 @@ struct ImportPlaylistView: View {
                     if preview.contains(where: { $0.source == .catalogReference || $0.source == .unresolved }) {
                         Button("Réessayer les correspondances introuvables") { associatePreview() }.disabled(busy)
                     }
-                    Button("Ajouter à Blusic") {
+                    Button("Ajouter à Soryn") {
                         library.createPlaylist(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Playlist importée" : name, tracks: matchedTracks())
                         library.notice = "Playlist importée · \(preview.count) titres"
                         dismiss()

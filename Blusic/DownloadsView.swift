@@ -13,7 +13,7 @@ struct DownloadsView: View {
                 LabeledContent("Stockage audio", value: ByteCountFormatter.string(fromByteCount: downloads.totalBytes, countStyle: .file))
                 Text("Les titres entièrement téléchargés sont conservés sur cet iPhone jusqu’à leur suppression. Ils sont lus en priorité sans connexion, même si le cache temporaire est vidé.")
                     .font(.caption).foregroundStyle(.secondary)
-                Text("Garde Blusic ouvert pendant les téléchargements. iOS peut suspendre une préparation lorsque l’application est en arrière-plan ; les fichiers déjà terminés restent disponibles.")
+                Text("Garde Soryn ouvert pendant les téléchargements. iOS peut suspendre une préparation lorsque l’application est en arrière-plan ; les fichiers déjà terminés restent disponibles.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             if let error = downloads.error { Section { Text(error).foregroundStyle(.red).font(.caption) } }

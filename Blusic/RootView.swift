@@ -154,8 +154,8 @@ struct RootView: View {
 
     private var header: some View {
         HStack(spacing: 9) {
-            BlusicMark().fill(.primary, style: FillStyle(eoFill: true)).frame(width: 25, height: 25)
-            Text("blusic").font(.system(size: 21, weight: .bold)).tracking(-0.7)
+            BlusicMark().foregroundStyle(.primary).frame(width: 28, height: 28)
+            Text("soryn.").font(.system(size: 21, weight: .bold)).tracking(-0.7)
             Spacer()
             IconButton(symbol: "chart.bar.xaxis", label: "Statistiques") { sheet = .statistics }.blusicGlass(radius: 22)
             IconButton(symbol: "slider.horizontal.3", label: "Réglages") { sheet = .settings }.blusicGlass(radius: 22)
