@@ -21,7 +21,12 @@ struct SorynSharedLibrary: Codable, Sendable {
             return track
         }
         playlists = library.playlists; favorites = library.favorites
-        history = library.history; followedArtists = library.followedArtists
+        history = library.history
+        followedArtists = library.followedArtists.map { artist in
+            var artist = artist
+            if artist.artworkURL?.scheme != "https" { artist.artworkURL = nil }
+            return artist
+        }
     }
 
     func validate() throws {
@@ -46,7 +51,7 @@ struct SorynSharedLibrary: Codable, Sendable {
             // A concurrent metadata edit stays local; a subsequent sync will reconcile it.
             local == base ? remote : local
         }
-        library.tracks = merged.map { localFiles[$0.id] ?? $0 }
+        library.tracks = merged.map { localFiles[$0.id] ?? $0 } + localFiles.values.filter { local in !merged.contains(where: { $0.id == local.id }) }
         library.playlists = Self.mergeEntities(sent.playlists, current.playlists, playlists) { base, local, remote in
             var p = local
             if local.name == base?.name { p.name = remote.name }

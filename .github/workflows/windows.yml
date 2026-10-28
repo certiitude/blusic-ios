@@ -1,0 +1,49 @@
+name: Build and test Soryn Windows
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'windows/**'
+      - 'docs/branding/soryn*'
+      - 'Blusic/Audio/**'
+      - 'Blusic/Assets.xcassets/cover-*/**'
+      - 'relay/*.mjs'
+      - '.github/workflows/windows.yml'
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+      - name: Install locked desktop dependencies and Electron
+        run: |
+          npm ci
+          node node_modules/electron/install.js
+      - name: Unit and real encrypted HTTP protocol tests
+        run: npm test
+      - name: Generate third-party resolver license bundle
+        working-directory: native-resolver
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+      - name: Build installer and portable application
+        run: npm run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Soryn-Windows-x64
+          path: |
+            dist/windows-soryn/Soryn-*-Setup.exe
+            dist/windows-soryn/Soryn-*-portable.exe
+          if-no-files-found: error
+          retention-days: 14

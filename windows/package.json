@@ -1,0 +1,40 @@
+{
+  "name": "soryn-desktop",
+  "productName": "Soryn",
+  "version": "1.0.0",
+  "description": "La musique. Rien d’autre. Lecteur Soryn pour Windows.",
+  "author": "Certiitude",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "private": true,
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test test/*.test.mjs",
+    "build": "node tools/prepare.mjs && electron-builder --win nsis portable --x64",
+    "smoke": "node tools/smoke.mjs"
+  },
+  "dependencies": {
+    "youtubei.js": "18.3.0",
+    "googlevideo": "5.0.1",
+    "bgutils-js": "4.0.3",
+    "jsdom": "26.1.0",
+    "qrcode": "1.5.4",
+    "music-metadata": "12.3.2"
+  },
+  "devDependencies": {
+    "electron": "45.1.0",
+    "electron-builder": "26.18.0",
+    "playwright-core": "1.64.1"
+  },
+  "build": {
+    "appId": "app.soryn.desktop",
+    "productName": "Soryn",
+    "asar": true,
+    "directories": {"output": "../dist/windows-soryn"},
+    "files": ["main.mjs", "preload.cjs", "core/**", "ui/**", "vendor/**", "assets/**", "LICENSE.md", "package.json"],
+    "win": {"icon": "assets/soryn.ico", "signExecutable": false},
+    "nsis": {"artifactName": "Soryn-${version}-Setup.exe", "oneClick": false, "allowToChangeInstallationDirectory": true, "deleteAppDataOnUninstall": false, "createDesktopShortcut": true},
+    "portable": {"artifactName": "Soryn-${version}-portable.exe"}
+  }
+}

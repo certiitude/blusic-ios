@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="580" viewBox="0 0 1400 580">
+<defs>
+  <linearGradient id="sky" x2="1" y2="1"><stop stop-color="#08101c"/><stop offset=".6" stop-color="#111c41"/><stop offset="1" stop-color="#080d19"/></linearGradient>
+  <radialGradient id="halo"><stop stop-color="#91adff" stop-opacity=".36"/><stop offset="1" stop-color="#4264cd" stop-opacity="0"/></radialGradient>
+  <linearGradient id="mount" x2="0" y2="1"><stop stop-color="#24345a"/><stop offset="1" stop-color="#060c16"/></linearGradient>
+  <linearGradient id="water" x2="0" y2="1"><stop stop-color="#526fb0" stop-opacity=".4"/><stop offset="1" stop-color="#0a111b"/></linearGradient>
+  <filter id="glow"><feGaussianBlur stdDeviation="8"/></filter>
+  <mask id="crescent"><rect width="1400" height="580" fill="black"/><circle cx="1040" cy="170" r="116" fill="white"/><circle cx="995" cy="139" r="115" fill="black"/></mask>
+</defs>
+<path fill="url(#sky)" d="M0 0h1400v580H0z"/>
+<ellipse cx="1030" cy="170" rx="330" ry="280" fill="url(#halo)"/>
+<circle cx="1040" cy="170" r="124" fill="#a8bbff" opacity=".6" filter="url(#glow)" mask="url(#crescent)"/>
+<circle cx="1040" cy="170" r="116" fill="#cad7ff" mask="url(#crescent)"/>
+<g fill="#9caedf"><circle cx="720" cy="76" r="1.3"/><circle cx="1250" cy="51" r="1"/><circle cx="1150" cy="42" r="1.2"/><circle cx="904" cy="39" r="1"/><circle cx="782" cy="210" r="1"/><circle cx="1310" cy="155" r="1"/><circle cx="600" cy="99" r="1"/><circle cx="680" cy="160" r=".8"/><circle cx="1180" cy="260" r="1.4"/></g>
+<path fill="url(#mount)" d="M0 440 130 340 200 363 282 275 334 290 404 252 510 341 571 319 674 400 765 353 810 380 889 330 976 406 1112 317 1210 348 1290 258 1400 332V580H0Z"/>
+<path fill="#080f1c" d="m0 444 89-48 99 29 92-31 144 57 140-10 95 33 100-34 115 33 120-28 90 32 108-35 108 16 120-37v159H0Z"/>
+<path fill="url(#water)" d="M530 474q390-36 870 0v106H350Z"/>
+<g fill="none" stroke="#9bb7ff" stroke-opacity=".22"><path d="M755 489q235-10 435 2M645 510q225-11 420 0M821 531q270-15 579 0M490 555q270-18 570-3"/><path d="M1000 480h99m-150 16h165m-210 24h248" stroke-opacity=".4"/></g>
+</svg>

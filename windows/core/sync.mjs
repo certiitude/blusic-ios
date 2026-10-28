@@ -30,7 +30,8 @@ export class SyncServer {
     this.server = createServer((req, res) => this.handle(req, res));
     this.server.headersTimeout = 8000; this.server.requestTimeout = 15000;
     this.server.maxConnections = 8;
-    await new Promise((resolve, reject) => { this.server.once('error', reject); this.server.listen(port, '0.0.0.0', resolve); });
+    try { await new Promise((resolve, reject) => { this.server.once('error', reject); this.server.listen(port, '0.0.0.0', resolve); }); }
+    catch (error) { this.server = null; throw error; }
     this.port = this.server.address().port;
   }
   info() {
@@ -63,7 +64,7 @@ export class SyncServer {
         const merged = mergeLibraries(this.baselines[packet.deviceID], before, incoming);
         const locals = new Map(this.store.data.tracks.filter(t => t.source === 'local').map(t => [t.id, t]));
         await this.store.update(s => Object.assign(s, merged, {settings: s.settings, queue: s.queue, currentTrackID: s.currentTrackID,
-          tracks: merged.tracks.map(t => locals.get(t.id) || t)}));
+          tracks: [...merged.tracks.map(t => locals.get(t.id) || t), ...[...locals.values()].filter(t => !merged.tracks.some(m => m.id === t.id))]}));
         this.baselines[packet.deviceID] = sharedSnapshot(merged);
         const file = join(this.store.directory, 'sync-baselines.json');
         await writeFile(file + '.tmp', JSON.stringify(this.baselines)); await rename(file + '.tmp', file);

@@ -4,6 +4,8 @@ import {join} from 'node:path';
 
 export const swiftNow = () => Date.now() / 1000 - 978307200;
 export const clone = value => structuredClone(value);
+export const defaultSettings = () => ({accent: 'blue', appearance: 'dark', haptics: true, animateArtwork: true, compactRows: false, artworkRadius: 18,
+  playbackRate: 1, pitch: 0, equalizer: Array(10).fill(0), equalizerEnabled: false, lyricsOffset: 0, volume: 0.8, restoreQueue: true});
 export function seed() {
   const titles = ['Bleu nuit', 'Après la pluie', 'Orbite', 'Dernier métro'];
   const names = ['bleu-nuit', 'apres-la-pluie', 'orbite', 'dernier-metro'];
@@ -11,7 +13,7 @@ export function seed() {
   const tracks = titles.map((title, i) => ({id: `50B93537-ED39-4BEA-AB00-00000000000${i}`, title, artist: 'Soryn Studio', album: 'Premières ondes', duration: 48,
     source: 'bundled', location: names[i] + '.wav', artwork: 'cover-' + covers[i], addedAt: swiftNow(), isExplicit: false}));
   return {version: 1, tracks, playlists: [{id: '50B93537-ED39-4BEA-AB00-000000000010', name: 'Premières ondes', detail: 'Quatre instrumentaux originaux, créés pour ce projet.',
-    trackIDs: tracks.map(t => t.id), createdAt: swiftNow(), symbol: 'waveform'}], favorites: [], history: [], followedArtists: [], queue: [], settings: {volume: 0.8, playbackRate: 1}};
+    trackIDs: tracks.map(t => t.id), createdAt: swiftNow(), symbol: 'waveform'}], favorites: [], history: [], followedArtists: [], queue: [], settings: defaultSettings()};
 }
 const sources = new Set(['bundled', 'local', 'remote', 'youtube', 'invidious', 'catalogReference', 'unresolved']);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -47,6 +49,10 @@ export function sharedSnapshot(snapshot) {
     if (!/^https:\/\//i.test(track.artworkURL || '')) delete track.artworkURL;
     delete track.originInstance;
     return track;
+  });
+  data.followedArtists = (data.followedArtists || []).map(artist => {
+    if (!/^https:\/\//i.test(artist.artworkURL || '')) delete artist.artworkURL;
+    return artist;
   });
   return data;
 }

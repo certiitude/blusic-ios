@@ -1,0 +1,5 @@
+node_modules/
+vendor/
+assets/
+LICENSE.md
+test-output/

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data: https:; media-src soryn-media:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'">
+  <title>Soryn — La musique. Rien d’autre.</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#home" aria-label="Soryn accueil">soryn<span>.</span></a>
+      <div class="eyebrow nav-caption">TON ESPACE</div>
+      <nav id="navigation" aria-label="Navigation principale">
+        <button data-view="home" class="nav-item active"><i data-icon="home"></i>Accueil</button>
+        <button data-view="explore" class="nav-item"><i data-icon="search"></i>Explorer</button>
+        <button data-view="library" class="nav-item"><i data-icon="library"></i>Bibliothèque</button>
+        <button data-view="favorites" class="nav-item"><i data-icon="heart"></i>Favoris</button>
+        <button data-view="downloads" class="nav-item"><i data-icon="download"></i>Hors ligne</button>
+      </nav>
+      <div class="playlist-caption"><span class="eyebrow">TES PLAYLISTS</span><button id="new-playlist" class="icon-button" aria-label="Créer une playlist"><i data-icon="plus"></i></button></div>
+      <div id="playlist-navigation" class="playlist-navigation"></div>
+      <button id="import-button" class="import-button"><i data-icon="plus"></i>Importer des fichiers</button>
+      <div class="sidebar-bottom">
+        <div class="little-ghost"><img src="../assets/mascot.png" alt="Mascotte Soryn"></div>
+        <p>Moins de bruit.<br><span>Plus de musique.</span></p>
+        <button data-view="sync" class="nav-item"><i data-icon="sync"></i>Synchroniser <span class="status-dot" id="sync-dot"></span></button>
+        <button data-view="settings" class="nav-item"><i data-icon="settings"></i>Réglages</button>
+      </div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar">
+        <div class="history-controls"><button id="back" class="icon-button" aria-label="Retour"><i data-icon="left"></i></button><button id="forward" class="icon-button" aria-label="Suivant dans la navigation"><i data-icon="right"></i></button></div>
+        <form id="search-form" class="search-box" role="search"><i data-icon="search"></i><input id="search" placeholder="Un titre, un artiste, une envie…" aria-label="Rechercher sur YouTube Music" autocomplete="off"><kbd>Ctrl K</kbd></form>
+        <span class="device-label"><i data-icon="desktop"></i> SUR CE PC</span>
+        <button data-view="sync" class="profile-button" aria-label="Synchronisation iPhone"><i data-icon="phone"></i></button>
+        <div class="window-controls"><button id="minimize" aria-label="Réduire">—</button><button id="maximize" aria-label="Agrandir">□</button><button id="close" aria-label="Fermer">×</button></div>
+      </header>
+      <main id="content" tabindex="-1"></main>
+    </div>
+    <aside id="now-panel" class="now-panel">
+      <div class="now-heading"><span class="eyebrow">EN LECTURE</span><i data-icon="wave"></i></div>
+      <img id="now-art" class="now-art" src="../assets/cover-night.png" alt="">
+      <div class="now-title-row"><div><h2 id="now-title">À ton rythme.</h2><p id="now-artist">Choisis ton premier morceau</p></div><button id="now-like" class="icon-button" aria-label="Ajouter le titre actuel aux favoris"><i data-icon="heart"></i></button></div>
+      <span id="audio-quality" class="quality-label">AUDIO LOCAL · SANS PUBLICITÉ AJOUTÉE</span>
+      <div class="queue-heading"><h3>À suivre</h3><span id="queue-count">0 titre</span></div>
+      <div id="queue-list" class="queue-list"><p class="muted">Ta prochaine parenthèse commence ici.</p></div>
+      <div class="listening-note"><i data-icon="wave"></i><p>La musique.<br><strong>Rien d’autre.</strong></p><span>SORYN</span></div>
+    </aside>
+    <footer class="player">
+      <div class="player-track"><img id="player-art" src="../assets/logo.png" alt=""><div><strong id="player-title">Un moment pour toi</strong><span id="player-artist">Soryn est prêt.</span></div><button id="player-like" class="icon-button" aria-label="Favori"><i data-icon="heart"></i></button></div>
+      <div class="transport"><div class="transport-buttons"><button id="shuffle" class="icon-button" aria-label="Lecture aléatoire" aria-pressed="false"><i data-icon="shuffle"></i></button><button id="previous" class="icon-button" aria-label="Titre précédent"><i data-icon="previous"></i></button><button id="play" class="play-button" aria-label="Lecture"><i data-icon="play"></i></button><button id="next" class="icon-button" aria-label="Titre suivant"><i data-icon="next"></i></button><button id="repeat" class="icon-button" aria-label="Répéter" aria-pressed="false"><i data-icon="repeat"></i></button></div><div class="timeline"><span id="elapsed">0:00</span><input id="seek" type="range" min="0" max="100" step="0.1" value="0" aria-label="Position de lecture"><span id="duration">0:00</span></div></div>
+      <div class="player-extras"><button id="lyrics" class="icon-button" aria-label="Paroles enregistrées"><i data-icon="lyrics"></i></button><button id="queue-toggle" class="icon-button" aria-label="Afficher ou masquer la file"><i data-icon="queue"></i></button><i data-icon="volume"></i><input id="volume" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Volume"></div>
+    </footer>
+  </div>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <dialog id="modal"><form id="modal-form"><button type="button" id="modal-close" class="modal-close icon-button" aria-label="Fermer">×</button><div id="modal-content"></div><div id="modal-actions"></div></form></dialog>
+  <audio id="audio" preload="auto"></audio>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
