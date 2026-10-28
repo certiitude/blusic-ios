@@ -71,6 +71,19 @@ final class BlusicTests: XCTestCase {
         XCTAssertFalse(library.favorites.contains(local.id))
         XCTAssertTrue(library.favorites.contains(added.id))
         XCTAssertEqual(library.playlists[0].name, "Renommée sur PC")
+        let old = library.tracks[0], canonical = UUID()
+        let before = SorynSharedLibrary(library)
+        var deduplicated = before
+        deduplicated.tracks[0].id = canonical
+        deduplicated.playlists = deduplicated.playlists.map { p in var p = p; p.trackIDs = p.trackIDs.map { $0 == old.id ? canonical : $0 }; return p }
+        library.savedQueue = [old.id]; library.savedCurrentID = old.id
+        library.favorites.insert(old.id) // A favorite added during the request.
+        deduplicated.apply(to: library, sent: before)
+        XCTAssertEqual(library.savedQueue, [canonical])
+        XCTAssertEqual(library.savedCurrentID, canonical)
+        XCTAssertTrue(library.favorites.contains(canonical))
+        library.recordListening(track: old, seconds: 5, sessionID: UUID())
+        XCTAssertEqual(library.history.last?.trackID, canonical)
     }
 
     @MainActor func testSorynEncryptedWindowsProtocolAgainstNodeServer() async throws {

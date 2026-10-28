@@ -52,6 +52,12 @@ struct SorynSharedLibrary: Codable, Sendable {
             local == base ? remote : local
         }
         library.tracks = merged.map { localFiles[$0.id] ?? $0 } + localFiles.values.filter { local in !merged.contains(where: { $0.id == local.id }) }
+        let known = Set(library.tracks.map(\.id))
+        var aliases: [UUID: UUID] = [:]
+        for track in current.tracks where !known.contains(track.id) && !track.location.isEmpty {
+            if let canonical = library.tracks.first(where: { $0.source == track.source && $0.location == track.location }) { aliases[track.id] = canonical.id }
+        }
+        func remap(_ id: UUID) -> UUID { aliases[id] ?? id }
         library.playlists = Self.mergeEntities(sent.playlists, current.playlists, playlists) { base, local, remote in
             var p = local
             if local.name == base?.name { p.name = remote.name }
@@ -62,12 +68,13 @@ struct SorynSharedLibrary: Codable, Sendable {
             }
             return p
         }
-        let known = Set(library.tracks.map(\.id))
-        library.playlists = library.playlists.map { p in var p = p; p.trackIDs = p.trackIDs.filter { known.contains($0) }; return p }
-        library.favorites = Self.mergeSet(sent.favorites, current.favorites, favorites).intersection(known)
+        library.playlists = library.playlists.map { p in var p = p; var seen = Set<UUID>(); p.trackIDs = p.trackIDs.map(remap).filter { known.contains($0) && seen.insert($0).inserted }; return p }
+        library.favorites = Set(Self.mergeSet(sent.favorites, current.favorites, favorites).map(remap)).intersection(known)
         var events: [UUID: ListeningEvent] = [:]
         for event in current.history + history where event.seconds >= (events[event.id]?.seconds ?? -1) { events[event.id] = event }
-        library.history = events.values.sorted { $0.date < $1.date }
+        library.history = events.values.map { event in var event = event; event.trackID = remap(event.trackID); return event }.sorted { $0.date < $1.date }
+        library.savedQueue = library.savedQueue.map(remap).filter { known.contains($0) }
+        library.savedCurrentID = library.savedCurrentID.map(remap)
         library.followedArtists = Self.mergeEntities(sent.followedArtists, current.followedArtists, followedArtists) { _, local, _ in local }
         library.save()
     }

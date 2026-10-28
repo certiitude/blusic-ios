@@ -246,11 +246,14 @@ final class LibraryStore {
 
     func recordListening(track: Track, seconds: Double, sessionID: UUID) {
         guard seconds > 0 else { return }
+        // A sync may canonicalise an online title's UUID while its player keeps
+        // playing the original value. Continue recording against the stored ID.
+        let trackID = trackIndex[track.id] != nil ? track.id : (sourceIndex[Self.sourceKey(track)] ?? track.id)
         let today = Calendar.current.startOfDay(for: Date())
         if let index = history.lastIndex(where: { $0.id == sessionID && Calendar.current.startOfDay(for: $0.date) == today }) {
             history[index].seconds += seconds
         } else {
-            history.append(ListeningEvent(id: sessionID, trackID: track.id, date: Date(), seconds: seconds))
+            history.append(ListeningEvent(id: sessionID, trackID: trackID, date: Date(), seconds: seconds))
         }
     }
 
