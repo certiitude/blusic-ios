@@ -146,6 +146,7 @@ struct SettingsView: View {
                 Text("Le relais utilise youtubei.js et vérifie le fichier complet avant de relayer l’audio au lecteur natif. L’IPA contient un accès application, copié dans le trousseau et exclu des sauvegardes JSON ; elle ne contient ni la clé d’administration Render ni la clé maître du serveur. Le fournisseur peut encore refuser certains titres.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Ta bibliothèque") {
+                NavigationLink { SorynAccountView() } label: { Label("Compte facultatif · synchronisation Internet", systemImage: "person.crop.circle") }
                 NavigationLink { SorynSyncView() } label: { Label("Synchroniser avec Windows", systemImage: "desktopcomputer.and.iphone") }
                 NavigationLink { DownloadsView() } label: { Label("Téléchargements hors ligne", systemImage: "arrow.down.circle") }
                 NavigationLink { ManageFilesView() } label: { Label("Gérer les fichiers importés", systemImage: "internaldrive") }

@@ -244,3 +244,132 @@ private final class SorynNoRedirect: NSObject, URLSessionTaskDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest,
                     completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
 }
+
+@MainActor @Observable
+final class SorynAccountClient {
+    static let serverAddress = "https://soryn-accounts.onrender.com"
+    private(set) var status = "Sans compte · bibliothèque locale"
+    private(set) var busy = false
+    private(set) var lastSync: Date?
+    var signedIn: Bool { accountSession != nil }
+    var displayName: String { accountSession?.account.displayName ?? "" }
+    @ObservationIgnored private weak var library: LibraryStore?
+    @ObservationIgnored private let credentials: any SorynSyncKeyStoring
+    @ObservationIgnored private let defaults: UserDefaults
+    @ObservationIgnored private let session: URLSession
+    @ObservationIgnored private let server: URL
+    private var accountSession: AccountSession?
+    private struct AccountSession: Codable {
+        struct Account: Codable { var id: String; var username: String; var displayName: String }
+        var account: Account; var token: String; var expiresAt: Double
+    }
+    init(library: LibraryStore, defaults: UserDefaults = .standard, credentials: (any SorynSyncKeyStoring)? = nil, testServer: URL? = nil) {
+        self.library = library; self.defaults = defaults; self.credentials = credentials ?? SorynAccountKeychain()
+        #if DEBUG
+        server = testServer ?? URL(string: Self.serverAddress)!
+        #else
+        server = URL(string: Self.serverAddress)!
+        #endif
+        let config = URLSessionConfiguration.ephemeral
+        config.timeoutIntervalForRequest = 65; config.timeoutIntervalForResource = 70
+        session = URLSession(configuration: config, delegate: SorynNoRedirect(), delegateQueue: nil)
+        if let data = self.credentials.read(), let saved = try? JSONDecoder().decode(AccountSession.self, from: data) {
+            accountSession = saved; status = "Compte connecté · synchronisation en attente"
+        }
+        if defaults.string(forKey: "soryn.account.deviceID") == nil { defaults.set(UUID().uuidString, forKey: "soryn.account.deviceID") }
+    }
+    private func request(_ action: String, data: Data, token: String? = nil) async throws -> Data {
+        var request = URLRequest(url: server.appendingPathComponent("v1/accounts/\(action)"))
+        request.httpMethod = "POST"; request.httpBody = data
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        let (stream, response) = try await session.bytes(for: request)
+        var body = Data()
+        for try await byte in stream { guard body.count < 8_000_000 else { throw BlusicError.message("Réponse du compte trop volumineuse.") }; body.append(byte) }
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
+            struct ServerError: Decodable { var error: String }
+            let message = (try? JSONDecoder().decode(ServerError.self, from: body).error) ?? "Serveur de comptes indisponible. Ta bibliothèque locale reste accessible."
+            throw BlusicError.message(message)
+        }
+        return body
+    }
+    func authenticate(username: String, password: String, create: Bool) async {
+        guard !busy, !signedIn else { return }
+        guard username.range(of: #"^[a-zA-Z0-9_][a-zA-Z0-9_.-]{2,23}$"#, options: .regularExpression) != nil,
+              (12...128).contains(password.utf16.count) else { status = "Pseudo : 3 à 24 caractères. Mot de passe : 12 à 128 caractères."; return }
+        busy = true; status = "Connexion au compte…"
+        do {
+            let body = try JSONEncoder().encode(["username": username, "password": password])
+            let data = try await request(create ? "register" : "login", data: body)
+            let saved = try JSONDecoder().decode(AccountSession.self, from: data)
+            guard UUID(uuidString: saved.account.id) != nil, saved.token.range(of: #"^[A-Za-z0-9_-]{43}$"#, options: .regularExpression) != nil else { throw BlusicError.message("Session reçue invalide.") }
+            try credentials.write(data); accountSession = saved
+            defaults.set(UUID().uuidString, forKey: "soryn.account.deviceID"); defaults.removeObject(forKey: "soryn.account.ack")
+            status = "Connecté. Prêt à fusionner la bibliothèque."
+        } catch { status = error.localizedDescription }
+        busy = false
+        if signedIn { await sync() }
+    }
+    func sync() async {
+        guard !busy, let accountSession, let library else { return }
+        busy = true; defer { busy = false }
+        status = "Synchronisation du compte…"
+        do {
+            struct Packet: Encodable {
+                var `protocol` = 1; var deviceID: String; var requestID: String; var snapshot: SorynSharedLibrary; var acknowledgedRequestID: String?
+            }
+            struct Reply: Decodable { var `protocol`: Int; var requestID: String; var snapshot: SorynSharedLibrary }
+            let sent = SorynSharedLibrary(library), id = UUID().uuidString
+            let packet = Packet(deviceID: defaults.string(forKey: "soryn.account.deviceID")!, requestID: id, snapshot: sent, acknowledgedRequestID: defaults.string(forKey: "soryn.account.ack"))
+            let body = try await request("sync", data: JSONEncoder().encode(packet), token: accountSession.token)
+            let reply = try JSONDecoder().decode(Reply.self, from: body)
+            guard reply.protocol == 1, reply.requestID == id else { throw BlusicError.message("Réponse d’un autre échange refusée.") }
+            try reply.snapshot.validate(); try Task.checkCancellation()
+            reply.snapshot.apply(to: library, sent: sent)
+            defaults.set(id, forKey: "soryn.account.ack"); lastSync = Date(); status = "Bibliothèque synchronisée avec ton compte"
+        } catch { status = error.localizedDescription }
+    }
+    func logout() async {
+        guard !busy else { return }
+        busy = true; defer { busy = false }
+        let token = accountSession?.token
+        accountSession = nil; credentials.forget(); defaults.removeObject(forKey: "soryn.account.ack"); lastSync = nil
+        status = "Déconnecté · bibliothèque locale conservée"
+        if let token {
+            do { _ = try await request("logout", data: Data("{}".utf8), token: token) }
+            catch { status = "Déconnecté sur cet iPhone. Révocation distante non confirmée ; la session distante expire au plus tard après 30 jours." }
+        }
+    }
+    func deleteAccount(password: String) async {
+        guard !busy, let token = accountSession?.token else { return }
+        busy = true; defer { busy = false }
+        do {
+            _ = try await request("delete", data: JSONEncoder().encode(["password": password]), token: token)
+            accountSession = nil; credentials.forget(); defaults.removeObject(forKey: "soryn.account.ack"); lastSync = nil
+            status = "Compte supprimé du serveur · bibliothèque locale conservée"
+        } catch { status = error.localizedDescription }
+    }
+    func runWhileActive() async {
+        while !Task.isCancelled {
+            if signedIn { await sync() }
+            do { try await Task.sleep(for: .seconds(30)) } catch { return }
+        }
+    }
+}
+
+@MainActor private struct SorynAccountKeychain: SorynSyncKeyStoring {
+    private var query: [String: Any] { [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: "app.soryn.account-session", kSecAttrAccount as String: "optional-account"] }
+    func read() -> Data? {
+        var q = query; q[kSecReturnData as String] = true; q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var result: CFTypeRef?; guard SecItemCopyMatching(q as CFDictionary, &result) == errSecSuccess else { return nil }; return result as? Data
+    }
+    func write(_ data: Data) throws {
+        let status = SecItemUpdate(query as CFDictionary, [kSecValueData as String: data] as CFDictionary)
+        if status == errSecItemNotFound {
+            var q = query; q[kSecValueData as String] = data; q[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            let added = SecItemAdd(q as CFDictionary, nil)
+            guard added == errSecSuccess else { throw BlusicError.message("Impossible de protéger la session dans le trousseau (\(added)). Vérifie la signature de l’app.") }
+        } else if status != errSecSuccess { throw BlusicError.message("Impossible de protéger la session (\(status)). Vérifie la signature de l’app.") }
+    }
+    func forget() { SecItemDelete(query as CFDictionary) }
+}

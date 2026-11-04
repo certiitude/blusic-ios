@@ -24,6 +24,7 @@ on:
       - 'relay/audio-quality.mjs'
       - 'windows/core/**'
       - 'windows/test/ios-server.mjs'
+      - 'account-server/**'
   pull_request:
 permissions:
   contents: read
@@ -76,6 +77,11 @@ jobs:
         run: xcrun simctl bootstatus "$SIMULATOR_ID" -b
       - name: Start encrypted Windows protocol fixture for iPhone tests
         run: node windows/test/ios-server.mjs > build/soryn-sync-node.log 2>&1 &
+      - name: Install account interoperability test dependencies
+        working-directory: account-server
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Start optional account PostgreSQL test fixture
+        run: node account-server/test/ios-server.mjs > build/soryn-accounts-node.log 2>&1 &
       - name: Verify actual iPhone to Windows encrypted pairing and merge
         run: >-
           xcodebuild test -project Blusic.xcodeproj -scheme Blusic
@@ -85,7 +91,8 @@ jobs:
           -only-testing:BlusicTests/BlusicTests/testSorynEncryptedWindowsProtocolAgainstNodeServer
           -only-testing:BlusicTests/BlusicTests/testSorynMergePreservesPersonalFilesSettingsAndConcurrentEdits
           -only-testing:BlusicTests/BlusicTests/testSorynPairingRejectsPublicAddressesAndInvalidKeys
-          -only-testing:BlusicTests/BlusicTests/testSorynPairedClientSyncsFavoritesAndRemovalsAgainstNode
+           -only-testing:BlusicTests/BlusicTests/testSorynPairedClientSyncsFavoritesAndRemovalsAgainstNode
+           -only-testing:BlusicTests/BlusicTests/testSorynOptionalAccountTwoDevicesAndLocalPreservation
           -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
       - name: Export Soryn pairing test summary
         if: always()
@@ -97,6 +104,7 @@ jobs:
           path: |
             build/soryn-sync-summary.json
             build/soryn-sync-node.log
+            build/soryn-accounts-node.log
             build/SorynSyncTests.xcresult
           retention-days: 7
       - name: Unit tests on iPhone simulator

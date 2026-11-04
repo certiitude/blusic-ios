@@ -5,6 +5,7 @@ on:
     branches: [main, master]
     paths:
       - 'windows/**'
+      - 'account-server/**'
       - 'docs/branding/soryn*'
       - 'Blusic/Audio/**'
       - 'Blusic/Assets.xcassets/cover-*/**'
@@ -33,6 +34,11 @@ jobs:
           node node_modules/electron/install.js
       - name: Unit and real encrypted HTTP protocol tests
         run: npm test
+      - name: Test optional accounts and actual two-client HTTP merge
+        working-directory: account-server
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test
       - name: Generate third-party resolver license bundle
         working-directory: native-resolver
         run: |

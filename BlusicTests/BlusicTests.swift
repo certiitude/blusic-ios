@@ -12,6 +12,44 @@ import CryptoKit
 }
 
 final class BlusicTests: XCTestCase {
+    @MainActor func testSorynOptionalAccountTwoDevicesAndLocalPreservation() async throws {
+        let aSuite = "soryn.account.a.\(UUID().uuidString)", bSuite = "soryn.account.b.\(UUID().uuidString)"
+        let aDefaults = UserDefaults(suiteName: aSuite)!, bDefaults = UserDefaults(suiteName: bSuite)!
+        defer { aDefaults.removePersistentDomain(forName: aSuite); bDefaults.removePersistentDomain(forName: bSuite) }
+        let first = LibraryStore(inMemory: true), second = LibraryStore(inMemory: true)
+        let aKeys = SorynTestSyncCredentials(), bKeys = SorynTestSyncCredentials()
+        let endpoint = URL(string: "http://127.0.0.1:48765")!
+        let a = SorynAccountClient(library: first, defaults: aDefaults, credentials: aKeys, testServer: endpoint)
+        let b = SorynAccountClient(library: second, defaults: bDefaults, credentials: bKeys, testServer: endpoint)
+        await a.sync(); XCTAssertFalse(a.signedIn); XCTAssertNil(a.lastSync)
+        let personal = Track(title: "Fichier personnel", artist: "Moi", duration: 48, source: .local, location: "personal.wav")
+        first.tracks.append(personal); first.settings.playbackRate = 1.5
+        let username = "qa_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(16)
+        let password = UUID().uuidString + "-test-only"
+        await a.authenticate(username: username, password: password, create: true)
+        XCTAssertTrue(a.signedIn, a.status); XCTAssertNotNil(a.lastSync, a.status)
+        await b.authenticate(username: username, password: password, create: false)
+        XCTAssertTrue(b.signedIn, b.status); XCTAssertNotNil(b.lastSync, b.status)
+        XCTAssertEqual(second.tracks.first(where: { $0.id == personal.id })?.source, .unresolved)
+        XCTAssertEqual(second.tracks.first(where: { $0.id == personal.id })?.location, "")
+        let id = second.tracks[0].id
+        second.favorites.insert(id); second.playlists[0].name = "Renommée sur le second appareil"
+        await b.sync(); await a.sync()
+        XCTAssertTrue(first.favorites.contains(id), a.status)
+        XCTAssertEqual(first.playlists[0].name, "Renommée sur le second appareil")
+        XCTAssertEqual(first.tracks.first(where: { $0.id == personal.id })?.source, .local)
+        XCTAssertEqual(first.tracks.first(where: { $0.id == personal.id })?.location, "personal.wav")
+        XCTAssertEqual(first.settings.playbackRate, 1.5)
+        second.favorites.remove(id); await b.sync(); await a.sync()
+        XCTAssertFalse(first.favorites.contains(id), a.status)
+        let restored = SorynAccountClient(library: first, defaults: aDefaults, credentials: aKeys, testServer: endpoint)
+        XCTAssertTrue(restored.signedIn); await restored.sync(); XCTAssertNotNil(restored.lastSync, restored.status)
+        let count = first.tracks.count
+        await restored.logout(); XCTAssertFalse(restored.signedIn); XCTAssertNil(aKeys.read()); XCTAssertEqual(first.tracks.count, count)
+        await b.deleteAccount(password: password); XCTAssertFalse(b.signedIn, b.status); XCTAssertFalse(second.tracks.isEmpty)
+        await a.sync(); XCTAssertEqual(first.tracks.count, count)
+    }
+
     @MainActor func testSorynPairingRejectsPublicAddressesAndInvalidKeys() throws {
         let key = Data(repeating: 0, count: 32).base64EncodedString().replacingOccurrences(of: "=", with: "")
         let valid = "soryn://pair?address=http%3A%2F%2F192.168.1.20%3A48763&key=\(key)"

@@ -29,6 +29,7 @@ final class LibraryStore {
     private let fileManager = FileManager.default
     private let persists: Bool
     @ObservationIgnored lazy var sync = SorynSyncClient(library: self)
+    @ObservationIgnored lazy var account = SorynAccountClient(library: self)
     @ObservationIgnored lazy var downloads: OfflineDownloads = OfflineDownloads(library: self,
         store: OfflineAudioStore(root: persists ? OfflineAudioStore.defaultRoot : FileManager.default.temporaryDirectory.appendingPathComponent("BlusicTestDownloads-\(UUID().uuidString)", isDirectory: true)))
 

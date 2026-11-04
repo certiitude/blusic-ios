@@ -353,6 +353,14 @@ input[type='range']::-webkit-slider-thumb { appearance: none; width: 9px; height
 .setting-row select { border: 1px solid #bdd2ff24; border-radius: 6px; padding: 8px 12px; background: #192235; color: #d1ddef; }
 .notice { border: 1px solid #a3c1ff12; background: #a3c1ff05; border-radius: 8px; padding: 14px 17px; color: #9cafd0; font-size: 10px; line-height: 1.85; margin-top: 20px; }
 .surface p.notice { font-size: 10px; margin-bottom: 0; }
+.account-surface { display: flex; gap: 22px; }
+.account-portrait { width: 66px; height: 66px; display: grid; place-content: center; flex-shrink: 0; border: 1px solid #b8cfff2a; border-radius: 18px; background: linear-gradient(145deg,#49618e66,#26344f66); color: #cbdeff; }
+.account-portrait svg { width: 29px; height: 29px; }
+.account-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 17px; }
+.surface p.account-status { color: #b8d0f5; font-size: 11px; margin: 0; }
+.inline-link { color: #c3d8ff; text-decoration: underline; padding: 0; }
+.auth-label { display: block; color: #acbed9; font-size: 11px; margin: 17px 0 -7px; }
+.danger-button { color: #eab1bd; border-color: #c1819144; margin-top: 17px; }
 .pair-layout { display: grid; grid-template-columns: minmax(0, 1fr) 180px; gap: 23px; align-items: start; }
 .pair-qr { width: 180px; height: 180px; border-radius: 8px; }
 .address-select { background: #141e30; border: 1px solid #a2c1ff33; border-radius: 6px; padding: 10px; margin: 12px 0; width: 100%; font-size: 12px; }

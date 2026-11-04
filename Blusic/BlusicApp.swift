@@ -19,6 +19,7 @@ struct BlusicApp: App {
             RootView()
                 .task { await library.downloads.waitUntilReady() }
                 .task(id: scenePhase) { if scenePhase == .active { await library.sync.runWhileActive() } }
+                .task(id: scenePhase) { if scenePhase == .active { await library.account.runWhileActive() } }
                 .environment(library)
                 .environment(player)
                 .tint(library.settings.color)

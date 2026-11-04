@@ -12,6 +12,7 @@ import {LibraryStore, clone, validateLibrary, mergeLibraries, swiftNow, defaultS
 import {SyncServer} from './core/sync.mjs';
 import {search,catalogSearch,browse} from './core/catalog.mjs';
 import {relayConfiguration,DEFAULT_INVIDIOUS} from './core/online-audio.mjs';
+import {AccountClient} from './core/account-client.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 protocol.registerSchemesAsPrivileged([{scheme: 'soryn-media', privileges: {standard: true, secure: true, stream: true, supportFetchAPI: true}}]);
@@ -20,7 +21,7 @@ const smokeIndex = process.argv.indexOf('--test-data');
 if (smokeIndex >= 0) app.setPath('userData', resolve(process.argv[smokeIndex + 1]));
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
-let win, store, sync, downloads = {}, activeWork, playbackID, bundledRelay;
+let win, store, sync, account, accountTimer, downloads = {}, activeWork, playbackID, bundledRelay;
 const files = new Map();
 const audioDirectory = () => join(app.getPath('userData'), 'Audio');
 const downloadDirectory = () => join(app.getPath('userData'), 'Downloads');
@@ -40,7 +41,7 @@ async function state() {
   const data = clone(store.data), available = [];
   for (const t of data.tracks) { const path = localPath(t); if ((t.source==='bundled'||t.source==='local'||downloads[t.id]) && path && await stat(path).catch(() => null)) available.push(t.id); }
   const artwork = Object.fromEntries(Object.entries(downloads).filter(([,e]) => safeName(e.artwork)).map(([id,e])=>[id,pathToFileURL(join(downloadDirectory(),e.artwork)).href]));
-  return {library: data, downloads: Object.keys(downloads), artwork, available, syncActive: !!sync.server, version: app.getVersion(),audioSources:{localResolver:true,relayConfigured:!!bundledRelay,relayHost:bundledRelay?new URL(bundledRelay.url).hostname:null,invidious:DEFAULT_INVIDIOUS.map(url=>new URL(url).hostname)}};
+  return {library: data, downloads: Object.keys(downloads), artwork, available, syncActive: !!sync.server,account:account?.state(),version: app.getVersion(),audioSources:{localResolver:true,relayConfigured:!!bundledRelay,relayHost:bundledRelay?new URL(bundledRelay.url).hostname:null,invidious:DEFAULT_INVIDIOUS.map(url=>new URL(url).hostname)}};
 }
 async function prepare(track) {
   const path = localPath(track);
@@ -86,6 +87,10 @@ if (store.data) {
     if (!info || info.size !== entry.size || !(entry.duration > 0)) delete downloads[id];
   }
   sync = new SyncServer(store, emit);
+  const accountTestURL=smokeIndex>=0?process.env.SORYN_ACCOUNT_TEST_URL:null;
+  account=new AccountClient({store,secureStorage:safeStorage,...(accountTestURL?{server:accountTestURL,allowHTTP:true}:{}),onChange:aliases=>{if(aliases?.size){for(const [oldID,newID]of aliases){if(downloads[oldID]&&!downloads[newID]){downloads[newID]=downloads[oldID];delete downloads[oldID];}}saveDownloads().catch(()=>{});}emit();}});
+  await account.load();
+  accountTimer=setInterval(()=>account.sync().catch(()=>{}),30000);accountTimer.unref();
   protocol.handle('soryn-media', async request => {
     const url = new URL(request.url), id = url.pathname.slice(1), track = store.data.tracks.find(t => t.id === id);
     const path = url.hostname === 'track' && track ? localPath(track) : null;
@@ -105,6 +110,11 @@ if (store.data) {
     if (event.sender !== win?.webContents || event.senderFrame !== win.webContents.mainFrame) throw Error('Origine refusée.');
     switch (action) {
       case 'state': return state();
+      case 'account-login': return account.authenticate('login',input);
+      case 'account-register': return account.authenticate('register',input);
+      case 'account-sync': return account.sync();
+      case 'account-logout': return account.logout();
+      case 'account-delete': return account.deleteAccount(input?.password);
       case 'search': return search(input);
       case 'catalog-search': return catalogSearch(input);
       case 'catalog-browse': return browse(input);
@@ -239,4 +249,4 @@ if (store.data) {
 }
 }).catch(error => { dialog.showErrorBox('Soryn · démarrage impossible', error.message); app.quit(); });
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => { activeWork?.cancel?.(); sync?.stop().catch(() => {}); });
+app.on('before-quit', () => { clearInterval(accountTimer);activeWork?.cancel?.(); sync?.stop().catch(() => {}); });
