@@ -18,6 +18,8 @@ Le compte pseudo/mot de passe permet de fusionner les références de titres, pl
 
 Le service utilise Render gratuit et Supabase gratuit, sans abonnement payant autorisé. Soryn n'ajoute pas de quota d'écoute ni de date d'expiration de l'application. Les limites et politiques des hébergeurs s'appliquent néanmoins : sommeil à froid Render, heures gratuites partagées entre services, mise en pause éventuelle Supabase, stockage et trafic gratuits limités. Une disponibilité permanente ou illimitée ne peut donc pas être garantie. Les sessions expirent après 30 jours et nécessitent une reconnexion ; la bibliothèque locale reste utilisable.
 
+Service déployé : `https://soryn-accounts.onrender.com`, PostgreSQL persistant configuré. Sept suites backend/clients passent. Le parcours Electron complet passe aussi contre ce service HTTPS et la vraie base Supabase : création, modification via un second client, fusion, persistance locale vérifiée sur disque, redémarrage/DPAPI, déconnexion, reconnexion et suppression du compte sans effacer les titres locaux. Les comptes de test sont supprimés. Cette preuve Windows ne remplace pas la compilation et les tests natifs iPhone.
+
 ## Tests reproductibles
 
 ```powershell

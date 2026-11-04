@@ -5,12 +5,12 @@ import {join,resolve} from 'node:path';
 import {randomBytes,randomUUID} from 'node:crypto';
 import assert from 'node:assert/strict';
 const directory=await mkdtemp(join(process.env.TEMP,'soryn-account-ui-'));
-const output=resolve('test-output/accounts');await mkdir(output,{recursive:true});
-const env={...process.env,SORYN_ACCOUNT_TEST_URL:'http://127.0.0.1:48765'};delete env.ELECTRON_RUN_AS_NODE;
+const output=resolve(process.env.SORYN_ACCOUNT_TEST_OUTPUT||'test-output/accounts');await mkdir(output,{recursive:true});
+const env={...process.env,SORYN_ACCOUNT_TEST_URL:process.env.SORYN_ACCOUNT_TEST_URL||'http://127.0.0.1:48765'};delete env.ELECTRON_RUN_AS_NODE;
 const executablePath=process.env.SORYN_TEST_EXE||resolve('node_modules/electron/dist/electron.exe');
 const args=[...(process.env.SORYN_TEST_EXE?[]:['.']),'--test-data',directory];
 const username='ui_'+randomBytes(7).toString('hex'),password=randomBytes(24).toString('base64url');
-const checks=[],errors=[];let app,page;
+const checks=[],errors=[];let app,page,peerToken;
 const launch=async()=>{app=await electron.launch({executablePath,args,env,timeout:60000});page=await app.firstWindow();page.on('pageerror',e=>errors.push(e.message));await page.waitForSelector('.home-heading h1');};
 const peerCall=async(action,body,token)=>{const r=await fetch(env.SORYN_ACCOUNT_TEST_URL+'/v1/accounts/'+action,{method:'POST',headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},body:JSON.stringify(body)});assert.equal(r.status,200);return r.json();};
 try{
@@ -19,20 +19,22 @@ try{
   await page.click('.sidebar [data-view=account]');await page.waitForSelector('#account-register');await page.screenshot({path:join(output,'optional.png')});
   checks.push('anonymous library and favorites remain usable without signing in');
   await page.click('#account-register');await page.fill('#account-username',username);await page.fill('#account-password',password);await page.click('#modal-actions button');
-  await page.waitForSelector('#account-sync',{timeout:20000});await page.waitForFunction(async()=>{const s=await window.soryn.call('state');return s.account.lastSync&&!s.account.busy;});
+  await page.waitForSelector('#account-sync',{timeout:20000});await page.waitForFunction(()=>!document.querySelector('#modal').open&&document.querySelector('.account-status')?.textContent==='Bibliothèque synchronisée avec ton compte');
   checks.push('real registration dialog and protected Windows session storage succeed');
   const peer=await peerCall('login',{username,password}),deviceID=randomUUID().toUpperCase();
+  peerToken=peer.token;
   let reply=await peerCall('sync',{protocol:1,deviceID,requestID:randomUUID().toUpperCase(),snapshot:{version:1,tracks:[],playlists:[],favorites:[],history:[],followedArtists:[]}},peer.token);
   assert.equal(reply.snapshot.favorites.length,1);reply.snapshot.playlists[0].name='Depuis un autre appareil';reply.snapshot.favorites=[];
   await peerCall('sync',{protocol:1,deviceID,requestID:randomUUID().toUpperCase(),acknowledgedRequestID:reply.requestID,snapshot:reply.snapshot},peer.token);
-  await page.click('#account-sync');await page.waitForFunction(async()=>{const s=await window.soryn.call('state');return s.library.playlists[0].name==='Depuis un autre appareil'&&s.library.favorites.length===0;});
+  await page.click('#account-sync');await page.waitForFunction(()=>document.querySelector('.account-status')?.textContent==='Bibliothèque synchronisée avec ton compte'&&document.querySelector('.playlist-link strong')?.textContent==='Depuis un autre appareil'&&document.querySelector('#favorite-count')?.textContent==='0');
+  assert.equal(JSON.parse(await readFile(join(directory,'library.json'),'utf8')).playlists[0].name,'Depuis un autre appareil');
   await page.screenshot({path:join(output,'connected.png')});checks.push('remote playlist rename and favorite removal appear in the real app');
   const disk=await readFile(join(directory,'account-session.dat'));assert.equal(disk.includes(Buffer.from(peer.token)),false);assert.equal(disk.includes(Buffer.from(username)),false);
   await app.close();app=null;await launch();await page.click('.sidebar [data-view=account]');await page.waitForSelector('#account-sync');checks.push('DPAPI session survives a real application restart');
   await page.click('#account-logout');await page.waitForSelector('#account-login');assert.equal((await page.evaluate(()=>window.soryn.call('state'))).library.playlists[0].name,'Depuis un autre appareil');
   checks.push('logout retains the full local library');
   await page.click('#account-login');await page.fill('#account-username',username);await page.fill('#account-password',password);await page.click('#modal-actions button');await page.waitForSelector('#account-delete');
-  await page.waitForFunction(async()=>!(await window.soryn.call('state')).account.busy);await page.click('#account-delete');await page.fill('#delete-account-password',password);await page.click('#modal-actions button');await page.waitForSelector('#account-login');
+  await page.waitForFunction(()=>!document.querySelector('#modal').open&&document.querySelector('.account-status')?.textContent==='Bibliothèque synchronisée avec ton compte');await page.click('#account-delete');await page.fill('#delete-account-password',password);await page.click('#modal-actions button');await page.waitForSelector('#account-login');
   assert.equal((await page.evaluate(()=>window.soryn.call('state'))).library.tracks.length,4);checks.push('account deletion removes cloud data without deleting local tracks');
   assert.deepEqual(errors,[]);await writeFile(join(output,'ui-results.json'),JSON.stringify({passed:checks,rendererErrors:errors},null,2));console.log(JSON.stringify({passed:checks,rendererErrors:errors},null,2));
-}catch(error){if(page){await page.screenshot({path:join(output,'failure.png')});console.error(await page.locator('#toast').textContent());}console.error({checks,errors});throw error;}finally{await app?.close();}
+}catch(error){if(page){await page.screenshot({path:join(output,'failure.png')});console.error(await page.locator('#toast').textContent());}console.error({checks,errors});throw error;}finally{await app?.close();if(peerToken)try{await peerCall('delete',{password},peerToken);}catch{/* Already deleted by the UI, or service offline. */}}

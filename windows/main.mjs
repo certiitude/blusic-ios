@@ -249,4 +249,12 @@ if (store.data) {
 }
 }).catch(error => { dialog.showErrorBox('Soryn · démarrage impossible', error.message); app.quit(); });
 app.on('window-all-closed', () => app.quit());
-app.on('before-quit', () => { clearInterval(accountTimer);activeWork?.cancel?.(); sync?.stop().catch(() => {}); });
+let quitAfterSave=false;
+app.on('before-quit', event => {
+  clearInterval(accountTimer);activeWork?.cancel?.();sync?.stop().catch(()=>{});
+  if(quitAfterSave||!store)return;
+  event.preventDefault();
+  // A sync updates memory before its atomic file write completes. Closing the
+  // window during that write must not silently discard the latest library.
+  store.pending.then(()=>{quitAfterSave=true;app.quit();}).catch(error=>dialog.showErrorBox('Bibliothèque non enregistrée','Soryn reste ouvert pour éviter de perdre tes modifications. '+error.message));
+});

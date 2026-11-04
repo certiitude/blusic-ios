@@ -8,6 +8,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {Accounts,accountHandler,hashPassword,verifyPassword,username} from '../accounts.mjs';
 import {seed,sharedSnapshot} from '../../windows/core/library.mjs';
+import {databaseOptions} from '../database.mjs';
 
 test('passwords use salted scrypt, username validation is bounded and case-insensitive',async()=>{
   assert.equal(username('Soryn_Fan'),'soryn_fan');for(const value of ['ab','name with spaces','<script>','a'.repeat(25)])assert.throws(()=>username(value));
@@ -28,7 +29,8 @@ test('real PostgreSQL storage and HTTP accounts: isolation, authentication, dura
   const snapshot=sharedSnapshot(seed()),deviceA=randomUUID(),deviceB=randomUUID();snapshot.playlists[0].name='Mes titres depuis le PC';snapshot.favorites=[snapshot.tracks[0].id];
   // Swift UUID.uuidString uses uppercase, PostgreSQL returns lowercase UUIDs.
   const packet=(deviceID,snapshot,ack)=>({protocol:1,deviceID:deviceID.toUpperCase(),requestID:randomUUID().toUpperCase(),snapshot,acknowledgedRequestID:ack});
-  const a=await call('sync',packet(deviceA,snapshot),token);assert.equal(a.status,200);assert.equal(a.body.snapshot.favorites.length,1);
+  const firstPacket=packet(deviceA,snapshot),a=await call('sync',firstPacket,token);assert.equal(a.status,200);assert.equal(a.body.snapshot.favorites.length,1);
+  const sameRequest=await call('sync',firstPacket,token);assert.deepEqual(sameRequest.body,a.body,'Uppercase Swift request IDs must be idempotent too');
   const empty=()=>({version:1,tracks:[],playlists:[],favorites:[],history:[],followedArtists:[],settings:{},queue:[]});
   const other=await call('sync',packet(randomUUID(),empty()),second.body.token);assert.equal(other.status,200);assert.equal(other.body.snapshot.tracks.length,0);
   const b=await call('sync',packet(deviceB,empty()),token);assert.equal(b.body.snapshot.playlists[0].name,'Mes titres depuis le PC');
@@ -54,4 +56,19 @@ test('service without durable storage refuses registration rather than accepting
   const server=createServer(accountHandler(undefined,{allowHTTP:true}));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>server.close(resolve)));
   const base=`http://127.0.0.1:${server.address().port}`;const health=await(await fetch(base+'/health')).json();assert.equal(health.accounts,false);
   const r=await fetch(base+'/v1/accounts/register',{method:'POST',body:JSON.stringify({username:'Tester',password:'safe password 123'})});assert.equal(r.status,503);
+});
+test('production transport rejects HTTP and browser origins; health exposes no credentials',async t=>{
+  const server=createServer(accountHandler(undefined,{trustProxy:true}));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const base=`http://127.0.0.1:${server.address().port}`;
+  const health=await fetch(base+'/health');assert.equal(health.status,200);assert.deepEqual(await health.json(),{ok:true,accounts:false,persistent:false});assert.equal(health.headers.get('cache-control'),'no-store');
+  assert.equal((await fetch(base+'/v1/accounts/register',{method:'POST',body:'{}'})).status,400);
+  assert.equal((await fetch(base+'/v1/accounts/register',{method:'POST',headers:{Origin:'https://unrelated.example','X-Forwarded-Proto':'https'},body:'{}'})).status,403);
+  assert.equal((await fetch(base+'/v1/accounts/register',{method:'POST',headers:{'X-Forwarded-Proto':'https'},body:'{}'})).status,503);
+});
+test('database TLS cannot be weakened by URL SSL options',()=>{
+  const options=databaseOptions('postgresql://test:placeholder@aws-0-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=disable');
+  assert.equal(options.ssl.rejectUnauthorized,true);assert.match(options.ssl.ca,/BEGIN CERTIFICATE/);assert.equal(new URL(options.connectionString).searchParams.has('sslmode'),false);
+  assert.equal(databaseOptions('postgresql://test:placeholder@example.com/db').ssl.rejectUnauthorized,true);
+  assert.throws(()=>databaseOptions('http://example.com'));
 });

@@ -8,7 +8,7 @@ async function verify(path){const source=await readFile(path),packed=extractFile
 for(const path of ['main.mjs','preload.cjs'])await verify(path);
 for(const folder of ['core','ui','vendor'])for(const name of await readdir(folder))await verify(join(folder,name));
 const config=relayConfiguration(JSON.parse(extractFile(archive,'assets/relay-config.json').toString()));
-const files=listPackage(archive),forbidden=files.filter(path=>/^\\(?:test-output|test|tools|resources)\\/.test(path)||/pairing\.dat|library\.json|\.env$/i.test(path));
+const files=listPackage(archive),forbidden=files.filter(path=>/^\\(?:test-output|test|tools|resources|account-server)\\/.test(path)||/pairing\.dat|account-session\.dat|account-device\.json|deployment-private|library\.json|\.env$/i.test(path));
 const version=JSON.parse(extractFile(archive,'package.json').toString()).version;
 const result={version,sourceMatches:mismatches.length===0,mismatches,forbidden,relayConfigured:true,relayHost:new URL(config.url).hostname,applicationAccessExpires:false,configurationContainsOnlyApplicationAccess:true,files:files.length};
 const raw=JSON.parse(extractFile(archive,'assets/relay-config.json').toString());if(Object.keys(raw).some(key=>!['url','applicationAccess','expiresAt'].includes(key)))throw Error('Unexpected bundled relay configuration fields');
