@@ -113,7 +113,13 @@ final class BlusicTests: XCTestCase {
         let before = SorynSharedLibrary(library)
         var deduplicated = before
         deduplicated.tracks[0].id = canonical
-        deduplicated.playlists = deduplicated.playlists.map { p in var p = p; p.trackIDs = p.trackIDs.map { $0 == old.id ? canonical : $0 }; return p }
+        // The Node server canonicalises *all* copies of the same source/location.
+        // This fixture previously renamed one ID but left another identical song,
+        // which was not a response the actual server could produce.
+        let duplicateIDs = Set(before.tracks.filter { $0.source == old.source && $0.location == old.location }.map(\.id))
+        deduplicated.tracks.removeAll { duplicateIDs.contains($0.id) }
+        deduplicated.playlists = deduplicated.playlists.map { p in var p = p; p.trackIDs = p.trackIDs.map { duplicateIDs.contains($0) ? canonical : $0 }; return p }
+        deduplicated.favorites = Set(deduplicated.favorites.map { duplicateIDs.contains($0) ? canonical : $0 })
         library.savedQueue = [old.id]; library.savedCurrentID = old.id
         library.favorites.insert(old.id) // A favorite added during the request.
         deduplicated.apply(to: library, sent: before)
