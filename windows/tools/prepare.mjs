@@ -1,10 +1,14 @@
-import {mkdir, copyFile, cp} from 'node:fs/promises';
+import {mkdir, copyFile, cp,readFile,writeFile} from 'node:fs/promises';
+import {relayConfiguration} from '../core/online-audio.mjs';
 import {fileURLToPath} from 'node:url';
 import {dirname, resolve} from 'node:path';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const out = resolve(root, 'windows');
 await mkdir(resolve(out, 'vendor'), {recursive: true});
 await mkdir(resolve(out, 'assets'), {recursive: true});
+const configFile=resolve(out,'assets/relay-config.json');
+if(process.env.SORYN_RELAY_ACCESS)await writeFile(configFile,JSON.stringify(relayConfiguration({url:process.env.SORYN_RELAY_URL||'https://blusic-audio-relay.onrender.com',applicationAccess:process.env.SORYN_RELAY_ACCESS,expiresAt:0})));
+try{relayConfiguration(JSON.parse(await readFile(configFile,'utf8')));}catch{throw Error('Configure the bundled application relay before building. No key is printed.');}
 for (const name of ['provider.mjs', 'sabr.mjs', 'origin.mjs', 'guest-http.mjs', 'audio-quality.mjs']) {
   await copyFile(resolve(root, 'relay', name), resolve(out, 'vendor', name));
 }

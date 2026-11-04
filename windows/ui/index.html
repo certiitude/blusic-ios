@@ -7,51 +7,52 @@
   <title>Soryn — La musique. Rien d’autre.</title>
   <link rel="stylesheet" href="styles.css">
 </head>
-<body>
+<body class="hide-panel">
+  <img id="ambient-art" class="ambient-art" src="../assets/cover-night.png" alt="" aria-hidden="true">
+  <div class="titlebar"><span>Soryn</span><div class="window-controls"><button id="minimize" aria-label="Réduire">—</button><button id="maximize" aria-label="Agrandir">□</button><button id="close" aria-label="Fermer">×</button></div></div>
   <div class="app-shell">
     <aside class="sidebar">
-      <a class="brand" href="#home" aria-label="Soryn accueil">soryn<span>.</span></a>
-      <div class="eyebrow nav-caption">TON ESPACE</div>
+      <a class="brand" href="#home" data-view="home" aria-label="Soryn accueil"><img src="../assets/mascot.png" alt="">soryn<span>.</span></a>
+      <div class="eyebrow nav-caption">DÉCOUVRIR</div>
       <nav id="navigation" aria-label="Navigation principale">
         <button data-view="home" class="nav-item active"><i data-icon="home"></i>Accueil</button>
         <button data-view="explore" class="nav-item"><i data-icon="search"></i>Explorer</button>
         <button data-view="library" class="nav-item"><i data-icon="library"></i>Bibliothèque</button>
-        <button data-view="favorites" class="nav-item"><i data-icon="heart"></i>Favoris</button>
-        <button data-view="downloads" class="nav-item"><i data-icon="download"></i>Hors ligne</button>
+        <div class="eyebrow collections-caption">COLLECTIONS</div>
+        <button data-view="favorites" class="nav-item"><i data-icon="heart"></i>Coups de cœur<span id="favorite-count" class="nav-count">0</span></button>
+        <button data-view="downloads" class="nav-item"><i data-icon="download"></i>Téléchargements</button>
       </nav>
-      <div class="playlist-caption"><span class="eyebrow">TES PLAYLISTS</span><button id="new-playlist" class="icon-button" aria-label="Créer une playlist"><i data-icon="plus"></i></button></div>
+      <div class="playlist-caption"><span class="eyebrow">TES PLAYLISTS</span><button id="new-playlist" class="icon-button" aria-label="Créer une playlist" title="Créer une playlist"><i data-icon="plus"></i></button></div>
       <div id="playlist-navigation" class="playlist-navigation"></div>
       <button id="import-button" class="import-button"><i data-icon="plus"></i>Importer des fichiers</button>
       <div class="sidebar-bottom">
-        <div class="little-ghost"><img src="../assets/mascot.png" alt="Mascotte Soryn"></div>
-        <p>Moins de bruit.<br><span>Plus de musique.</span></p>
         <button data-view="sync" class="nav-item"><i data-icon="sync"></i>Synchroniser <span class="status-dot" id="sync-dot"></span></button>
         <button data-view="settings" class="nav-item"><i data-icon="settings"></i>Réglages</button>
+        <span class="sidebar-signature">La musique. Rien d’autre.</span>
       </div>
     </aside>
     <div class="workspace">
       <header class="topbar">
         <div class="history-controls"><button id="back" class="icon-button" aria-label="Retour"><i data-icon="left"></i></button><button id="forward" class="icon-button" aria-label="Suivant dans la navigation"><i data-icon="right"></i></button></div>
-        <form id="search-form" class="search-box" role="search"><i data-icon="search"></i><input id="search" placeholder="Un titre, un artiste, une envie…" aria-label="Rechercher sur YouTube Music" autocomplete="off"><kbd>Ctrl K</kbd></form>
-        <span class="device-label"><i data-icon="desktop"></i> SUR CE PC</span>
-        <button data-view="sync" class="profile-button" aria-label="Synchronisation iPhone"><i data-icon="phone"></i></button>
-        <div class="window-controls"><button id="minimize" aria-label="Réduire">—</button><button id="maximize" aria-label="Agrandir">□</button><button id="close" aria-label="Fermer">×</button></div>
+        <form id="search-form" class="search-box" role="search"><i data-icon="search"></i><input id="search" placeholder="Rechercher un titre, un artiste…" aria-label="Rechercher sur YouTube Music" autocomplete="off"><kbd>Ctrl K</kbd></form>
+        <span class="device-label"><i data-icon="desktop"></i>Écoute sur ce PC</span>
+        <button data-view="sync" class="profile-button" aria-label="Synchronisation iPhone" title="Synchroniser avec ton iPhone"><i data-icon="phone"></i></button>
       </header>
       <main id="content" tabindex="-1"></main>
     </div>
     <aside id="now-panel" class="now-panel">
-      <div class="now-heading"><span class="eyebrow">EN LECTURE</span><i data-icon="wave"></i></div>
+      <div class="now-heading"><span>En lecture</span><button id="panel-close" class="icon-button" aria-label="Fermer le panneau En lecture" title="Fermer">×</button></div>
       <img id="now-art" class="now-art" src="../assets/cover-night.png" alt="">
       <div class="now-title-row"><div><h2 id="now-title">À ton rythme.</h2><p id="now-artist">Choisis ton premier morceau</p></div><button id="now-like" class="icon-button" aria-label="Ajouter le titre actuel aux favoris"><i data-icon="heart"></i></button></div>
       <span id="audio-quality" class="quality-label">AUDIO LOCAL · SANS PUBLICITÉ AJOUTÉE</span>
       <div class="queue-heading"><h3>À suivre</h3><span id="queue-count">0 titre</span></div>
       <div id="queue-list" class="queue-list"><p class="muted">Ta prochaine parenthèse commence ici.</p></div>
-      <div class="listening-note"><i data-icon="wave"></i><p>La musique.<br><strong>Rien d’autre.</strong></p><span>SORYN</span></div>
+      <div class="listening-note"><i data-icon="desktop"></i><p>Sortie audio<br><strong>Ce PC · Windows</strong></p><i data-icon="wave"></i></div>
     </aside>
     <footer class="player">
       <div class="player-track"><img id="player-art" src="../assets/logo.png" alt=""><div><strong id="player-title">Un moment pour toi</strong><span id="player-artist">Soryn est prêt.</span></div><button id="player-like" class="icon-button" aria-label="Favori"><i data-icon="heart"></i></button></div>
       <div class="transport"><div class="transport-buttons"><button id="shuffle" class="icon-button" aria-label="Lecture aléatoire" aria-pressed="false"><i data-icon="shuffle"></i></button><button id="previous" class="icon-button" aria-label="Titre précédent"><i data-icon="previous"></i></button><button id="play" class="play-button" aria-label="Lecture"><i data-icon="play"></i></button><button id="next" class="icon-button" aria-label="Titre suivant"><i data-icon="next"></i></button><button id="repeat" class="icon-button" aria-label="Répéter" aria-pressed="false"><i data-icon="repeat"></i></button></div><div class="timeline"><span id="elapsed">0:00</span><input id="seek" type="range" min="0" max="100" step="0.1" value="0" aria-label="Position de lecture"><span id="duration">0:00</span></div></div>
-      <div class="player-extras"><button id="lyrics" class="icon-button" aria-label="Paroles enregistrées"><i data-icon="lyrics"></i></button><button id="queue-toggle" class="icon-button" aria-label="Afficher ou masquer la file"><i data-icon="queue"></i></button><i data-icon="volume"></i><input id="volume" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Volume"></div>
+      <div class="player-extras"><button id="lyrics" class="icon-button" aria-label="Paroles enregistrées" title="Paroles"><i data-icon="lyrics"></i></button><button id="queue-toggle" class="icon-button" aria-label="Afficher ou masquer la file" aria-expanded="false" aria-controls="now-panel" title="En lecture et file d’attente"><i data-icon="queue"></i></button><i data-icon="volume"></i><input id="volume" type="range" min="0" max="1" step="0.01" value="0.8" aria-label="Volume"></div>
     </footer>
   </div>
   <div id="toast" class="toast" role="status" hidden></div>

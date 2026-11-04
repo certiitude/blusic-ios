@@ -1,7 +1,7 @@
 {
   "name": "soryn-desktop",
   "productName": "Soryn",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "La musique. Rien d’autre. Lecteur Soryn pour Windows.",
   "author": "Certiitude",
   "license": "SEE LICENSE IN LICENSE.md",
@@ -12,7 +12,8 @@
     "start": "electron .",
     "test": "node --test test/*.test.mjs",
     "build": "node tools/prepare.mjs && electron-builder --win nsis portable --x64",
-    "smoke": "node tools/smoke.mjs"
+    "smoke": "node tools/smoke.mjs",
+    "test:ui": "node tools/ui-check.mjs"
   },
   "dependencies": {
     "youtubei.js": "18.3.0",

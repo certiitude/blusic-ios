@@ -10,7 +10,8 @@ import {parseFile} from 'music-metadata';
 import QRCode from 'qrcode';
 import {LibraryStore, clone, validateLibrary, mergeLibraries, swiftNow, defaultSettings} from './core/library.mjs';
 import {SyncServer} from './core/sync.mjs';
-import {search} from './core/catalog.mjs';
+import {search,catalogSearch,browse} from './core/catalog.mjs';
+import {relayConfiguration,DEFAULT_INVIDIOUS} from './core/online-audio.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 protocol.registerSchemesAsPrivileged([{scheme: 'soryn-media', privileges: {standard: true, secure: true, stream: true, supportFetchAPI: true}}]);
@@ -19,7 +20,7 @@ const smokeIndex = process.argv.indexOf('--test-data');
 if (smokeIndex >= 0) app.setPath('userData', resolve(process.argv[smokeIndex + 1]));
 if (!app.requestSingleInstanceLock()) app.quit();
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
-let win, store, sync, downloads = {}, activeWork, playbackID;
+let win, store, sync, downloads = {}, activeWork, playbackID, bundledRelay;
 const files = new Map();
 const audioDirectory = () => join(app.getPath('userData'), 'Audio');
 const downloadDirectory = () => join(app.getPath('userData'), 'Downloads');
@@ -37,16 +38,16 @@ function localPath(track) {
 }
 async function state() {
   const data = clone(store.data), available = [];
-  for (const t of data.tracks) { const path = localPath(t); if (path && await stat(path).catch(() => null)) available.push(t.id); }
+  for (const t of data.tracks) { const path = localPath(t); if ((t.source==='bundled'||t.source==='local'||downloads[t.id]) && path && await stat(path).catch(() => null)) available.push(t.id); }
   const artwork = Object.fromEntries(Object.entries(downloads).filter(([,e]) => safeName(e.artwork)).map(([id,e])=>[id,pathToFileURL(join(downloadDirectory(),e.artwork)).href]));
-  return {library: data, downloads: Object.keys(downloads), artwork, available, syncActive: !!sync.server, version: app.getVersion()};
+  return {library: data, downloads: Object.keys(downloads), artwork, available, syncActive: !!sync.server, version: app.getVersion(),audioSources:{localResolver:true,relayConfigured:!!bundledRelay,relayHost:bundledRelay?new URL(bundledRelay.url).hostname:null,invidious:DEFAULT_INVIDIOUS.map(url=>new URL(url).hostname)}};
 }
 async function prepare(track) {
   const path = localPath(track);
   if (path && await stat(path).catch(() => null)) return {url: mediaURL(track), duration: track.duration, offline: true};
   if (!['invidious', 'youtube'].includes(track.source) || !/^[\w-]{11}$/.test(track.location)) throw Error('Fichier absent sur ce PC. Importe-le ici ou retrouve le titre dans Explorer.');
   if (activeWork) throw Error('Une préparation est déjà en cours. Annule-la avant de recommencer.');
-  const worker = new Worker(new URL('./core/audio-worker.mjs', import.meta.url), {workerData: {videoID: track.location, duration: track.duration}});
+  const worker = new Worker(new URL('./core/audio-worker.mjs', import.meta.url), {workerData: {videoID: track.location, duration: track.duration,relay:bundledRelay}});
   const work = {worker}; activeWork = work;
   const output = join(app.getPath('userData'), 'Cache', track.id + '.m4a');
   try {
@@ -63,11 +64,12 @@ async function prepare(track) {
       if (files.size <= 8) break;
       if (id !== playbackID && id !== track.id) { files.delete(id); await rm(path,{force:true}).catch(()=>{}); }
     }
-    return {url: mediaURL(track), duration: result.duration, bitrate: result.bitrate, offline: false};
+    return {url: mediaURL(track), duration: result.duration, bitrate: result.bitrate, offline: false,source:result.source};
   } finally { if (activeWork === work) activeWork = null; setTimeout(() => worker.terminate(), 2000).unref(); }
 }
 
 app.whenReady().then(async () => {
+try{bundledRelay=relayConfiguration(JSON.parse(await readFile(join(root,'assets/relay-config.json'),'utf8')));}catch{bundledRelay=null;}
 await Promise.all(['Audio', 'Downloads', 'Cache'].map(name => mkdir(join(app.getPath('userData'), name), {recursive: true})));
 // Only scratch files created by this app are discarded; never touch imported audio.
 for (const name of await readdir(join(app.getPath('userData'),'Cache'))) {
@@ -104,6 +106,15 @@ if (store.data) {
     switch (action) {
       case 'state': return state();
       case 'search': return search(input);
+      case 'catalog-search': return catalogSearch(input);
+      case 'catalog-browse': return browse(input);
+      case 'catalog-save': {
+        if(typeof input?.name!=='string'||!input.name.trim()||input.name.length>2000||!Array.isArray(input.tracks)||input.tracks.length>5000)throw Error('Sélection invalide.');
+        validateLibrary({...store.data,tracks:input.tracks});
+        const tracks=input.tracks.map(t=>store.add(t));
+        const playlist={id:randomUUID().toUpperCase(),name:input.name,detail:'Importée de YouTube Music',trackIDs:[...new Set(tracks.map(t=>t.id))],createdAt:swiftNow(),symbol:'music.note.list'};
+        await store.update(s=>s.playlists.push(playlist));emit();return clone(playlist);
+      }
       case 'save-track': {
         validateLibrary({...store.data, tracks: [input]});
         const track = store.add(input); await store.save(); emit(); return clone(track);

@@ -12,7 +12,7 @@ const executablePath=process.env.SORYN_TEST_EXE||resolve('../dist/windows-soryn/
 let app;
 try{
   app=await electron.launch({executablePath,args:['--test-data',directory],env,timeout:60000});
-  const page=await app.firstWindow();await page.waitForSelector('.hero h1');
+  const page=await app.firstWindow();await page.waitForSelector('.home-heading h1');
   await app.evaluate(({dialog},paths)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:paths});},[resolve('../Blusic/Audio/bleu-nuit.wav'),invalid]);
   const result=await page.evaluate(()=>window.soryn.call('import-audio'));assert.equal(result.count,1);assert.equal(result.errors.length,1);
   let state=await page.evaluate(()=>window.soryn.call('state'));const local=state.library.tracks.find(t=>t.source==='local');assert.ok(local);assert.ok((await stat(join(directory,'Audio',local.location))).size>1000);

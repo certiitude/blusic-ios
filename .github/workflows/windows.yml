@@ -10,6 +10,7 @@ on:
       - 'Blusic/Assets.xcassets/cover-*/**'
       - 'relay/*.mjs'
       - '.github/workflows/windows.yml'
+      - 'tools/configure_windows_relay.py'
 permissions:
   contents: read
 jobs:
@@ -38,6 +39,9 @@ jobs:
           npm ci --ignore-scripts
           npm run build
       - name: Build installer and portable application
+        env:
+          SORYN_RELAY_URL: ${{ vars.BLUSIC_IOS_RELAY_URL }}
+          SORYN_RELAY_ACCESS: ${{ secrets.BLUSIC_IOS_RELAY_ACCESS }}
         run: npm run build
       - uses: actions/upload-artifact@v4
         with:

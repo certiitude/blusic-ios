@@ -12,7 +12,7 @@ try{
   const executablePath=process.env.SORYN_TEST_EXE||resolve('node_modules/electron/dist/electron.exe');
   app=await electron.launch({executablePath,args:[...(process.env.SORYN_TEST_EXE?[]:['.']),'--test-data',directory],env,timeout:60000});
   const page=await app.firstWindow();page.on('pageerror',e=>errors.push(e.message));
-  await page.waitForSelector('.hero h1');
+  await page.waitForSelector('.home-heading h1');
   assert.match(await page.title(),/Soryn/);assert.equal(await page.locator('.album-card').count(),4);results.push('home renders four original tracks');
   await page.screenshot({path:join(output,'windows-home.png')});
   await page.click('#hero-play');await page.waitForFunction(()=>!document.querySelector('#audio').paused&&document.querySelector('#audio').currentTime>0.2,{timeout:20000});
@@ -50,7 +50,8 @@ try{
   await page.click('[data-view=library]');await page.waitForSelector(`[data-play="${live.id}"]`);await page.click(`[data-play="${live.id}"]`);
   await page.waitForFunction(()=>!document.querySelector('#audio').paused&&document.querySelector('#audio').currentTime>0.2,null,{timeout:75000});
   await page.locator('#seek').evaluate(n=>{n.value=25;n.dispatchEvent(new Event('input'));});await page.waitForFunction(()=>document.querySelector('#audio').currentTime>30);
-  await page.click('#play');results.push('live Stephanie AAC prepared on Windows, decoded and seeked to 30 seconds');
+  const onlineSource=await page.locator('#audio-quality').getAttribute('title');
+  await page.click('#play');results.push('live Stephanie AAC prepared on Windows, decoded and seeked to 30 seconds via '+onlineSource);
   await page.evaluate(id=>window.soryn.call('download',id),live.id);
   const downloaded=await page.evaluate(()=>window.soryn.call('state'));assert.ok(downloaded.downloads.includes(live.id));
   // Remove network access only in the isolated test process, then play the persisted download.
@@ -63,7 +64,7 @@ try{
   await app.close();app=null;
   const saved=JSON.parse(await readFile(join(directory,'library.json'),'utf8'));assert.ok(saved.playlists.some(p=>p.name==='Nuits bleues'));results.push('saved library survives application shutdown');
   app=await electron.launch({executablePath,args:[...(process.env.SORYN_TEST_EXE?[]:['.']),'--test-data',directory],env,timeout:60000});
-  const reopened=await app.firstWindow();await reopened.waitForSelector('.hero h1');
+  const reopened=await app.firstWindow();await reopened.waitForSelector('.home-heading h1');
   await app.evaluate(()=>{globalThis.fetch=()=>Promise.reject(Error('Network disabled after restart'));});
   const afterRestart=await reopened.evaluate(()=>window.soryn.call('state'));assert.ok(afterRestart.downloads.includes(live.id));
   await reopened.click('[data-view=library]');await reopened.click(`[data-play="${live.id}"]`);
