@@ -28,6 +28,9 @@ pas rendus accessibles par ce mode.
 - Les téléchargements Opus sont séparés des téléchargements AAC existants.
 - Un secours AAC après un échec Opus ne remplace pas un téléchargement déjà présent.
 - Une suppression depuis la liste Téléchargements ne retire que la variante affichée.
+- Pour ajouter Opus à un titre déjà téléchargé en AAC, son menu propose
+  **Télécharger aussi en Opus** quand le mode Opus est sélectionné. L’ancien
+  téléchargement reste prioritaire hors ligne tant que la variante Opus n’existe pas.
 - Bibliothèque, playlists, favoris, comptes facultatifs et imports personnels conservés.
 - Identifiant `app.blusic.ios` et dossiers historiques inchangés. Mettre à jour avec
   la même signature Apple ; sauvegarder avant toute réinstallation, sans supprimer

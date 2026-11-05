@@ -61,6 +61,9 @@ final class BlusicTests: XCTestCase {
         var fallback = aac; fallback.quality = .high
         let kept = try await reopened.save(fallback, track: track, preferredQuality: .opus)
         XCTAssertEqual(kept.filename, oldURL.lastPathComponent, "AAC fallback must preserve the existing download")
+        try Data(repeating: 0, count: Int(record.bytes)).write(to: restoredURL)
+        let damaged = try await reopened.audio(for: track, quality: .opus)
+        XCTAssertEqual(damaged?.codec, .aac, "An unreadable Opus file must not hide the intact AAC download")
         try await reopened.remove(record.id)
         let remaining = try await OfflineAudioStore(root: root).audio(for: track, quality: .opus)
         XCTAssertEqual(remaining?.codec, .aac, "Deleting only Opus must leave the AAC variant usable")
@@ -128,6 +131,7 @@ final class BlusicTests: XCTestCase {
         first.tracks.append(personal); first.settings.playbackRate = 1.5
         let username = "qa_" + UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(16)
         let password = UUID().uuidString + "-test-only"
+        let sharedPlaylistID = try XCTUnwrap(first.playlists.first?.id)
         await a.authenticate(username: username, password: password, create: true)
         XCTAssertTrue(a.signedIn, a.status); XCTAssertNotNil(a.lastSync, a.status)
         await b.authenticate(username: username, password: password, create: false)
@@ -135,10 +139,13 @@ final class BlusicTests: XCTestCase {
         XCTAssertEqual(second.tracks.first(where: { $0.id == personal.id })?.source, .unresolved)
         XCTAssertEqual(second.tracks.first(where: { $0.id == personal.id })?.location, "")
         let id = second.tracks[0].id
-        second.favorites.insert(id); second.playlists[0].name = "Renommée sur le second appareil"
+        // Each device has its own seeded playlist. Rename the same shared ID,
+        // not whichever distinct playlist happens to be first on that device.
+        let sharedIndex = try XCTUnwrap(second.playlists.firstIndex { $0.id == sharedPlaylistID })
+        second.favorites.insert(id); second.playlists[sharedIndex].name = "Renommée sur le second appareil"
         await b.sync(); await a.sync()
         XCTAssertTrue(first.favorites.contains(id), a.status)
-        XCTAssertEqual(first.playlists[0].name, "Renommée sur le second appareil")
+        XCTAssertEqual(first.playlists.first { $0.id == sharedPlaylistID }?.name, "Renommée sur le second appareil")
         XCTAssertEqual(first.tracks.first(where: { $0.id == personal.id })?.source, .local)
         XCTAssertEqual(first.tracks.first(where: { $0.id == personal.id })?.location, "personal.wav")
         XCTAssertEqual(first.settings.playbackRate, 1.5)

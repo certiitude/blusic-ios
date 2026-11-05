@@ -253,6 +253,11 @@ struct TrackActions: View {
         Button { player.enqueue(track, next: true) } label: { Label("Écouter ensuite", systemImage: "text.line.first.and.arrowtriangle.forward") }
         Button { player.enqueue(track) } label: { Label("Ajouter à la file", systemImage: "text.badge.plus") }
         if library.downloads.record(for: track) != nil {
+            if library.downloads.status(for: track)?.isActive == true {
+                Button { library.downloads.cancel(track) } label: { Label("Annuler le téléchargement Opus", systemImage: "xmark.circle") }
+            } else if library.downloads.canAddOpusVariant(for: track) {
+                Button { library.downloads.enqueue([track]) } label: { Label("Télécharger aussi en Opus", systemImage: "arrow.down.circle") }
+            }
             Button(role: .destructive) { Task { await library.downloads.remove(track) } } label: { Label("Supprimer le téléchargement", systemImage: "trash") }
         } else if library.downloads.status(for: track)?.isActive == true {
             Button { library.downloads.cancel(track) } label: { Label("Annuler le téléchargement", systemImage: "xmark.circle") }

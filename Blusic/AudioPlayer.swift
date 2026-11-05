@@ -913,6 +913,7 @@ actor AudioCache {
         guard expected > 0 else { return nil }
         do {
             try validate(file, expectedDuration: expected)
+            if codec == .opus, try AVAudioFile(forReading: file).fileFormat.streamDescription.pointee.mFormatID != kAudioFormatOpus { return nil }
             return InvidiousAudio(fileURL: file, bitrate: source.bitrate, instance: source.instance, duration: expected, provider: source.provider, quality: quality, codec: codec)
         } catch { return nil }
     }

@@ -192,6 +192,10 @@ final class OfflineDownloads {
         return library?.settings.audioQuality == .opus ? opus ?? standard : standard ?? opus
     }
     func status(for track: Track) -> OfflineDownloadStatus? { statuses[track.id.uuidString] }
+    func canAddOpusVariant(for track: Track) -> Bool {
+        library?.settings.audioQuality == .opus && [.invidious, .catalogReference].contains(track.source)
+            && records[OfflineAudioRecord.key(track, quality: .opus)] == nil
+    }
     func isAvailable(_ track: Track) -> Bool { track.isOffline || record(for: track) != nil }
     var totalBytes: Int64 { records.values.reduce(0) { $0 + $1.bytes } }
     var pendingCount: Int { statuses.values.filter(\.isActive).count }

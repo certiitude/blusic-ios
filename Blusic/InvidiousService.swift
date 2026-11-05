@@ -134,6 +134,10 @@ extension StreamingAudioLoading {
 struct InvidiousAudioLoader: StreamingAudioLoading {
     func invalidate(_ track: Track, settings: AppSettings) async {
         await InvidiousStreamCache.shared.invalidate(track, settings: settings)
+        if settings.audioQuality == .opus {
+            var fallback = settings; fallback.opusAudio = false; fallback.highQualityAudio = true
+            await InvidiousStreamCache.shared.invalidate(track, settings: fallback)
+        }
     }
     func load(_ track: Track, settings: AppSettings, progress: @escaping @Sendable (AudioLoadUpdate) -> Void) async throws -> InvidiousAudio {
         if settings.audioQuality == .opus {
