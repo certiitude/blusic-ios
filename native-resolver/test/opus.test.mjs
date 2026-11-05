@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {demuxOpusWebM,remuxOpusToCAF,preferredOpus,opusPacketFrames} from '../opus-caf.mjs';
+import {downloadOpusRanges} from '../direct-opus.mjs';
 const fixture=await readFile(new URL('./fixtures/opus-vbr.webm',import.meta.url));
 test('selects public original Opus 251, not lower quality, AAC or premium/DRM',()=>{
   const f={itag:251,has_audio:true,has_video:false,mime_type:'audio/webm; codecs="opus"',content_length:1000,bitrate:140000};
@@ -31,4 +32,20 @@ test('Opus packet duration follows RFC6716, including variable packet frame coun
   assert.equal(opusPacketFrames(Uint8Array.of(0xfb,3)),2880);
   assert.throws(()=>opusPacketFrames(Uint8Array.of(0xfb,0)));
   assert.throws(()=>opusPacketFrames(Uint8Array.of(0xfb,63)));
+});
+test('finite Opus downloads verify every byte boundary and reject rate limits or ignored ranges',async()=>{
+  const f={itag:251,has_audio:true,has_video:false,mime_type:'audio/webm; codecs="opus"',content_length:600000,bitrate:150000,url:'https://test.googlevideo.com/audio'};
+  const bytes=Buffer.alloc(600000,7),ranges=[];
+  const fetchFunction=async(url,init)=>{const [start,end]=new URL(url).searchParams.get('range').split('-').map(Number);ranges.push([start,end]);assert.equal(init.headers.Range,`bytes=${start}-${end}`);return new Response(bytes.subarray(start,end+1),{status:206,headers:{'Content-Range':`bytes ${start}-${end}/${bytes.length}`}});};
+  assert.deepEqual(Buffer.from(await downloadOpusRanges(f,{fetchFunction})),bytes);assert.equal(ranges.length,3);
+  await assert.rejects(()=>downloadOpusRanges(f,{fetchFunction:async()=>new Response('denied',{status:403})}),/403/);
+  await assert.rejects(()=>downloadOpusRanges(f,{fetchFunction:async()=>new Response(bytes)}),/ignorée/);
+  await assert.rejects(()=>downloadOpusRanges({...f,url:'http://test.googlevideo.com/audio'},{fetchFunction}));
+  await assert.rejects(()=>downloadOpusRanges({...f,url:'https://other.example/audio'},{fetchFunction}));
+});
+test('unknown-size clusters remux without dropping later clusters',()=>{
+  const data=Buffer.from(fixture),mark=Buffer.from([0x1f,0x43,0xb6,0x75]),start=data.indexOf(mark);assert.ok(start>0);
+  let n=1,mask=128;while(!(data[start+4]&mask)){mask>>=1;n++;}
+  data[start+4]=mask*2-1;for(let i=1;i<n;i++)data[start+4+i]=255;
+  assert.deepEqual(remuxOpusToCAF(data).data,remuxOpusToCAF(fixture).data);
 });

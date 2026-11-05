@@ -58,6 +58,60 @@ final class BlusicTests: XCTestCase {
         XCTAssertEqual(oldAAC?.codec, .aac)
         let oldURL = try XCTUnwrap(oldAAC?.fileURL)
         XCTAssertEqual(try Data(contentsOf: oldURL), try Data(contentsOf: aacURL), "An Opus download must not overwrite an existing AAC download")
+        var fallback = aac; fallback.quality = .high
+        let kept = try await reopened.save(fallback, track: track, preferredQuality: .opus)
+        XCTAssertEqual(kept.filename, oldURL.lastPathComponent, "AAC fallback must preserve the existing download")
+        try await reopened.remove(record.id)
+        let remaining = try await OfflineAudioStore(root: root).audio(for: track, quality: .opus)
+        XCTAssertEqual(remaining?.codec, .aac, "Deleting only Opus must leave the AAC variant usable")
+    }
+    func testOpusSettingPersistsWithoutChangingLegacyAACPreference() throws {
+        var settings = AppSettings(); settings.highQualityAudio = true; settings.opusAudio = true
+        var restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertEqual(restored.audioQuality, .opus)
+        restored.opusAudio = false
+        XCTAssertEqual(restored.audioQuality, .high)
+        let legacy = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(AppSettings()))
+        XCTAssertNil(legacy.opusAudio); XCTAssertEqual(legacy.audioQuality, .standard)
+    }
+    @MainActor func testOpusOfflineNativePlaybackAndSeekNeverCallsTheNetwork() async throws {
+        let url = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "opus-vbr", withExtension: "caf"))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("opus-playback-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let track = Track(title: "Opus instrumental", artist: "Soryn", duration: 4, source: .invidious, location: "opusfixture")
+        let storage = OfflineAudioStore(root: root)
+        _ = try await storage.save(InvidiousAudio(fileURL: url, bitrate: 204234, instance: URL(string: "https://www.youtube.com")!, duration: 4, quality: .opus, codec: .opus), track: track)
+        let library = LibraryStore(inMemory: true); library.settings.opusAudio = true
+        let calls = OfflineDownloadFixtureCounter(), loader = OfflineFixtureLoader(file: url, calls: calls, failures: [track.location])
+        library.downloads = OfflineDownloads(library: library, store: OfflineAudioStore(root: root), loader: loader)
+        let player = AudioPlayer(library: library, onlineLoader: loader)
+        defer { player.pause() }
+        player.play(track, in: [track])
+        for _ in 0..<40 { if player.firstAudioLatency != nil || player.error != nil { break }; try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertNil(player.error); XCTAssertTrue(player.isPlaying); XCTAssertNotNil(player.firstAudioLatency)
+        XCTAssertTrue(player.formatLabel.contains("Opus · VBR")); XCTAssertTrue(player.formatLabel.contains("204 kbit/s"))
+        player.seek(to: 2); try await Task.sleep(for: .milliseconds(300))
+        XCTAssertGreaterThanOrEqual(player.position, 1.9)
+        let network = await calls.locations; XCTAssertTrue(network.isEmpty)
+    }
+    @MainActor func testLiveOpusOriginalResolvesOnDeviceAndDecodesTheWholeSong() async throws {
+        let track = Track(title: "Stephanie", artist: "Test réseau", duration: 127, source: .invidious, location: "RFzfXv9wzfo")
+        // Strict Opus: no AAC fallback can turn this network test green.
+        let audio = try await NativeYouTubeiResolver.shared.resolve(track, quality: .opus)
+        defer { try? FileManager.default.removeItem(at: audio.fileURL) }
+        XCTAssertEqual(audio.codec, .opus); XCTAssertEqual(audio.quality, .opus)
+        let file = try AVAudioFile(forReading: audio.fileURL)
+        XCTAssertEqual(file.fileFormat.streamDescription.pointee.mFormatID, kAudioFormatOpus)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 8192))
+        var frames: AVAudioFramePosition = 0
+        while file.framePosition < file.length {
+            try file.read(into: buffer); guard buffer.frameLength > 0 else { break }
+            frames += AVAudioFramePosition(buffer.frameLength)
+        }
+        XCTAssertGreaterThan(Double(frames) / file.processingFormat.sampleRate, 125)
+        file.framePosition = 90 * AVAudioFramePosition(file.processingFormat.sampleRate)
+        try file.read(into: buffer); XCTAssertGreaterThan(buffer.frameLength, 0)
+        print("LIVE ORIGINAL OPUS: complete native decode, seek=90s duration=\(audio.duration ?? 0)s bitrate=\(audio.bitrate)bit/s")
     }
 
     @MainActor func testSorynOptionalAccountTwoDevicesAndLocalPreservation() async throws {

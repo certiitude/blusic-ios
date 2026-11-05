@@ -181,7 +181,8 @@ final class AudioPlayer {
         let token = generation
         loadingWatchdog = Task { @MainActor [weak self] in
             guard let self else { return }
-            let timeout = onlineLoader is InvidiousAudioLoader && ["auto", "youtubei"].contains(library.settings.audioSourceMode) ? max(loadingTimeout, 50) : loadingTimeout
+            let nativeTimeout: Double = library.settings.audioQuality == .opus ? 90 : 50
+            let timeout = onlineLoader is InvidiousAudioLoader && (["auto", "youtubei"].contains(library.settings.audioSourceMode) || library.settings.audioQuality == .opus) ? max(loadingTimeout, nativeTimeout) : loadingTimeout
             do { try await Task.sleep(for: .seconds(timeout)) } catch { return }
             guard generation == token, isLoading else { return }
             generation = UUID(); loadTask?.cancel()
@@ -481,7 +482,7 @@ final class AudioPlayer {
         }
         let rate = String(format: "%g", file.fileFormat.sampleRate / 1000)
         let quality = bitrate.flatMap { $0 > 0 ? " · \(Int((Double($0) / 1000).rounded())) kbit/s" : nil } ?? ""
-        let fallback = library.settings.audioQuality == .opus && file.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatMPEG4AAC ? " · Secours AAC" : ""
+        let fallback = library.settings.audioQuality == .opus && file.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatMPEG4AAC && provider?.contains("Secours AAC") != true ? " · Secours AAC" : ""
         formatLabel = track.source == .invidious ? "\(codec)\(quality)\(fallback) · \(provider ?? "cache audio")" : "\(codec) · \(rate) kHz"
         engine.disconnectNodeOutput(node); engine.disconnectNodeOutput(varispeed); engine.disconnectNodeOutput(pitch); engine.disconnectNodeOutput(equalizer)
         engine.connect(node, to: varispeed, format: file.processingFormat)

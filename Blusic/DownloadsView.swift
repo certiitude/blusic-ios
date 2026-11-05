@@ -43,9 +43,9 @@ struct DownloadsView: View {
                 ForEach(entries) { entry in
                     VStack(alignment: .leading, spacing: 5) {
                         TrackRow(track: library.track(entry.track.id) ?? entry.track, context: entries.map(\.track))
-                        Text(ByteCountFormatter.string(fromByteCount: entry.bytes, countStyle: .file) + (entry.bitrate > 0 ? " · \(Int((Double(entry.bitrate) / 1000).rounded())) kbit/s" : "") + " · Hors ligne")
+                        Text(ByteCountFormatter.string(fromByteCount: entry.bytes, countStyle: .file) + (entry.codec == .opus ? " · Opus VBR" : entry.codec == .aac ? " · AAC" : "") + (entry.bitrate > 0 ? " · \(Int((Double(entry.bitrate) / 1000).rounded())) kbit/s" : "") + " · Hors ligne")
                             .font(.caption2).foregroundStyle(.secondary)
-                    }.swipeActions { Button("Supprimer", role: .destructive) { Task { await downloads.remove(entry.track) } } }
+                    }.swipeActions { Button("Supprimer", role: .destructive) { Task { await downloads.remove(entry) } } }
                 }
             }
         }

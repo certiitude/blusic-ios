@@ -6,8 +6,12 @@ export async function fetchPublicOpus(id,{fetchFunction=fetch,signal}={}){
   const yt=await Innertube.create({lang:'fr',location:'FR',generate_session_locally:true,retrieve_player:false,fetch:fetchFunction});
   const info=await yt.getBasicInfo(id,{client:'ANDROID'});
   if(info.playability_status?.status!=='OK')throw Error('Opus direct indisponible');
-  const f=preferredOpus(info.streaming_data?.adaptive_formats)[0];if(!f?.url)throw Error('Aucun Opus 251 public');
-  const address=new URL(f.url);if(address.protocol!=='https:'||!address.hostname.endsWith('.googlevideo.com'))throw Error('Hôte Opus inattendu');
+  const f=preferredOpus(info.streaming_data?.adaptive_formats)[0];if(!f?.url)throw Error('URL Opus directe indisponible ; SABR requis');
+  return {data:await downloadOpusRanges(f,{fetchFunction,signal}),sourceDuration:info.basic_info.duration||0};
+}
+export async function downloadOpusRanges(f,{fetchFunction=fetch,signal}={}){
+  if(!preferredOpus([f]).length)throw Error('Format Opus 251 invalide');
+  const address=new URL(f.url);if(address.protocol!=='https:'||!address.hostname.endsWith('.googlevideo.com')||address.username||address.password||address.port&&address.port!=='443')throw Error('Hôte Opus inattendu');
   const expected=Number(f.content_length),data=new Uint8Array(expected);let offset=0;
   while(offset<expected){
     signal?.throwIfAborted();const end=Math.min(offset+262143,expected-1),url=new URL(address);url.searchParams.set('range',`${offset}-${end}`);
@@ -19,5 +23,5 @@ export async function fetchPublicOpus(id,{fetchFunction=fetch,signal}={}){
     const range=response.headers.get('Content-Range');if(range&&range!==`bytes ${offset}-${end}/${expected}`)throw Error('Plage Opus incohérente');
     offset+=received;
   }
-  return {data,sourceDuration:info.basic_info.duration||0};
+  return data;
 }

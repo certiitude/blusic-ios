@@ -52,6 +52,7 @@ def main():
             ("lyrics", ["--blusic-preview-player", "--blusic-lyrics"], 4),
             ("lyrics-later", ["--blusic-preview-player", "--blusic-lyrics"], 13),
             ("quality", ["--blusic-preview-settings", "--blusic-high-quality"], 4),
+            ("opus", ["--blusic-preview-settings", "--blusic-opus"], 4),
             ("downloads", ["--blusic-preview-downloads"], 4),
         ]
         if label == "large":

@@ -95,6 +95,7 @@ struct RootView: View {
                 sheet = .sound
             } else if ProcessInfo.processInfo.arguments.contains("--blusic-preview-settings") {
                 if ProcessInfo.processInfo.arguments.contains("--blusic-high-quality") { library.settings.highQualityAudio = true }
+                if ProcessInfo.processInfo.arguments.contains("--blusic-opus") { library.settings.opusAudio = true }
                 sheet = .settings
             } else if ProcessInfo.processInfo.arguments.contains("--blusic-preview-downloads") {
                 sheet = .downloads

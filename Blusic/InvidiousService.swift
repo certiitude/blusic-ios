@@ -118,7 +118,7 @@ extension StreamingAudioLoading {
                     cacheKey: stream.quality.fileKey(videoID: track.location, bitrate: stream.bitrate), fileExtension: "m4a",
                     expectedDuration: stream.duration, session: InvidiousService.mediaSession)
                 await AudioCache.shared.storeInvidiousInfo(track: track, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration, quality: stream.quality)
-                return InvidiousAudio(fileURL: file, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration, quality: stream.quality)
+                return InvidiousAudio(fileURL: file, bitrate: stream.bitrate, instance: stream.instance, duration: stream.duration, provider: stream.provider, quality: stream.quality)
             }
             group.addTask {
                 try await Task.sleep(for: .seconds(8))

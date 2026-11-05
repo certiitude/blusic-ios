@@ -55,8 +55,9 @@ final class NativeYouTubeiResolver: NSObject, WKScriptMessageHandler {
                 return try await withCheckedThrowingContinuation { callback in
                     continuation = callback
                     watchdog = Task { @MainActor [weak self] in
-                        do { try await Task.sleep(for: .seconds(35)) } catch { return }
-                        self?.fail(BlusicError.message("youtubei.js : la préparation audio a dépassé 35 secondes."), token: token, reset: true)
+                        let limit = quality == .opus ? 45 : 35
+                        do { try await Task.sleep(for: .seconds(limit)) } catch { return }
+                        self?.fail(BlusicError.message("youtubei.js : la préparation audio a dépassé \(limit) secondes."), token: token, reset: true)
                     }
                     let arguments = "'\(track.location)','\(token)','\(quality.rawValue)'"
                     web?.evaluateJavaScript("window.__blusicResolve(\(arguments)); void 0") { [weak self] _, error in
@@ -234,16 +235,16 @@ actor NativeYouTubeSpool {
     }
     func append(encoded: String, token: String) throws {
         guard self.token == token else { throw CancellationError() }
-        guard encoded.count <= 12_000_000, let data = Data(base64Encoded: encoded), let handle, written + data.count <= expected else { throw BlusicError.message("Bloc AAC invalide.") }
+        guard encoded.count <= 12_000_000, let data = Data(base64Encoded: encoded), let handle, written + data.count <= expected else { throw BlusicError.message("Bloc audio invalide.") }
         try handle.write(contentsOf: data); written += data.count
     }
     func finish(expected: Int, bitrate: Int, duration: Double, token: String) throws -> InvidiousAudio {
         guard self.token == token else { throw CancellationError() }
-        guard let url, expected == self.expected, written == expected else { throw BlusicError.message("Fichier AAC incomplet.") }
+        guard let url, expected == self.expected, written == expected else { throw BlusicError.message("Fichier audio incomplet.") }
         try handle?.synchronize(); try handle?.close(); handle = nil
         let file = try AVAudioFile(forReading: url)
         let seconds = Double(file.length) / file.processingFormat.sampleRate
-        guard file.length > 0, duration > 0, seconds.isFinite, seconds >= duration * 0.8 else { throw BlusicError.message("Le fichier AAC n’est pas décodable ou est tronqué.") }
+        guard file.length > 0, duration > 0, seconds.isFinite, seconds >= duration * 0.8 else { throw BlusicError.message("Le fichier audio n’est pas décodable ou est tronqué.") }
         if codec == .opus {
             guard file.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatOpus, abs(seconds - duration) < 0.1,
                   let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else { throw BlusicError.message("Le fichier préparé n’est pas de l’Opus natif décodable.") }

@@ -69,17 +69,30 @@ actor OfflineAudioStore {
     func audio(for track: Track, quality: OnlineAudioQuality = .standard) throws -> InvidiousAudio? {
         try load()
         let keys = quality == .opus ? [OfflineAudioRecord.key(track, quality: .opus), OfflineAudioRecord.key(track)] : [OfflineAudioRecord.key(track), OfflineAudioRecord.key(track, quality: .opus)]
-        guard let record = keys.compactMap({ records[$0] }).first else { return nil }
-        let url = try path(record.filename)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-        _ = try Self.validate(url, expected: record.duration)
-        return InvidiousAudio(fileURL: url, bitrate: record.bitrate, instance: URL(string: "https://www.youtube.com")!,
-            duration: record.duration, provider: "Téléchargé · hors ligne", quality: OnlineAudioQuality(rawValue: record.quality) ?? .standard, codec: record.codec ?? .aac)
+        for key in keys {
+            guard let record = records[key] else { continue }
+            let url = try path(record.filename)
+            guard FileManager.default.fileExists(atPath: url.path) else { continue }
+            do {
+                _ = try Self.validate(url, expected: record.duration)
+                return InvidiousAudio(fileURL: url, bitrate: record.bitrate, instance: URL(string: "https://www.youtube.com")!,
+                    duration: record.duration, provider: "Téléchargé · hors ligne", quality: OnlineAudioQuality(rawValue: record.quality) ?? .standard, codec: record.codec ?? .aac)
+            } catch { if record.codec != .opus { throw error } }
+        }
+        return nil
     }
-    func save(_ audio: InvidiousAudio, track: Track) throws -> OfflineAudioRecord {
+    func save(_ audio: InvidiousAudio, track: Track, preferredQuality: OnlineAudioQuality? = nil) throws -> OfflineAudioRecord {
         try load(); try Task.checkCancellation()
+        // A failed Opus attempt must not replace an already downloaded AAC file.
+        if preferredQuality == .opus, audio.quality != .opus, let previous = records[OfflineAudioRecord.key(track)] {
+            _ = try Self.validate(path(previous.filename), expected: previous.duration)
+            return previous
+        }
         guard audio.fileURL.isFileURL else { throw BlusicError.message("Le fichier audio complet n’a pas été préparé.") }
         let duration = try Self.validate(audio.fileURL, expected: audio.duration ?? track.duration)
+        let format = try AVAudioFile(forReading: audio.fileURL).fileFormat.streamDescription.pointee.mFormatID
+        let codec: OnlineAudioCodec? = format == kAudioFormatOpus ? .opus : format == kAudioFormatMPEG4AAC ? .aac : nil
+        guard audio.quality != .opus || codec == .opus else { throw BlusicError.message("Un téléchargement Opus doit contenir de vrais paquets Opus.") }
         let size = Int64(try audio.fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)
         guard size > 0, size <= 300_000_000 else { throw BlusicError.message("Fichier audio vide ou trop volumineux.") }
         if let available = try? root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]).volumeAvailableCapacityForImportantUsage,
@@ -92,7 +105,7 @@ actor OfflineAudioStore {
             try Task.checkCancellation()
             let key = OfflineAudioRecord.key(track, quality: audio.quality)
             let entry = OfflineAudioRecord(id: key, track: track, filename: filename, artworkFilename: records[key]?.artworkFilename,
-                bytes: size, bitrate: audio.bitrate, duration: duration, quality: audio.quality.rawValue, downloadedAt: Date(), codec: audio.codec)
+                bytes: size, bitrate: audio.bitrate, duration: duration, quality: audio.quality.rawValue, downloadedAt: Date(), codec: codec)
             var next = records; next[key] = entry
             try persist(next)
             if let old = records[key], let previous = try? path(old.filename) { try? FileManager.default.removeItem(at: previous) }
@@ -124,6 +137,13 @@ actor OfflineAudioStore {
         let seconds = Double(file.length) / file.processingFormat.sampleRate
         guard file.length > 0, seconds.isFinite, seconds > 0, expected <= 0 || seconds >= expected * 0.8 else {
             throw BlusicError.message("Le téléchargement audio est incomplet ou illisible.")
+        }
+        if file.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatOpus {
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else { throw BlusicError.message("Opus illisible.") }
+            try file.read(into: buffer)
+            guard buffer.frameLength > 0 else { throw BlusicError.message("Opus vide.") }
+            file.framePosition = max(0, file.length - 4096); try file.read(into: buffer)
+            guard buffer.frameLength > 0 else { throw BlusicError.message("Fin du téléchargement Opus illisible.") }
         }
         return seconds
     }
@@ -203,6 +223,11 @@ final class OfflineDownloads {
         do { for key in [OfflineAudioRecord.key(track), OfflineAudioRecord.key(track, quality: .opus)] { try await store.remove(key); records[key] = nil } }
         catch { self.error = error.localizedDescription }
     }
+    func remove(_ record: OfflineAudioRecord) async {
+        cancel(record.track)
+        do { try await store.remove(record.id); records[record.id] = nil }
+        catch { self.error = error.localizedDescription }
+    }
     func removeAll() async { cancelAll(); for record in Array(records.values) { await remove(record.track) } }
     private func startWorker() {
         guard worker == nil else { return }
@@ -249,7 +274,7 @@ final class OfflineDownloads {
                         defer { group.cancelAll() }; return try await group.next()!
                     }
                     try Task.checkCancellation()
-                    return try await store.save(audio, track: track)
+                    return try await store.save(audio, track: track, preferredQuality: settings.audioQuality)
                 }
                 active = task
                 do {
