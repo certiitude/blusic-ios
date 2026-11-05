@@ -45,7 +45,9 @@ jobs:
           cache-dependency-path: native-resolver/package-lock.json
       - name: Build packaged youtubei.js SABR resolver
         working-directory: native-resolver
-        run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
+        run: npm ci --ignore-scripts --no-audit --no-fund && npm test && npm run build
+      - name: Verify host-native Opus CAF decoder
+        run: swift tools/check_opus_caf.swift BlusicTests/opus-vbr.caf
       - name: Configure bundled youtubei.js relay
         env:
           BLUSIC_IOS_RELAY_URL: ${{ vars.BLUSIC_IOS_RELAY_URL }}
@@ -82,6 +84,15 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Start optional account PostgreSQL test fixture
         run: node account-server/test/ios-server.mjs > build/soryn-accounts-node.log 2>&1 &
+      - name: Native iPhone Opus decode, seek, bridge and offline persistence
+        run: >-
+          xcodebuild test -project Blusic.xcodeproj -scheme Blusic
+          -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
+          -derivedDataPath build/DerivedData -resultBundlePath build/SorynOpusTests.xcresult
+          -only-testing:BlusicTests/BlusicTests/testOpusCAFNativeDecodeSeekAndMeasuredDuration
+          -only-testing:BlusicTests/BlusicTests/testOpusSpoolNativeCodecAndQualitySeparation
+          -only-testing:BlusicTests/BlusicTests/testOpusOfflineFileSurvivesRestartWithoutLosingAACDownload
+          -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
       - name: Verify actual iPhone to Windows encrypted pairing and merge
         run: >-
           xcodebuild test -project Blusic.xcodeproj -scheme Blusic
@@ -91,8 +102,8 @@ jobs:
           -only-testing:BlusicTests/BlusicTests/testSorynEncryptedWindowsProtocolAgainstNodeServer
           -only-testing:BlusicTests/BlusicTests/testSorynMergePreservesPersonalFilesSettingsAndConcurrentEdits
           -only-testing:BlusicTests/BlusicTests/testSorynPairingRejectsPublicAddressesAndInvalidKeys
-           -only-testing:BlusicTests/BlusicTests/testSorynPairedClientSyncsFavoritesAndRemovalsAgainstNode
-           -only-testing:BlusicTests/BlusicTests/testSorynOptionalAccountTwoDevicesAndLocalPreservation
+          -only-testing:BlusicTests/BlusicTests/testSorynPairedClientSyncsFavoritesAndRemovalsAgainstNode
+          -only-testing:BlusicTests/BlusicTests/testSorynOptionalAccountTwoDevicesAndLocalPreservation
           -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
       - name: Export Soryn pairing test summary
         if: always()
@@ -106,6 +117,7 @@ jobs:
             build/soryn-sync-node.log
             build/soryn-accounts-node.log
             build/SorynSyncTests.xcresult
+            build/SorynOpusTests.xcresult
           retention-days: 7
       - name: Unit tests on iPhone simulator
         id: iphone-tests

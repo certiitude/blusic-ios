@@ -6,9 +6,11 @@ import {WebPoMinter} from 'bgutils-js/webpo';
 import {getHeaders,buildURL,USER_AGENT,parseLooseJSON} from 'bgutils-js/utils';
 import {VideoPlaybackAbrRequest} from 'googlevideo/protos';
 import {preferredAAC,audioQuality} from '../relay/audio-quality.mjs';
+import {preferredOpus,remuxOpusToCAF} from './opus-caf.mjs';
+import {fetchPublicOpus} from './direct-opus.mjs';
 
 // This WebKit document is a resolver, never a video/audio player. Only the
-// prepared AAC bytes are passed back to AVAudioEngine/AVPlayer on the iPhone.
+// prepared AAC or packet-copied Opus/CAF goes to the native iPhone audio engine.
 const pending=new Map();let sequence=0,currentStream,currentController,contextPromise,contextExpiry=0,contextCleanup,activeJob;
 const post=data=>window.webkit.messageHandlers.blusicResolver.postMessage(data);
 const encode=data=>{let result='';const bytes=new Uint8Array(data);for(let i=0;i<bytes.length;i+=16384)result+=String.fromCharCode(...bytes.subarray(i,i+16384));return btoa(result);};
@@ -70,11 +72,24 @@ async function context(){
   })();
   try{return await contextPromise;}catch(error){contextPromise=undefined;throw error;}
 }
+async function deliverOpus(webm,job,sourceDuration){
+  const result=remuxOpusToCAF(webm);
+  if(sourceDuration>0&&result.duration<sourceDuration-Math.max(2,sourceDuration*.02))throw Error('Opus incomplet : durée insuffisante');
+  await call('beginAudio',{job,expected:result.data.length,codec:'opus'});
+  for(let at=0;at<result.data.length;at+=32768)await call('appendAudio',{job,body:encode(result.data.subarray(at,at+32768))});
+  post({action:'finished',job,expected:result.data.length,codec:'opus',bitrate:result.bitrate,duration:result.duration,sourceDuration});
+}
+async function directOpus(id,job){
+  const {data,sourceDuration}=await fetchPublicOpus(id,{fetchFunction:nativeFetch,signal:currentController.signal});
+  await deliverOpus(data,job,sourceDuration);
+}
 window.__blusicResolve=async(id,job,quality='standard')=>{
   if(!/^[A-Za-z0-9_-]{11}$/.test(id))return post({action:'failed',job,error:'Identifiant invalide'});
   activeJob=job;
   let stream;
   try{
+    currentController=new AbortController();
+    if(quality==='opus'){try{await directOpus(id,job);return;}catch(error){if(currentController.signal.aborted)throw error;post({action:'diagnostic',job,phase:'opus-direct-unavailable'});}}
     const {yt,minter}=await context();
     const proof=await minter.mint(id);
     post({action:'diagnostic',job,phase:'content-proof',bytes:proof.length});
@@ -83,8 +98,8 @@ window.__blusicResolve=async(id,job,quality='standard')=>{
     const config=info.player_config?.media_common_config?.media_ustreamer_request_config?.video_playback_ustreamer_config;
     const source=info.streaming_data?.server_abr_streaming_url;
     if(!config||!source)throw Error('Flux audio SABR indisponible');
-    const formats=preferredAAC(info.streaming_data.adaptive_formats,audioQuality(quality));
-    if(!formats.length)throw Error('Aucun format AAC natif avec taille vérifiable');
+    const opus=quality==='opus',formats=opus?preferredOpus(info.streaming_data.adaptive_formats):preferredAAC(info.streaming_data.adaptive_formats,audioQuality(quality));
+    if(!formats.length)throw Error(opus?'Aucun Opus 251 public disponible':'Aucun format AAC natif avec taille vérifiable');
     currentController=new AbortController();
     stream=new SabrStream({videoId:id,serverAbrStreamingUrl:await yt.session.player.decipher(source),videoPlaybackUstreamerConfig:config,
       formats:formats.map(buildSabrFormat),poToken:encode(proof),fetchFunction:nativeFetch,
@@ -93,12 +108,13 @@ window.__blusicResolve=async(id,job,quality='standard')=>{
     stream.on('streamProtectionStatusUpdate',state=>post({action:'diagnostic',job,phase:'stream-protection',status:state.status}));
     stream.on('error',()=>stream.abort());
     const result=stream.start({enabledTrackTypes:EnabledTrackTypes.AUDIO_ONLY,maxRetries:1,stallDetectionMs:8000,isPostLiveDvr:false,
-      audioPreferences:{container:'mp4',preferredAudioCodec:'aac',dynamicRangeCompression:false,voiceBoost:false}});
+      audioPreferences:{container:opus?'webm':'mp4',preferredAudioCodec:opus?'opus':'aac',dynamicRangeCompression:false,voiceBoost:false}});
     const expected=Number(result.selectedFormats.audioFormat.contentLength);if(!Number.isSafeInteger(expected)||expected<=0||expected>25000000)throw Error('Taille audio invalide');
-    await call('beginAudio',{job,expected});let bytes=0;
-    for await(const piece of result.audioStream){if(currentController.signal.aborted)throw Error('Annulé');bytes+=piece.byteLength;if(bytes>expected)throw Error('Audio hors limites');await call('appendAudio',{job,body:encode(piece)});}
+    if(!opus)await call('beginAudio',{job,expected});let bytes=0;const webm=opus?new Uint8Array(expected):null;
+    for await(const piece of result.audioStream){if(currentController.signal.aborted)throw Error('Annulé');if(bytes+piece.byteLength>expected)throw Error('Audio hors limites');if(opus)webm.set(piece,bytes);else await call('appendAudio',{job,body:encode(piece)});bytes+=piece.byteLength;}
     if(bytes!==expected)throw Error('Fichier audio incomplet');
-    post({action:'finished',job,expected,bitrate:Number(result.selectedFormats.audioFormat.bitrate)||0,duration:info.basic_info.duration||0});
+    if(opus)await deliverOpus(webm,job,info.basic_info.duration||0);
+    else post({action:'finished',job,expected,bitrate:Number(result.selectedFormats.audioFormat.bitrate)||0,duration:info.basic_info.duration||0});
   }catch(error){post({action:'failed',job,error:String(error.message).replace(/https?:\/\/\S+/g,'[source]').slice(0,600)});}
   finally{if(stream)await stream.abort();currentStream=undefined;}
 };

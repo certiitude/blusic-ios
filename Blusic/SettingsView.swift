@@ -26,10 +26,14 @@ struct SettingsView: View {
                 }.padding(.vertical, 8)
             }.listRowBackground(Color.clear)
             Section {
-                Toggle("Audio haute qualité", isOn: Binding(get: { library.settings.audioQuality == .high }, set: { library.settings.highQualityAudio = $0 }))
+                Picker("Format préféré", selection: Binding(get: { library.settings.audioQuality.rawValue }, set: { value in library.settings.opusAudio = value == "opus"; library.settings.highQualityAudio = value == "high" })) {
+                    Text("AAC standard").tag("standard")
+                    Text("AAC · meilleur disponible").tag("high")
+                    Text("HQ · Opus natif VBR").tag("opus")
+                }
                     .accessibilityIdentifier("audio-high-quality")
             } header: { Text("Qualité audio") } footer: {
-                Text("Meilleur débit AAC disponible, selon le titre et l’accès ; 256 kbit/s n’est pas garanti. Le lecteur affiche le débit obtenu. S’applique aux prochaines lectures et au préchargement. Peut utiliser davantage de données.")
+                Text("Opus : flux original YouTube 251, souvent autour de 120–160 kbit/s VBR selon le morceau, sans réencodage. Préparé en CAF par copie des paquets pour le lecteur natif iPhone. Le débit moyen obtenu est affiché ; 160 kbit/s n’est pas garanti. Si l’Opus est inaccessible, le lecteur signale « Secours AAC ». S’applique aux prochaines lectures et aux nouveaux téléchargements.")
             }
             Section("Ton univers") {
                 Picker("Apparence", selection: $library.settings.appearance) {

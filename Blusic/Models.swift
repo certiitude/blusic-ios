@@ -101,7 +101,7 @@ enum QueuePreparationPolicy {
 }
 
 enum OnlineAudioQuality: String, Sendable {
-    case standard, high
+    case standard, high, opus
     /// YouTube's nominal 128 kbit/s AAC may advertise a slightly higher peak.
     static let standardBitrateCeiling = 160_000
     func preferred<T>(_ formats: [T], bitrate: (T) -> Int) -> [T] {
@@ -111,7 +111,8 @@ enum OnlineAudioQuality: String, Sendable {
         return standard.isEmpty ? ranked : standard
     }
     func metadataKey(videoID: String) -> String {
-        "invidious:\(videoID):aac" + (self == .high ? ":high" : "")
+        if self == .opus { return "invidious:\(videoID):opus:v1" }
+        return "invidious:\(videoID):aac" + (self == .high ? ":high" : "")
     }
     func fileKey(videoID: String, bitrate: Int) -> String { "\(metadataKey(videoID: videoID)):\(bitrate)" }
 }
@@ -153,8 +154,9 @@ struct AppSettings: Codable, Equatable, Sendable {
     var youtubeiRelayAddress: String?
     var youtubeiRelayDisabled: Bool?
     var highQualityAudio: Bool?
+    var opusAudio: Bool?
 
-    var audioQuality: OnlineAudioQuality { highQualityAudio == true ? .high : .standard }
+    var audioQuality: OnlineAudioQuality { opusAudio == true ? .opus : highQualityAudio == true ? .high : .standard }
     var audioSourceMode: String {
         guard let mode = onlineAudioMode, ["auto", "direct", "invidious", "youtubei"].contains(mode) else { return "auto" }
         return mode

@@ -13,8 +13,10 @@ struct OfflineAudioRecord: Codable, Sendable, Identifiable {
     var duration: Double
     var quality: String
     var downloadedAt: Date
-    static func key(_ track: Track) -> String {
-        SHA256.hash(data: Data("\(track.source.rawValue)|\(track.location)".utf8)).map { String(format: "%02x", $0) }.joined()
+    var codec: OnlineAudioCodec?
+    static func key(_ track: Track, quality: OnlineAudioQuality = .standard) -> String {
+        let suffix = quality == .opus ? "|opus:v1" : ""
+        return SHA256.hash(data: Data("\(track.source.rawValue)|\(track.location)\(suffix)".utf8)).map { String(format: "%02x", $0) }.joined()
     }
 }
 
@@ -48,7 +50,7 @@ actor OfflineAudioStore {
         if manager.fileExists(atPath: manifest.path) {
             let values = try JSONDecoder().decode([OfflineAudioRecord].self, from: Data(contentsOf: manifest))
             for entry in values {
-                guard entry.id == OfflineAudioRecord.key(entry.track), entry.bytes > 0,
+                guard entry.id == OfflineAudioRecord.key(entry.track, quality: entry.quality == "opus" ? .opus : .standard), entry.bytes > 0,
                       let url = try? path(entry.filename), manager.fileExists(atPath: url.path),
                       let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize, Int64(size) == entry.bytes else { continue }
                 records[entry.id] = entry
@@ -64,14 +66,15 @@ actor OfflineAudioStore {
         try? folder.setResourceValues(values)
     }
     func all() throws -> [OfflineAudioRecord] { try load(); return records.values.sorted { $0.downloadedAt > $1.downloadedAt } }
-    func audio(for track: Track) throws -> InvidiousAudio? {
+    func audio(for track: Track, quality: OnlineAudioQuality = .standard) throws -> InvidiousAudio? {
         try load()
-        guard let record = records[OfflineAudioRecord.key(track)] else { return nil }
+        let keys = quality == .opus ? [OfflineAudioRecord.key(track, quality: .opus), OfflineAudioRecord.key(track)] : [OfflineAudioRecord.key(track), OfflineAudioRecord.key(track, quality: .opus)]
+        guard let record = keys.compactMap({ records[$0] }).first else { return nil }
         let url = try path(record.filename)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
         _ = try Self.validate(url, expected: record.duration)
         return InvidiousAudio(fileURL: url, bitrate: record.bitrate, instance: URL(string: "https://www.youtube.com")!,
-            duration: record.duration, provider: "Téléchargé · hors ligne", quality: record.quality == "high" ? .high : .standard)
+            duration: record.duration, provider: "Téléchargé · hors ligne", quality: OnlineAudioQuality(rawValue: record.quality) ?? .standard, codec: record.codec ?? .aac)
     }
     func save(_ audio: InvidiousAudio, track: Track) throws -> OfflineAudioRecord {
         try load(); try Task.checkCancellation()
@@ -87,9 +90,9 @@ actor OfflineAudioStore {
             try FileManager.default.copyItem(at: audio.fileURL, to: target)
             try FileManager.default.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication], ofItemAtPath: target.path)
             try Task.checkCancellation()
-            let key = OfflineAudioRecord.key(track)
+            let key = OfflineAudioRecord.key(track, quality: audio.quality)
             let entry = OfflineAudioRecord(id: key, track: track, filename: filename, artworkFilename: records[key]?.artworkFilename,
-                bytes: size, bitrate: audio.bitrate, duration: duration, quality: audio.quality.rawValue, downloadedAt: Date())
+                bytes: size, bitrate: audio.bitrate, duration: duration, quality: audio.quality.rawValue, downloadedAt: Date(), codec: audio.codec)
             var next = records; next[key] = entry
             try persist(next)
             if let old = records[key], let previous = try? path(old.filename) { try? FileManager.default.removeItem(at: previous) }
@@ -164,7 +167,10 @@ final class OfflineDownloads {
         }
     }
     func waitUntilReady() async { await ready?.value }
-    func record(for track: Track) -> OfflineAudioRecord? { records[OfflineAudioRecord.key(track)] }
+    func record(for track: Track) -> OfflineAudioRecord? {
+        let standard = records[OfflineAudioRecord.key(track)], opus = records[OfflineAudioRecord.key(track, quality: .opus)]
+        return library?.settings.audioQuality == .opus ? opus ?? standard : standard ?? opus
+    }
     func status(for track: Track) -> OfflineDownloadStatus? { statuses[track.id.uuidString] }
     func isAvailable(_ track: Track) -> Bool { track.isOffline || record(for: track) != nil }
     var totalBytes: Int64 { records.values.reduce(0) { $0 + $1.bytes } }
@@ -173,12 +179,13 @@ final class OfflineDownloads {
         guard let filename = record(for: track)?.artworkFilename else { return nil }
         return store.root.appendingPathComponent(filename)
     }
-    func audio(for track: Track) async throws -> InvidiousAudio? { await waitUntilReady(); return try await store.audio(for: track) }
+    func audio(for track: Track) async throws -> InvidiousAudio? { await waitUntilReady(); return try await store.audio(for: track, quality: library?.settings.audioQuality ?? .standard) }
     func waitUntilIdle() async { await waitUntilReady(); await worker?.value }
     func enqueue(_ tracks: [Track]) {
         guard let library else { return }
         for track in library.add(tracks) {
-            guard [.invidious, .remote, .catalogReference].contains(track.source), record(for: track) == nil else { continue }
+            let existing = library.settings.audioQuality == .opus ? records[OfflineAudioRecord.key(track, quality: .opus)] : record(for: track)
+            guard [.invidious, .remote, .catalogReference].contains(track.source), existing == nil else { continue }
             let key = track.id.uuidString
             guard statuses[key]?.isActive != true else { continue }
             cancelled.remove(key); statuses[key] = .queued; queue.append(track)
@@ -193,7 +200,7 @@ final class OfflineDownloads {
     func cancelAll() { for track in queue { cancel(track) }; if let key = activeKey { cancelled.insert(key); active?.cancel(); statuses[key] = nil }; queue.removeAll() }
     func remove(_ track: Track) async {
         cancel(track)
-        do { try await store.remove(OfflineAudioRecord.key(track)); records[OfflineAudioRecord.key(track)] = nil }
+        do { for key in [OfflineAudioRecord.key(track), OfflineAudioRecord.key(track, quality: .opus)] { try await store.remove(key); records[key] = nil } }
         catch { self.error = error.localizedDescription }
     }
     func removeAll() async { cancelAll(); for record in Array(records.values) { await remove(record.track) } }
@@ -204,7 +211,9 @@ final class OfflineDownloads {
             await waitUntilReady()
             while !queue.isEmpty {
                 let requested = queue.removeFirst(), key = requested.id.uuidString
-                guard !cancelled.contains(key), record(for: requested) == nil, let library else { statuses[key] = nil; continue }
+                guard !cancelled.contains(key), let library else { statuses[key] = nil; continue }
+                let existing = library.settings.audioQuality == .opus ? records[OfflineAudioRecord.key(requested, quality: .opus)] : record(for: requested)
+                guard existing == nil else { statuses[key] = nil; continue }
                 activeKey = key; statuses[key] = .downloading("Préparation du téléchargement…", nil)
                 let settings = library.settings, loader = self.loader, store = self.store
                 let task = Task { @MainActor [weak self] () throws -> OfflineAudioRecord in

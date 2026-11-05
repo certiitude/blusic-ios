@@ -13,7 +13,7 @@ enum NativeYouTubeRequestPolicy {
 }
 
 /// Executes the packaged resolution protocol in WebKit; never renders or plays
-/// a YouTube media element. AAC bytes are handed to the native audio engine.
+/// a YouTube media element. AAC or packet-copied Opus/CAF reaches the native engine.
 @MainActor
 final class NativeYouTubeiResolver: NSObject, WKScriptMessageHandler {
     static let shared = NativeYouTubeiResolver()
@@ -151,7 +151,7 @@ final class NativeYouTubeiResolver: NSObject, WKScriptMessageHandler {
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 do {
-                    if action == "beginAudio" { try await spool.begin(expected: body["expected"] as? Int ?? 0, token: token) }
+                    if action == "beginAudio" { try await spool.begin(expected: body["expected"] as? Int ?? 0, token: token, codec: body["codec"] as? String ?? "aac") }
                     else { try await spool.append(encoded: body["body"] as? String ?? "", token: token) }
                     reply(identifier, ["ok": true], document: document, token: token)
                 } catch { reply(identifier, ["error": error.localizedDescription], document: document, token: token) }
@@ -220,12 +220,15 @@ actor NativeYouTubeSpool {
     private var url: URL?
     private var expected = 0
     private var written = 0
+    private var codec: OnlineAudioCodec = .aac
     func start(token: String, quality: OnlineAudioQuality = .standard) { discard(); self.token = token; self.quality = quality }
-    func begin(expected: Int, token: String) throws {
+    func begin(expected: Int, token: String, codec: String = "aac") throws {
         guard self.token == token else { throw CancellationError() }
         discard()
-        guard expected > 0, expected <= 25_000_000 else { throw BlusicError.message("Taille AAC invalide.") }
-        let path = FileManager.default.temporaryDirectory.appendingPathComponent("youtubei-\(UUID().uuidString).m4a")
+        guard expected > 0, expected <= 25_000_000, let encoding = OnlineAudioCodec(rawValue: codec),
+              (quality == .opus) == (encoding == .opus) else { throw BlusicError.message("Format ou taille audio invalide.") }
+        self.codec = encoding
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent("youtubei-\(UUID().uuidString).\(encoding.fileExtension)")
         guard FileManager.default.createFile(atPath: path.path, contents: nil) else { throw BlusicError.message("Impossible de préparer le fichier audio.") }
         url = path; handle = try FileHandle(forWritingTo: path); self.expected = expected; written = 0
     }
@@ -241,8 +244,15 @@ actor NativeYouTubeSpool {
         let file = try AVAudioFile(forReading: url)
         let seconds = Double(file.length) / file.processingFormat.sampleRate
         guard file.length > 0, duration > 0, seconds.isFinite, seconds >= duration * 0.8 else { throw BlusicError.message("Le fichier AAC n’est pas décodable ou est tronqué.") }
+        if codec == .opus {
+            guard file.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatOpus, abs(seconds - duration) < 0.1,
+                  let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else { throw BlusicError.message("Le fichier préparé n’est pas de l’Opus natif décodable.") }
+            try file.read(into: buffer); guard buffer.frameLength > 0 else { throw BlusicError.message("Opus vide.") }
+            file.framePosition = max(0, file.length - 4096); try file.read(into: buffer)
+            guard buffer.frameLength > 0 else { throw BlusicError.message("Fin du fichier Opus illisible.") }
+        }
         self.url = nil
-        return InvidiousAudio(fileURL: url, bitrate: bitrate, instance: URL(string: "https://www.youtube.com")!, duration: duration, provider: "youtubei.js · iPhone", quality: quality)
+        return InvidiousAudio(fileURL: url, bitrate: bitrate, instance: URL(string: "https://www.youtube.com")!, duration: duration, provider: "youtubei.js · iPhone", quality: quality, codec: codec)
     }
     func cancel(token: String) { guard self.token == token else { return }; discard(); self.token = nil }
     private func discard() { try? handle?.close(); handle = nil; if let url { try? FileManager.default.removeItem(at: url) }; url = nil; written = 0 }

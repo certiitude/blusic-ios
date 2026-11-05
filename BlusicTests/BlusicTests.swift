@@ -12,6 +12,54 @@ import CryptoKit
 }
 
 final class BlusicTests: XCTestCase {
+    func testOpusCAFNativeDecodeSeekAndMeasuredDuration() throws {
+        let url = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "opus-vbr", withExtension: "caf"))
+        let file = try AVAudioFile(forReading: url)
+        XCTAssertEqual(file.fileFormat.streamDescription.pointee.mFormatID, kAudioFormatOpus)
+        XCTAssertEqual(Double(file.length) / file.processingFormat.sampleRate, 4, accuracy: 0.05)
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096))
+        for position in [AVAudioFramePosition(0), file.length / 2, file.length - 4096] {
+            file.framePosition = position; try file.read(into: buffer); XCTAssertGreaterThan(buffer.frameLength, 0)
+            let channel = try XCTUnwrap(buffer.floatChannelData?[0])
+            XCTAssertTrue((0..<Int(buffer.frameLength)).contains { abs(channel[$0]) > 0.0001 }, "Decoded audio must not be silent")
+        }
+    }
+    func testOpusSpoolNativeCodecAndQualitySeparation() async throws {
+        let url = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "opus-vbr", withExtension: "caf"))
+        let bytes = try Data(contentsOf: url), spool = NativeYouTubeSpool(), token = UUID().uuidString
+        await spool.start(token: token, quality: .opus)
+        try await spool.begin(expected: bytes.count, token: token, codec: "opus")
+        try await spool.append(encoded: bytes.base64EncodedString(), token: token)
+        let audio = try await spool.finish(expected: bytes.count, bitrate: 204234, duration: 4, token: token)
+        defer { try? FileManager.default.removeItem(at: audio.fileURL) }
+        XCTAssertEqual(audio.codec, .opus); XCTAssertEqual(audio.fileURL.pathExtension, "caf")
+        XCTAssertEqual(audio.quality, .opus)
+        XCTAssertNotEqual(OnlineAudioQuality.opus.metadataKey(videoID: "RFzfXv9wzfo"), OnlineAudioQuality.high.metadataKey(videoID: "RFzfXv9wzfo"))
+    }
+    func testOpusOfflineFileSurvivesRestartWithoutLosingAACDownload() async throws {
+        let url = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "opus-vbr", withExtension: "caf"))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("opus-offline-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = OfflineAudioStore(root: root)
+        let track = Track(title: "Opus test", artist: "Soryn", duration: 4, source: .invidious, location: "RFzfXv9wzfo")
+        let aacURL = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "aac-standard", withExtension: "m4a"))
+        let aac = InvidiousAudio(fileURL: aacURL, bitrate: 128000, instance: URL(string: "https://www.youtube.com")!, duration: 4)
+        _ = try await store.save(aac, track: track)
+        let audio = InvidiousAudio(fileURL: url, bitrate: 204234, instance: URL(string: "https://www.youtube.com")!, duration: 4, quality: .opus, codec: .opus)
+        let record = try await store.save(audio, track: track)
+        XCTAssertEqual(record.codec, .opus); XCTAssertEqual(record.quality, "opus")
+        XCTAssertNotEqual(record.id, OfflineAudioRecord.key(track))
+        let reopened = OfflineAudioStore(root: root)
+        let restored = try await reopened.audio(for: track, quality: .opus)
+        XCTAssertEqual(restored?.codec, .opus); XCTAssertEqual(restored?.quality, .opus)
+        let restoredURL = try XCTUnwrap(restored?.fileURL)
+        XCTAssertEqual(try Data(contentsOf: restoredURL), try Data(contentsOf: url), "Compressed Opus packets must not be re-encoded")
+        let oldAAC = try await reopened.audio(for: track, quality: .standard)
+        XCTAssertEqual(oldAAC?.codec, .aac)
+        let oldURL = try XCTUnwrap(oldAAC?.fileURL)
+        XCTAssertEqual(try Data(contentsOf: oldURL), try Data(contentsOf: aacURL), "An Opus download must not overwrite an existing AAC download")
+    }
+
     @MainActor func testSorynOptionalAccountTwoDevicesAndLocalPreservation() async throws {
         let aSuite = "soryn.account.a.\(UUID().uuidString)", bSuite = "soryn.account.b.\(UUID().uuidString)"
         let aDefaults = UserDefaults(suiteName: aSuite)!, bDefaults = UserDefaults(suiteName: bSuite)!

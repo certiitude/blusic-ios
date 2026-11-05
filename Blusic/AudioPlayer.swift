@@ -475,12 +475,14 @@ final class AudioPlayer {
         case kAudioFormatAppleLossless: codec = "ALAC · sans perte"
         case kAudioFormatFLAC: codec = "FLAC · sans perte"
         case kAudioFormatMPEG4AAC: codec = "AAC"
+        case kAudioFormatOpus: codec = "Opus · VBR"
         case kAudioFormatMPEGLayer3: codec = "MP3"
         default: codec = "Audio natif"
         }
         let rate = String(format: "%g", file.fileFormat.sampleRate / 1000)
         let quality = bitrate.flatMap { $0 > 0 ? " · \(Int((Double($0) / 1000).rounded())) kbit/s" : nil } ?? ""
-        formatLabel = track.source == .invidious ? "\(codec)\(quality) · \(provider ?? "cache audio")" : "\(codec) · \(rate) kHz"
+        let fallback = library.settings.audioQuality == .opus && file.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatMPEG4AAC ? " · Secours AAC" : ""
+        formatLabel = track.source == .invidious ? "\(codec)\(quality)\(fallback) · \(provider ?? "cache audio")" : "\(codec) · \(rate) kHz"
         engine.disconnectNodeOutput(node); engine.disconnectNodeOutput(varispeed); engine.disconnectNodeOutput(pitch); engine.disconnectNodeOutput(equalizer)
         engine.connect(node, to: varispeed, format: file.processingFormat)
         engine.connect(varispeed, to: pitch, format: file.processingFormat)
@@ -890,6 +892,7 @@ actor AudioCache {
         var expires: Date
         var duration: Double?
         var provider: String?
+        var codec: OnlineAudioCodec?
     }
     private var directory: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("BlusicAudio")
@@ -902,27 +905,29 @@ actor AudioCache {
         let metadata = destination(key: quality.metadataKey(videoID: track.location), ext: "json")
         guard let data = try? Data(contentsOf: metadata), let source = try? JSONDecoder().decode(CachedSource.self, from: data),
               source.expires > Date() else { return nil }
-        let file = destination(key: quality.fileKey(videoID: track.location, bitrate: source.bitrate), ext: "m4a")
+        let codec = source.codec ?? .aac
+        guard quality != .opus || codec == .opus else { return nil }
+        let file = destination(key: quality.fileKey(videoID: track.location, bitrate: source.bitrate), ext: codec.fileExtension)
         let expected = track.duration > 0 ? track.duration : source.duration ?? 0
         guard expected > 0 else { return nil }
         do {
             try validate(file, expectedDuration: expected)
-            return InvidiousAudio(fileURL: file, bitrate: source.bitrate, instance: source.instance, duration: expected, provider: source.provider, quality: quality)
+            return InvidiousAudio(fileURL: file, bitrate: source.bitrate, instance: source.instance, duration: expected, provider: source.provider, quality: quality, codec: codec)
         } catch { return nil }
     }
-    func storeInvidiousInfo(track: Track, bitrate: Int, instance: URL, duration: Double? = nil, provider: String? = nil, quality: OnlineAudioQuality = .standard) {
+    func storeInvidiousInfo(track: Track, bitrate: Int, instance: URL, duration: Double? = nil, provider: String? = nil, quality: OnlineAudioQuality = .standard, codec: OnlineAudioCodec = .aac) {
         let metadata = destination(key: quality.metadataKey(videoID: track.location), ext: "json")
-        let source = CachedSource(bitrate: bitrate, instance: instance, expires: Date().addingTimeInterval(bitrate >= 90000 ? 86400 : 600), duration: duration ?? track.duration, provider: provider)
+        let source = CachedSource(bitrate: bitrate, instance: instance, expires: Date().addingTimeInterval(bitrate >= 90000 ? 86400 : 600), duration: duration ?? track.duration, provider: provider, codec: codec)
         if let data = try? JSONEncoder().encode(source) { try? data.write(to: metadata, options: .atomic) }
     }
     func adoptNativeYouTubei(_ audio: InvidiousAudio, track: Track) throws -> InvidiousAudio {
         guard audio.fileURL.isFileURL, audio.fileURL.deletingLastPathComponent().standardizedFileURL == FileManager.default.temporaryDirectory.standardizedFileURL else { throw BlusicError.message("Fichier youtubei.js hors du répertoire temporaire.") }
         try validate(audio.fileURL, expectedDuration: audio.duration ?? track.duration)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let target = destination(key: audio.quality.fileKey(videoID: track.location, bitrate: audio.bitrate), ext: "m4a")
+        let target = destination(key: audio.quality.fileKey(videoID: track.location, bitrate: audio.bitrate), ext: audio.codec.fileExtension)
         if FileManager.default.fileExists(atPath: target.path) { try FileManager.default.removeItem(at: target) }
         try FileManager.default.moveItem(at: audio.fileURL, to: target)
-        storeInvidiousInfo(track: track, bitrate: audio.bitrate, instance: audio.instance, duration: audio.duration, provider: audio.provider, quality: audio.quality)
+        storeInvidiousInfo(track: track, bitrate: audio.bitrate, instance: audio.instance, duration: audio.duration, provider: audio.provider, quality: audio.quality, codec: audio.codec)
         var result = audio; result.fileURL = target; return result
     }
     func localCopy(of url: URL, cacheKey: String? = nil, fileExtension: String? = nil,

@@ -65,6 +65,10 @@ struct InvidiousPlaylistPage: Decodable {
     var videos: [InvidiousVideo]?
 }
 
+enum OnlineAudioCodec: String, Codable, Sendable { case aac, opus
+    var fileExtension: String { self == .opus ? "caf" : "m4a" }
+}
+
 struct InvidiousAudio: Sendable {
     var fileURL: URL
     var bitrate: Int
@@ -72,6 +76,7 @@ struct InvidiousAudio: Sendable {
     var duration: Double? = nil
     var provider: String? = nil
     var quality: OnlineAudioQuality = .standard
+    var codec: OnlineAudioCodec = .aac
 }
 
 struct AudioLoadUpdate: Sendable {
@@ -131,6 +136,13 @@ struct InvidiousAudioLoader: StreamingAudioLoading {
         await InvidiousStreamCache.shared.invalidate(track, settings: settings)
     }
     func load(_ track: Track, settings: AppSettings, progress: @escaping @Sendable (AudioLoadUpdate) -> Void) async throws -> InvidiousAudio {
+        if settings.audioQuality == .opus {
+            switch try await playback(track, settings: settings, direct: false) {
+            case .file(let audio): return audio
+            case .stream(let stream):
+                var audio = try await prepareFile(stream, for: track); audio.provider = "Secours AAC · Opus indisponible"; return audio
+            }
+        }
         if let cached = await AudioCache.shared.cachedInvidious(track: track, quality: settings.audioQuality) { return cached }
         let stream = try await InvidiousStreamCache.shared.resolve(track, settings: settings, direct: false)
         progress(AudioLoadUpdate(message: "Préparation du fichier audio…"))
@@ -143,6 +155,19 @@ struct InvidiousAudioLoader: StreamingAudioLoading {
     }
     func playback(_ track: Track, settings: AppSettings, direct: Bool = false) async throws -> OnlinePlaybackResource {
         if let cached = await AudioCache.shared.cachedInvidious(track: track, quality: settings.audioQuality) { return .file(cached) }
+        if settings.audioQuality == .opus {
+            do {
+                let audio = try await NativeYouTubeiResolver.shared.resolve(track, quality: .opus)
+                return .file(try await AudioCache.shared.adoptNativeYouTubei(audio, track: track))
+            } catch {
+                if Task.isCancelled || error is CancellationError { throw CancellationError() }
+                var fallback = settings; fallback.opusAudio = false; fallback.highQualityAudio = true
+                switch try await playback(track, settings: fallback, direct: direct) {
+                case .file(var audio): audio.provider = "Secours AAC · Opus indisponible"; return .file(audio)
+                case .stream(var stream): stream.provider = "Secours AAC · Opus indisponible"; return .stream(stream)
+                }
+            }
+        }
         if !direct, ["auto", "youtubei"].contains(settings.audioSourceMode) {
             do {
                 let audio = try await NativeYouTubeiResolver.shared.resolve(track, quality: settings.audioQuality)
@@ -161,6 +186,10 @@ struct InvidiousAudioLoader: StreamingAudioLoading {
         return .stream(stream)
     }
     static func prefetch(_ tracks: [Track], settings: AppSettings) async {
+        if settings.audioQuality == .opus {
+            for track in tracks.prefix(1) { guard !Task.isCancelled else { return }; _ = try? await InvidiousAudioLoader().playback(track, settings: settings, direct: false) }
+            return
+        }
         for track in tracks.prefix(2) {
             guard !Task.isCancelled else { return }
             if let stream = try? await InvidiousStreamCache.shared.resolve(track, settings: settings, direct: false) {
