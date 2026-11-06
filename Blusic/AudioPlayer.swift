@@ -506,6 +506,7 @@ final class AudioPlayer {
         guard generation == token else { throw CancellationError() }
         loudnessProfile = measured
         applyNormalization(library.settings)
+        let shouldPlay = autoplay && wantsPlayback
         let file = try AVAudioFile(forReading: url)
         guard file.length > 0 else { throw BlusicError.message("Le fichier audio est vide.") }
         audioFile = file
@@ -534,8 +535,8 @@ final class AudioPlayer {
         schedule(at: min(seconds, max(0, duration - 0.05)))
         stopStreaming()
         setIncomingGain(incomingGain)
-        if autoplay { node.play() }
-        isPlaying = autoplay; wantsPlayback = autoplay; isLoading = false
+        if shouldPlay { node.play() }
+        isPlaying = shouldPlay; wantsPlayback = shouldPlay; isLoading = false
         loadingWatchdog?.cancel(); loadingMessage = ""; loadingProgress = nil
         lastTick = Date(); updateNowPlaying(loadArtwork: true)
     }
