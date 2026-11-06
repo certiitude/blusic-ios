@@ -155,8 +155,10 @@ struct AppSettings: Codable, Equatable, Sendable {
     var youtubeiRelayDisabled: Bool?
     var highQualityAudio: Bool?
     var opusAudio: Bool?
+    var audioNormalization: Bool?
 
     var audioQuality: OnlineAudioQuality { opusAudio == true ? .opus : highQualityAudio == true ? .high : .standard }
+    var usesAudioNormalization: Bool { audioNormalization ?? false }
     var audioSourceMode: String {
         guard let mode = onlineAudioMode, ["auto", "direct", "invidious", "youtubei"].contains(mode) else { return "auto" }
         return mode

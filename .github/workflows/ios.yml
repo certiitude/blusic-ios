@@ -84,6 +84,33 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Start optional account PostgreSQL test fixture
         run: node account-server/test/ios-server.mjs > build/soryn-accounts-node.log 2>&1 &
+      - name: Native loudness normalization, gain safety and unchanged audio
+        run: >-
+          xcodebuild test -project Blusic.xcodeproj -scheme Blusic
+          -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
+          -derivedDataPath build/DerivedData -resultBundlePath build/SorynNormalizationTests.xcresult
+          -only-testing:BlusicTests/BlusicTests/testNormalizationKWeightingMatchesReferenceAt44100And48000Hz
+          -only-testing:BlusicTests/BlusicTests/testNormalizationGatesSilenceAndMatchesQuietAndLoudTracks
+          -only-testing:BlusicTests/BlusicTests/testNormalizationGainRespectsPeakHeadroomAndBoostLimit
+          -only-testing:BlusicTests/BlusicTests/testNormalizationNativeGainStageActuallyRendersAtTheTargetLoudness
+          -only-testing:BlusicTests/BlusicTests/testNormalizationCacheInvalidatesChangedFilesAndNeverRewritesAudio
+          -only-testing:BlusicTests/BlusicTests/testNormalizationOpusOfflinePlaybackSeekAndDisablePreserveTheSource
+          -only-testing:BlusicTests/BlusicTests/testNormalizationPreparesAProgressiveAACBeforeNativePlayback
+          -only-testing:BlusicTests/BlusicTests/testCrossfadeOverlapsTwoNativeDecksAndFinishes
+          -only-testing:BlusicTests/BlusicTests/testPauseStopsBothCrossfadeDecks
+          -only-testing:BlusicTests/BlusicTests/testCancelledResolverJobCannotDiscardTheNextJobsAudio
+          -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+      - name: Export normalization test summary
+        if: always()
+        run: xcrun xcresulttool get test-results summary --path build/SorynNormalizationTests.xcresult > build/soryn-normalization-summary.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Soryn-iPhone-audio-normalization-tests
+          path: |
+            build/soryn-normalization-summary.json
+            build/SorynNormalizationTests.xcresult
+          retention-days: 7
       - name: Native iPhone Opus decode, seek, bridge and offline persistence
         run: >-
           xcodebuild test -project Blusic.xcodeproj -scheme Blusic

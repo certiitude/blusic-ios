@@ -59,6 +59,10 @@ struct SettingsView: View {
                 Toggle("Listes compactes", isOn: $library.settings.compactRows)
             }
             Section("Écoute") {
+                Toggle("Normalisation audio", isOn: Binding(get: { library.settings.usesAudioNormalization }, set: { library.settings.audioNormalization = $0 }))
+                    .accessibilityIdentifier("audio-normalization")
+                Text("Équilibre le volume des morceaux vers −16 LUFS, avec une marge de crête et une amplification limitée. Gain fixe à la lecture : pas de compression de la dynamique ni de réencodage. Analyse locale mise en cache ; la première lecture peut demander une préparation supplémentaire. S’applique au prochain titre.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Text("Le suivant est préparé 45 secondes avant la fin. En cas d’échec, les essais continuent sans limite de nombre, avec une pause progressive de 1 à 10 secondes, tant que le titre reste le suivant. Le fichier prêt est réutilisé pour le fondu.").font(.caption).foregroundStyle(.secondary)
                 Toggle("Fondu entre les titres", isOn: Binding(get: { library.settings.usesCrossfade }, set: { library.settings.crossfadeEnabled = $0 }))
                 if library.settings.usesCrossfade {
@@ -179,9 +183,10 @@ struct SettingsView: View {
     private func color(_ accent: String) -> Color { var settings = AppSettings(); settings.accent = accent; return settings.color }
     private var privacy: some View {
         List {
-            Section("Sur ton iPhone") { Text("Aucun compte Soryn, aucune publicité ajoutée, aucun outil de mesure d’audience. Fichiers, favoris, réglages, paroles et historique sont enregistrés dans le conteneur de l’application. Les sauvegardes iCloud de l’iPhone peuvent les inclure selon tes réglages système. La synchronisation Windows est facultative, locale et chiffrée ; ses détails sont affichés dans Synchroniser avec Windows.") }
+            Section("Sur ton iPhone") { Text("Le compte Soryn reste facultatif. Aucune publicité ajoutée ni outil de mesure d’audience. Fichiers, favoris, réglages, paroles et historique sont enregistrés dans le conteneur de l’application. Les sauvegardes iCloud de l’iPhone peuvent les inclure selon tes réglages système. La synchronisation Windows est facultative, locale et chiffrée ; ses détails sont affichés dans Synchroniser avec Windows. Si tu connectes un compte, la bibliothèque de métadonnées est aussi synchronisée par HTTPS avec le service de comptes Soryn ; les fichiers audio ne sont pas transférés. La session est conservée dans le trousseau. Se déconnecter ou supprimer son compte ne supprime pas la bibliothèque locale.") }
             Section("Connexions externes") {
                 Text("La recherche de chansons transmet la requête à music.youtube.com, sans connexion au compte Google. L’accès audio direct transmet l’identifiant de chanson à www.youtube.com avec un contexte de client iOS, puis lit un flux HTTPS Google. Le mode automatique peut aussi contacter l’instance Invidious choisie ; le mode direct n’utilise pas ce relais pour la lecture. Les imports YouTube utilisent Invidious. En cas de panne du relais, le secours consulte api.invidious.io et peut contacter d’autres instances publiques. Les pochettes peuvent contacter Google. Les fichiers validés sont mis en cache, avec une expiration de 24 heures pour la qualité normale ou de 10 minutes pour un flux bas débit. Une recherche de paroles transmet le titre et l’artiste à LRCLIB. Le lecteur vidéo officiel n’est ouvert que sur demande depuis le menu d’un titre.")
+                Text("Le résolveur embarqué, notamment le mode Opus, prépare l’audio sur l’iPhone en contactant YouTube et les services Google d’attestation et de diffusion. Il utilise des contextes anonymes Android ou Web et une session éphémère, pas les cookies de ton compte Google ou de Safari. Le moteur WebKit ne lit aucune vidéo : seuls les octets audio validés vont au lecteur natif. Le relais AAC configuré peut servir de secours si l’Opus est indisponible.")
                 Link("Documentation Invidious", destination: URL(string: "https://docs.invidious.io/")!)
                 Link("Confidentialité Google", destination: URL(string: "https://policies.google.com/privacy")!)
                 Link("Conditions YouTube", destination: URL(string: "https://www.youtube.com/t/terms")!)

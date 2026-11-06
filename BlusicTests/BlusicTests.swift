@@ -12,6 +12,147 @@ import CryptoKit
 }
 
 final class BlusicTests: XCTestCase {
+    func testNormalizationKWeightingMatchesReferenceAt44100And48000Hz() throws {
+        // FFmpeg ebur128 independently reports -20.0 LUFS for this 1 kHz,
+        // amplitude 0.1 stereo signal. It is not a sample-RMS target.
+        for rate in [44100.0, 48000.0] {
+            let stereo = try normalizationBuffer(sampleRate: rate, amplitude: 0.1)
+            var meter = try AudioLoudnessMeter(sampleRate: rate, channels: 2)
+            try meter.consume(stereo)
+            let profile = try meter.finish()
+            XCTAssertEqual(try XCTUnwrap(profile.integratedLUFS), -20.0, accuracy: 0.1)
+            XCTAssertEqual(profile.samplePeak, 0.1, accuracy: 0.0001)
+            var mono = try AudioLoudnessMeter(sampleRate: rate, channels: 1)
+            try mono.consume(normalizationBuffer(sampleRate: rate, channels: 1, amplitude: 0.1))
+            let monoProfile = try mono.finish()
+            XCTAssertEqual(try XCTUnwrap(profile.integratedLUFS) - XCTUnwrap(monoProfile.integratedLUFS), 10 * log10(2), accuracy: 0.01)
+        }
+        // Equal sample RMS, different perceptual weights: independent ebur128 references.
+        for (frequency, expected) in [(100.0, -21.8), (10000.0, -16.6)] {
+            var meter = try AudioLoudnessMeter(sampleRate: 48000, channels: 2)
+            try meter.consume(normalizationBuffer(amplitude: 0.1, frequency: frequency))
+            XCTAssertEqual(try XCTUnwrap(meter.finish().integratedLUFS), expected, accuracy: 0.1)
+        }
+    }
+    func testNormalizationGatesSilenceAndMatchesQuietAndLoudTracks() throws {
+        var normalized: [Double] = []
+        for amplitude in [Float(0.1), 0.5] {
+            var meter = try AudioLoudnessMeter(sampleRate: 48000, channels: 2)
+            try meter.consume(normalizationBuffer(amplitude: amplitude))
+            let profile = try meter.finish()
+            normalized.append(try XCTUnwrap(profile.integratedLUFS) + Double(profile.gainDecibels))
+        }
+        XCTAssertEqual(normalized[0], -16, accuracy: 0.01); XCTAssertEqual(normalized[1], -16, accuracy: 0.01)
+        var silence = try AudioLoudnessMeter(sampleRate: 48000, channels: 2)
+        try silence.consume(normalizationBuffer(amplitude: 0))
+        let silent = try silence.finish(); XCTAssertNil(silent.integratedLUFS); XCTAssertEqual(silent.gainDecibels, 0)
+        var gated = try AudioLoudnessMeter(sampleRate: 48000, channels: 2)
+        try gated.consume(normalizationBuffer(amplitude: 0.1, silenceBefore: 2, silenceAfter: 2))
+        XCTAssertEqual(try XCTUnwrap(gated.finish().integratedLUFS), -20, accuracy: 0.3, "Silence must not cause a 3 dB boost")
+        let dynamic = try normalizationBuffer(seconds: 8, amplitude: 0.1)
+        for channel in 0..<2 { for i in 192000..<384000 { dynamic.floatChannelData![channel][i] *= 0.001 } }
+        var relative = try AudioLoudnessMeter(sampleRate: 48000, channels: 2)
+        try relative.consume(dynamic)
+        XCTAssertEqual(try XCTUnwrap(relative.finish().integratedLUFS), -20, accuracy: 0.3, "Relative gate must exclude very quiet passages")
+    }
+    func testNormalizationGainRespectsPeakHeadroomAndBoostLimit() throws {
+        XCTAssertEqual(AudioLoudnessProfile(integratedLUFS: -40, samplePeak: 0.001, duration: 4).gainDecibels, 12)
+        let transient = AudioLoudnessProfile(integratedLUFS: -30, samplePeak: 1, duration: 4)
+        XCTAssertEqual(transient.gainDecibels, -2, accuracy: 0.001, "Do not boost a quiet but peak-limited recording")
+        XCTAssertEqual(AudioLoudnessProfile(integratedLUFS: nil, samplePeak: 0, duration: 4).gainDecibels, 0)
+        XCTAssertEqual(AudioLoudnessProfile(integratedLUFS: .nan, samplePeak: 1, duration: 4).gainDecibels, 0)
+        var legacy = AppSettings()
+        XCTAssertFalse(legacy.usesAudioNormalization)
+        legacy.audioNormalization = true
+        XCTAssertTrue(try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(legacy)).usesAudioNormalization)
+    }
+    func testNormalizationNativeGainStageActuallyRendersAtTheTargetLoudness() throws {
+        let source = try normalizationBuffer(amplitude: 0.1)
+        var inputMeter = try AudioLoudnessMeter(sampleRate: 48000, channels: 2)
+        try inputMeter.consume(source)
+        let gain = try inputMeter.finish().gainDecibels
+        let engine = AVAudioEngine(), node = AVAudioPlayerNode(), unit = AVAudioUnitEQ(numberOfBands: 1)
+        engine.attach(node); engine.attach(unit); unit.bands[0].bypass = true; unit.globalGain = gain
+        engine.connect(node, to: unit, format: source.format)
+        engine.connect(unit, to: engine.mainMixerNode, format: source.format)
+        engine.mainMixerNode.outputVolume = 1
+        try engine.enableManualRenderingMode(.offline, format: source.format, maximumFrameCount: 4096)
+        defer { node.stop(); engine.stop() }
+        let output = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: engine.manualRenderingFormat, frameCapacity: 4096))
+        node.scheduleBuffer(source); try engine.start(); node.play()
+        var meter = try AudioLoudnessMeter(sampleRate: 48000, channels: 2)
+        for _ in 0..<20 {
+            XCTAssertEqual(try engine.renderOffline(4096, to: output), .success)
+            try meter.consume(output)
+        }
+        let rendered = try meter.finish()
+        XCTAssertEqual(try XCTUnwrap(rendered.integratedLUFS), -16, accuracy: 0.15)
+        XCTAssertLessThanOrEqual(rendered.samplePeak, pow(10, -2.0 / 20))
+    }
+    func testNormalizationCacheInvalidatesChangedFilesAndNeverRewritesAudio() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("normalization-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("tone.wav"), cache = root.appendingPathComponent("cache")
+        func write(_ amplitude: Float) throws {
+            let buffer = try normalizationBuffer(amplitude: amplitude)
+            let file = try AVAudioFile(forWriting: url, settings: buffer.format.settings)
+            try file.write(from: buffer)
+        }
+        try write(0.1)
+        let bytes = try Data(contentsOf: url), analyzer = AudioNormalizationAnalyzer(directory: cache)
+        let first = try await analyzer.analyze(url)
+        let reopened = try await AudioNormalizationAnalyzer(directory: cache).analyze(url)
+        XCTAssertEqual(first, reopened); XCTAssertEqual(try Data(contentsOf: url), bytes)
+        try write(0.5)
+        try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(2)], ofItemAtPath: url.path)
+        let changed = try await analyzer.analyze(url)
+        XCTAssertGreaterThan(try XCTUnwrap(changed.integratedLUFS), try XCTUnwrap(first.integratedLUFS) + 10)
+        let cancelled = Task { try await analyzer.analyze(url) }; cancelled.cancel()
+        do { _ = try await cancelled.value; XCTFail("Cancelled analysis must not continue") } catch is CancellationError {} catch { XCTFail("Unexpected error: \(error)") }
+    }
+    @MainActor func testNormalizationOpusOfflinePlaybackSeekAndDisablePreserveTheSource() async throws {
+        let url = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "opus-vbr", withExtension: "caf"))
+        let bytes = try Data(contentsOf: url), profile = try await AudioNormalizationAnalyzer.shared.analyze(url)
+        XCTAssertNotNil(profile.integratedLUFS)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("normalized-opus-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let storage = OfflineAudioStore(root: root), library = LibraryStore(inMemory: true)
+        library.settings.audioNormalization = true; library.settings.opusAudio = true; library.settings.volume = 0.4
+        let track = Track(title: "Normalized Opus", artist: "Soryn", duration: 4, source: .invidious, location: "normalopusxx")
+        _ = try await storage.save(InvidiousAudio(fileURL: url, bitrate: 204234, instance: URL(string: "https://www.youtube.com")!, duration: 4, quality: .opus, codec: .opus), track: track)
+        let calls = OfflineDownloadFixtureCounter(), loader = OfflineFixtureLoader(file: url, calls: calls, failures: [track.location])
+        library.downloads = OfflineDownloads(library: library, store: OfflineAudioStore(root: root), loader: loader)
+        let player = AudioPlayer(library: library, onlineLoader: loader)
+        defer { player.pause() }
+        player.play(track, in: [track])
+        for _ in 0..<120 { if player.firstAudioLatency != nil || player.error != nil { break }; try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertNil(player.error); XCTAssertTrue(player.isPlaying); XCTAssertNotNil(player.firstAudioLatency)
+        XCTAssertEqual(player.normalizationGainDB, profile.gainDecibels, accuracy: 0.01)
+        XCTAssertTrue(player.normalizationMessage?.contains("Normalisation") == true)
+        XCTAssertTrue(player.formatLabel.contains("Opus")); XCTAssertEqual(library.settings.volume, 0.4)
+        player.seek(to: 2); try await Task.sleep(for: .milliseconds(300))
+        XCTAssertGreaterThanOrEqual(player.position, 1.9); XCTAssertEqual(player.normalizationGainDB, profile.gainDecibels)
+        library.settings.audioNormalization = false; player.apply(library.settings)
+        XCTAssertEqual(player.normalizationGainDB, 0); XCTAssertNil(player.normalizationMessage)
+        XCTAssertTrue(player.isPlaying); XCTAssertEqual(try Data(contentsOf: url), bytes)
+        let network = await calls.locations; XCTAssertTrue(network.isEmpty)
+        let saved = try await storage.audio(for: track, quality: .opus)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(saved?.fileURL)), bytes)
+    }
+    @MainActor func testNormalizationPreparesAProgressiveAACBeforeNativePlayback() async throws {
+        let url = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "aac-standard", withExtension: "m4a"))
+        let library = LibraryStore(inMemory: true); library.settings.audioNormalization = true
+        let track = Track(title: "Normalized AAC", artist: "Soryn", duration: 4, source: .invidious, location: "normaacxxxx")
+        let calls = StreamRecoveryCounter(), player = AudioPlayer(library: library, onlineLoader: FileRecoveryLoader(file: url, calls: calls))
+        defer { player.pause() }
+        player.play(track, in: [track])
+        for _ in 0..<120 { if player.firstAudioLatency != nil || player.error != nil { break }; try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertNil(player.error); XCTAssertTrue(player.isPlaying); XCTAssertFalse(player.isStreaming)
+        XCTAssertTrue(player.normalizationMessage?.contains("Normalisation") == true)
+        let count = await calls.counts; XCTAssertEqual(count.0, 1); XCTAssertEqual(count.1, 1)
+    }
+
     func testOpusCAFNativeDecodeSeekAndMeasuredDuration() throws {
         let url = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "opus-vbr", withExtension: "caf"))
         let file = try AVAudioFile(forReading: url)
@@ -1740,6 +1881,20 @@ final class BlusicTests: XCTestCase {
         let count = await calls.count
         XCTAssertEqual(count, 2, "The high-quality preparation must be reused, not resolved a third time")
     }
+}
+
+private func normalizationBuffer(sampleRate: Double = 48000, channels: Int = 2, seconds: Double = 4, amplitude: Float, frequency: Double = 1000,
+                                 silenceBefore: Double = 0, silenceAfter: Double = 0) throws -> AVAudioPCMBuffer {
+    let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: sampleRate, channels: AVAudioChannelCount(channels)))
+    let count = AVAudioFrameCount((sampleRate * (seconds + silenceBefore + silenceAfter)).rounded())
+    let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: count)); buffer.frameLength = count
+    for channel in 0..<channels {
+        for i in 0..<Int(count) {
+            let time = Double(i) / sampleRate - silenceBefore
+            buffer.floatChannelData![channel][i] = time >= 0 && time < seconds ? amplitude * Float(sin(2 * .pi * frequency * time)) : 0
+        }
+    }
+    return buffer
 }
 
 private actor UpcomingPreparationCounter {

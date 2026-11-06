@@ -90,7 +90,9 @@ actor OfflineAudioStore {
         }
         guard audio.fileURL.isFileURL else { throw BlusicError.message("Le fichier audio complet n’a pas été préparé.") }
         let duration = try Self.validate(audio.fileURL, expected: audio.duration ?? track.duration)
-        let format = try AVAudioFile(forReading: audio.fileURL).fileFormat.streamDescription.pointee.mFormatID
+        let file = try AVAudioFile(forReading: audio.fileURL)
+        let description = file.fileFormat
+        let format = withExtendedLifetime(description) { description.streamDescription.pointee.mFormatID }
         let codec: OnlineAudioCodec? = format == kAudioFormatOpus ? .opus : format == kAudioFormatMPEG4AAC ? .aac : nil
         guard audio.quality != .opus || codec == .opus else { throw BlusicError.message("Un téléchargement Opus doit contenir de vrais paquets Opus.") }
         let size = Int64(try audio.fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0)

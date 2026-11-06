@@ -20,6 +20,8 @@ final class AudioPlayer {
     private(set) var isStreaming = false
     private(set) var preparingEffects = false
     private(set) var effectsMessage: String?
+    private(set) var normalizationMessage: String?
+    private(set) var normalizationGainDB: Float = 0
     private(set) var firstAudioLatency: Double?
     private(set) var isTransitioning = false
     private(set) var upcomingPreparationStatus: String?
@@ -46,12 +48,15 @@ final class AudioPlayer {
     private var varispeed = AVAudioUnitVarispeed()
     private var pitch = AVAudioUnitTimePitch()
     private var equalizer = AVAudioUnitEQ(numberOfBands: 10)
+    private var normalizer = AVAudioUnitEQ(numberOfBands: 1)
+    private var loudnessProfile: AudioLoudnessProfile?
     private struct FadingDeck {
         var volume: @MainActor (Float) -> Void
         var stop: @MainActor () -> Void
         var remaining: @MainActor () -> Double
         var active: @MainActor () -> Bool
         var baseGain: Float
+        var normalization: @MainActor (Bool) -> Void
     }
     private var outgoing: FadingDeck?
     private var fadeTask: Task<Void, Never>?
@@ -124,12 +129,14 @@ final class AudioPlayer {
     }
 
     private func wireGraph() {
-        engine.attach(node); engine.attach(varispeed); engine.attach(pitch); engine.attach(equalizer)
+        engine.attach(node); engine.attach(varispeed); engine.attach(pitch); engine.attach(equalizer); engine.attach(normalizer)
+        normalizer.bands[0].bypass = true
         for (index, band) in equalizer.bands.enumerated() {
             band.filterType = .parametric; band.frequency = equalizerFrequencies[index]
             band.bandwidth = 1; band.bypass = false
         }
-        engine.connect(node, to: varispeed, format: nil)
+        engine.connect(node, to: normalizer, format: nil)
+        engine.connect(normalizer, to: varispeed, format: nil)
         engine.connect(varispeed, to: pitch, format: nil)
         engine.connect(pitch, to: equalizer, format: nil)
         engine.connect(equalizer, to: engine.mainMixerNode, format: nil)
@@ -151,6 +158,7 @@ final class AudioPlayer {
         if !queue.contains(where: { $0.id == track.id }) { queue.append(track) }
         flushListening()
         retainOutgoingForFade(nextID: track.id)
+        loudnessProfile = nil; normalizationGainDB = 0; normalizer.globalGain = 0; normalizer.bypass = true; normalizationMessage = nil
         loadTask?.cancel(); loadingWatchdog?.cancel(); artworkTask?.cancel()
         alternateTask?.cancel(); bufferWatchdog?.cancel(); effectsTask?.cancel(); stopStreaming()
         generation = UUID()
@@ -182,7 +190,8 @@ final class AudioPlayer {
         loadingWatchdog = Task { @MainActor [weak self] in
             guard let self else { return }
             let nativeTimeout: Double = library.settings.audioQuality == .opus ? 90 : 50
-            let timeout = onlineLoader is InvidiousAudioLoader && (["auto", "youtubei"].contains(library.settings.audioSourceMode) || library.settings.audioQuality == .opus) ? max(loadingTimeout, nativeTimeout) : loadingTimeout
+            let sourceTimeout = onlineLoader is InvidiousAudioLoader && (["auto", "youtubei"].contains(library.settings.audioSourceMode) || library.settings.audioQuality == .opus) ? max(loadingTimeout, nativeTimeout) : loadingTimeout
+            let timeout = library.settings.usesAudioNormalization ? max(sourceTimeout, 90) : sourceTimeout
             do { try await Task.sleep(for: .seconds(timeout)) } catch { return }
             guard generation == token, isLoading else { return }
             generation = UUID(); loadTask?.cancel()
@@ -200,7 +209,7 @@ final class AudioPlayer {
                     try Task.checkCancellation()
                     guard generation == token else { return }
                     if declaredDuration <= 0 { declaredDuration = downloaded.duration ?? 0 }
-                    try startNativeFile(downloaded.fileURL, track: track, bitrate: downloaded.bitrate, at: 0, autoplay: true, provider: downloaded.provider)
+                    try await startNativeFile(downloaded.fileURL, track: track, bitrate: downloaded.bitrate, at: 0, autoplay: true, provider: downloaded.provider)
                     return
                 }
                 if track.source == .catalogReference {
@@ -249,7 +258,7 @@ final class AudioPlayer {
                         guard generation == token else { return }
                         switch resource {
                         case .stream(let stream):
-                            try startStreaming(stream, token: token)
+                            try await startStreaming(stream, token: token)
                             return
                         case .file(let audio):
                             fileURL = audio.fileURL; reportedBitrate = audio.bitrate
@@ -271,7 +280,7 @@ final class AudioPlayer {
                 else { throw BlusicError.message("Source audio introuvable.") }
                 try Task.checkCancellation()
                 guard generation == token else { return }
-                try startNativeFile(fileURL, track: playingTrack, bitrate: reportedBitrate, at: 0, autoplay: true, provider: reportedProvider)
+                try await startNativeFile(fileURL, track: playingTrack, bitrate: reportedBitrate, at: 0, autoplay: true, provider: reportedProvider)
             } catch is CancellationError {
                 if generation == token { isLoading = false; loadingWatchdog?.cancel(); cancelTransition(); loadingMessage = ""; loadingProgress = nil }
             } catch {
@@ -393,6 +402,8 @@ final class AudioPlayer {
         // Headroom avoids clipping with positive EQ boosts.
         let headroom = settings.equalizerEnabled ? max(0, settings.equalizer.max() ?? 0) : 0
         equalizer.globalGain = -headroom
+        applyNormalization(settings)
+        outgoing?.normalization(settings.usesAudioNormalization)
         if !settings.usesCrossfade, outgoing != nil { cancelTransition() }
         setIncomingGain(incomingGain)
         outgoing?.volume(min(1, max(0, settings.volume)) * outgoingGain)
@@ -401,6 +412,16 @@ final class AudioPlayer {
         if let item = streamPlayer?.currentItem, item.audioTimePitchAlgorithm != algorithm { item.audioTimePitchAlgorithm = algorithm }
         if isStreaming, settings.needsPreparedEffects { prepareNativeEffects() }
         updateNowPlaying()
+    }
+
+    private func applyNormalization(_ settings: AppSettings) {
+        normalizationGainDB = settings.usesAudioNormalization ? loudnessProfile?.gainDecibels ?? 0 : 0
+        normalizer.globalGain = normalizationGainDB
+        normalizer.bypass = !settings.usesAudioNormalization || loudnessProfile == nil
+        if !settings.usesAudioNormalization { normalizationMessage = nil }
+        else if let profile = loudnessProfile {
+            normalizationMessage = profile.integratedLUFS == nil ? "Silence : aucun gain appliqué." : String(format: "Normalisation : %+.1f dB · cible −16 LUFS", normalizationGainDB)
+        }
     }
 
     private func setIncomingGain(_ gain: Float) {
@@ -425,19 +446,22 @@ final class AudioPlayer {
             outgoing = FadingDeck(volume: { player.volume = $0 }, stop: { player.pause() }, remaining: {
                 let seconds = player.currentTime().seconds
                 return seconds.isFinite ? max(0, oldDuration - seconds) / oldRate : 0
-            }, active: { player.timeControlStatus == .playing }, baseGain: baseGain)
+            }, active: { player.timeControlStatus == .playing }, baseGain: baseGain, normalization: { _ in })
             stopStreaming(pause: false)
         } else if let oldFile = audioFile, node.isPlaying {
-            let oldEngine = engine, oldNode = node, offset = scheduledOffset
+            let oldEngine = engine, oldNode = node, oldNormalizer = normalizer, oldProfile = loudnessProfile, offset = scheduledOffset
             let sampleRate = oldFile.processingFormat.sampleRate
             outgoing = FadingDeck(volume: { oldEngine.mainMixerNode.outputVolume = $0 }, stop: {
                 oldNode.stop(); oldEngine.stop(); _ = oldFile
             }, remaining: {
                 guard let render = oldNode.lastRenderTime, let time = oldNode.playerTime(forNodeTime: render) else { return 0 }
                 return max(0, oldDuration - offset - Double(time.sampleTime) / sampleRate) / oldRate
-            }, active: { oldEngine.isRunning && oldNode.isPlaying }, baseGain: baseGain)
+            }, active: { oldEngine.isRunning && oldNode.isPlaying }, baseGain: baseGain, normalization: { enabled in
+                oldNormalizer.globalGain = enabled ? oldProfile?.gainDecibels ?? 0 : 0
+                oldNormalizer.bypass = !enabled || oldProfile == nil
+            })
             engine = AVAudioEngine(); node = AVAudioPlayerNode(); varispeed = AVAudioUnitVarispeed()
-            pitch = AVAudioUnitTimePitch(); equalizer = AVAudioUnitEQ(numberOfBands: 10)
+            pitch = AVAudioUnitTimePitch(); equalizer = AVAudioUnitEQ(numberOfBands: 10); normalizer = AVAudioUnitEQ(numberOfBands: 1)
             wireGraph()
         }
         incomingGain = outgoing == nil ? 1 : 0
@@ -465,7 +489,23 @@ final class AudioPlayer {
         }
     }
 
-    private func startNativeFile(_ url: URL, track: Track, bitrate: Int?, at seconds: Double, autoplay: Bool, provider: String? = nil) throws {
+    private func startNativeFile(_ url: URL, track: Track, bitrate: Int?, at seconds: Double, autoplay: Bool, provider: String? = nil) async throws {
+        let token = generation
+        var measured: AudioLoudnessProfile?
+        if library.settings.usesAudioNormalization {
+            normalizationMessage = "Analyse du volume…"
+            if isLoading { loadingMessage = "Analyse du volume du morceau…" }
+            do { measured = try await AudioNormalizationAnalyzer.shared.analyze(url) }
+            catch {
+                if Task.isCancelled || error is CancellationError { throw CancellationError() }
+                guard generation == token else { throw CancellationError() }
+                normalizationMessage = "Normalisation indisponible pour ce fichier : lecture au volume d’origine."
+            }
+        }
+        try Task.checkCancellation()
+        guard generation == token else { throw CancellationError() }
+        loudnessProfile = measured
+        applyNormalization(library.settings)
         let file = try AVAudioFile(forReading: url)
         guard file.length > 0 else { throw BlusicError.message("Le fichier audio est vide.") }
         audioFile = file
@@ -484,8 +524,9 @@ final class AudioPlayer {
         let quality = bitrate.flatMap { $0 > 0 ? " · \(Int((Double($0) / 1000).rounded())) kbit/s" : nil } ?? ""
         let fallback = library.settings.audioQuality == .opus && file.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatMPEG4AAC && provider?.contains("Secours AAC") != true ? " · Secours AAC" : ""
         formatLabel = track.source == .invidious ? "\(codec)\(quality)\(fallback) · \(provider ?? "cache audio")" : "\(codec) · \(rate) kHz"
-        engine.disconnectNodeOutput(node); engine.disconnectNodeOutput(varispeed); engine.disconnectNodeOutput(pitch); engine.disconnectNodeOutput(equalizer)
-        engine.connect(node, to: varispeed, format: file.processingFormat)
+        engine.disconnectNodeOutput(node); engine.disconnectNodeOutput(normalizer); engine.disconnectNodeOutput(varispeed); engine.disconnectNodeOutput(pitch); engine.disconnectNodeOutput(equalizer)
+        engine.connect(node, to: normalizer, format: file.processingFormat)
+        engine.connect(normalizer, to: varispeed, format: file.processingFormat)
         engine.connect(varispeed, to: pitch, format: file.processingFormat)
         engine.connect(pitch, to: equalizer, format: file.processingFormat)
         engine.connect(equalizer, to: engine.mainMixerNode, format: file.processingFormat)
@@ -499,7 +540,21 @@ final class AudioPlayer {
         lastTick = Date(); updateNowPlaying(loadArtwork: true)
     }
 
-    private func startStreaming(_ source: InvidiousStream, token: UUID, at seconds: Double = 0) throws {
+    private func startStreaming(_ source: InvidiousStream, token: UUID, at seconds: Double = 0) async throws {
+        if library.settings.usesAudioNormalization, let current, let loader = onlineLoader as? any StreamingAudioLoading {
+            loadingMessage = "Préparation du fichier pour la normalisation…"
+            do {
+                let audio = try await loader.prepareFile(source, for: current)
+                try Task.checkCancellation()
+                guard generation == token else { throw CancellationError() }
+                try await startNativeFile(audio.fileURL, track: current, bitrate: audio.bitrate, at: seconds, autoplay: true, provider: audio.provider ?? source.provider)
+                return
+            } catch {
+                if Task.isCancelled || error is CancellationError { throw CancellationError() }
+                guard generation == token else { throw CancellationError() }
+                normalizationMessage = "Normalisation indisponible : le flux continue au volume d’origine."
+            }
+        }
         stopStreaming()
         try activateSession()
         let prepared = PreparedAudioCache.shared.take(source.url)
@@ -582,7 +637,7 @@ final class AudioPlayer {
                     try Task.checkCancellation()
                     guard generation == token, wantsPlayback else { return }
                     tryingAlternate = false; alternateTask = nil
-                    try startNativeFile(audio.fileURL, track: current, bitrate: audio.bitrate, at: position, autoplay: true)
+                    try await startNativeFile(audio.fileURL, track: current, bitrate: audio.bitrate, at: position, autoplay: true, provider: audio.provider)
                 } catch {
                     guard generation == token, !Task.isCancelled, wantsPlayback else { return }
                     tryingAlternate = false; alternateTask = nil
@@ -614,8 +669,8 @@ final class AudioPlayer {
                 try Task.checkCancellation()
                 guard generation == token, wantsPlayback else { return }
                 switch resource {
-                case .stream(let source): try startStreaming(source, token: token, at: position)
-                case .file(let audio): try startNativeFile(audio.fileURL, track: current, bitrate: audio.bitrate, at: position, autoplay: true)
+                case .stream(let source): try await startStreaming(source, token: token, at: position)
+                case .file(let audio): try await startNativeFile(audio.fileURL, track: current, bitrate: audio.bitrate, at: position, autoplay: true, provider: audio.provider)
                 }
             } catch {
                 guard generation == token, !Task.isCancelled else { return }
@@ -655,7 +710,7 @@ final class AudioPlayer {
                 guard generation == token, isStreaming else { return }
                 let seconds = streamPlayer?.currentTime().seconds ?? position
                 let playing = wantsPlayback
-                try startNativeFile(file, track: current, bitrate: source.bitrate, at: seconds.isFinite ? seconds : position, autoplay: playing)
+                try await startNativeFile(file, track: current, bitrate: source.bitrate, at: seconds.isFinite ? seconds : position, autoplay: playing, provider: source.provider)
                 preparingEffects = false; effectsMessage = nil
             } catch {
                 guard generation == token, !Task.isCancelled else { return }
@@ -736,7 +791,7 @@ final class AudioPlayer {
         library.savedQueue = queue.map(\.id); library.savedCurrentID = current?.id
     }
     private static func preparationKey(_ track: Track, settings: AppSettings) -> String {
-        "\(track.source.rawValue)|\(track.location)|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(settings.youtubeiRelayAddress ?? "")|\(settings.youtubeiRelayDisabled ?? false)|\(settings.audioQuality.rawValue)"
+        "\(track.source.rawValue)|\(track.location)|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(settings.youtubeiRelayAddress ?? "")|\(settings.youtubeiRelayDisabled ?? false)|\(settings.audioQuality.rawValue)|\(settings.usesAudioNormalization)"
     }
     private func invalidateUpcomingPreparation() {
         upcomingTask?.cancel(); upcomingTask = nil
@@ -765,7 +820,7 @@ final class AudioPlayer {
         upcomingKey = key; upcomingPreparationStatus = "Préparation du titre suivant…"
         let task = Task.detached(priority: .utility) { [weak self] () throws -> InvidiousAudio in
             try await QueuePreparationPolicy.retry(operation: {
-              try await withThrowingTaskGroup(of: InvidiousAudio.self) { group in
+               let audio = try await withThrowingTaskGroup(of: InvidiousAudio.self) { group in
                 group.addTask {
                     if let audio = try await downloads.audio(for: next) { return audio }
                     if next.source == .remote, let url = URL(string: next.location) {
@@ -785,7 +840,12 @@ final class AudioPlayer {
                 group.addTask { try await Task.sleep(for: .seconds(35)); throw BlusicError.message("Préchargement du suivant trop lent.") }
                 defer { group.cancelAll() }
                 return try await group.next()!
-              }
+               }
+               if settings.usesAudioNormalization {
+                   do { _ = try await AudioNormalizationAnalyzer.shared.analyze(audio.fileURL) }
+                   catch { if Task.isCancelled || error is CancellationError { throw CancellationError() } }
+               }
+               return audio
             }, onRetry: { attempt, wait in
                 if let streaming = loader as? any StreamingAudioLoading { await streaming.invalidate(next, settings: settings) }
                 await MainActor.run { [weak self] in
@@ -913,7 +973,10 @@ actor AudioCache {
         guard expected > 0 else { return nil }
         do {
             try validate(file, expectedDuration: expected)
-            if codec == .opus, try AVAudioFile(forReading: file).fileFormat.streamDescription.pointee.mFormatID != kAudioFormatOpus { return nil }
+            if codec == .opus {
+                let decoded = try AVAudioFile(forReading: file), format = decoded.fileFormat
+                guard withExtendedLifetime(format, { format.streamDescription.pointee.mFormatID }) == kAudioFormatOpus else { return nil }
+            }
             return InvidiousAudio(fileURL: file, bitrate: source.bitrate, instance: source.instance, duration: expected, provider: source.provider, quality: quality, codec: codec)
         } catch { return nil }
     }

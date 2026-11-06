@@ -15,6 +15,13 @@ struct SoundSettingsView: View {
     var body: some View {
         @Bindable var library = library
         Form {
+            Section("Volume homogène") {
+                Toggle("Normalisation audio", isOn: Binding(get: { library.settings.usesAudioNormalization }, set: { library.settings.audioNormalization = $0 }))
+                    .accessibilityIdentifier("audio-normalization")
+                Text("Cible −16 LUFS par morceau, gain fixe et marge de crête de 2 dB. Les titres calmes ne sont amplifiés que si leurs crêtes le permettent (maximum +12 dB). Aucun fichier n’est modifié. Activation à partir du prochain titre ; désactivation immédiate.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let message = player.normalizationMessage { Text(message).font(.caption).foregroundStyle(.secondary) }
+            }
             if player.isStreaming {
                 Section {
                     Text("La vitesse et la tonalité liées fonctionnent immédiatement en lecture progressive. L’égaliseur et la tonalité indépendante utilisent le moteur complet après préparation.")
