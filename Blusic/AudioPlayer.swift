@@ -610,7 +610,7 @@ final class AudioPlayer {
                 position = duration; next(userInitiated: false)
             }
         }
-        if seconds > 0 { player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600)) }
+        if seconds > 0 { player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), completionHandler: { _ in }) }
         updateNowPlaying(loadArtwork: true)
         player.playImmediately(atRate: library.settings.playbackRate)
         bufferWatchdog?.cancel()
