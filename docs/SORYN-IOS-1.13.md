@@ -57,6 +57,9 @@ qui inclut les blocs de 400 ms partiellement silencieux aux frontières.
 Les tests déterministes, l’intégration comptes locale et les essais réseau
 externes doivent être distingués. Un test réseau strict Opus ne peut pas réussir
 en jouant un secours AAC. Les sources peuvent encore refuser certains morceaux.
+Le 17 novembre 2026, le diagnostic Node/SABR a récupéré de nouveau Stephanie
+en entier : 1 867 477 octets WebM, 6 349 paquets, 126,969 s, 114 826 bit/s audio
+moyen. Ce contrôle réseau Node n’est pas à lui seul une preuve de lecture iPhone.
 
 ## Mettre à jour
 

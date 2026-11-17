@@ -383,8 +383,8 @@ final class OfflineDownloads {
                     let entry = try await task.value
                     // A save that committed is kept even if cancellation arrived
                     // immediately afterwards: never delete a previous intact AAC.
-                    records[entry.id] = entry; integrityIssues[entry.id] = nil
                     if attempts[key] == request.id {
+                        records[entry.id] = entry; integrityIssues[entry.id] = nil
                         statuses[key] = nil; attempts[key] = nil; failedQuality[requested.id] = nil; completedInSession += 1
                         if let url = entry.track.artworkURL {
                             let image = await ArtworkImageCache.shared.image(for: ArtworkRequest(url: url, pixels: 512))

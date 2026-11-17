@@ -291,6 +291,9 @@ final class BlusicTests: XCTestCase {
         for _ in 0..<40 { if player.error != nil { break }; try await Task.sleep(for: .milliseconds(25)) }
         XCTAssertTrue(player.error?.contains("hors ligne") == true)
         let locations = await calls.locations; XCTAssertTrue(locations.isEmpty)
+        let began = Date()
+        await InvidiousAudioLoader.prefetch([track], settings: library.settings)
+        XCTAssertLessThan(Date().timeIntervalSince(began), 0.5, "Offline-only prefetch must return without starting audio resolution")
         let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(library.settings))
         XCTAssertTrue(restored.usesOfflinePlaybackOnly)
     }
