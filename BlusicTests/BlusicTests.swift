@@ -12,6 +12,92 @@ import CryptoKit
 }
 
 final class BlusicTests: XCTestCase {
+    func testReactiveBackgroundMeasuresRealBassAndLeavesPCMUnchanged() throws {
+        let low = try normalizationBuffer(seconds: 1024.0 / 48000, amplitude: 0.2, frequency: 80)
+        let high = try normalizationBuffer(seconds: 1024.0 / 48000, amplitude: 0.2, frequency: 6000)
+        let original = Array(UnsafeBufferPointer(start: low.floatChannelData![0], count: Int(low.frameLength)))
+        let bass = MusicEnergyProbe(), treble = MusicEnergyProbe()
+        for i in 0..<20 { bass.consume(low, now: Double(i)); treble.consume(high, now: Double(i)) }
+        let a = bass.snapshot(now: 19), b = treble.snapshot(now: 19)
+        XCTAssertGreaterThan(a.level, 0.4); XCTAssertGreaterThan(b.level, 0.4)
+        XCTAssertGreaterThan(a.bass, b.bass + 0.2, "The background must distinguish bass from equal-level treble, not just follow a timer")
+        XCTAssertEqual(Array(UnsafeBufferPointer(start: low.floatChannelData![0], count: Int(low.frameLength))), original)
+        for value in [a.level, a.bass, a.pulse, b.level, b.bass, b.pulse] { XCTAssertTrue(value.isFinite); XCTAssertTrue((0...1).contains(value)) }
+    }
+    func testReactiveBackgroundSilenceStaleFramesAndResetDoNotInventBeats() throws {
+        let silence = try normalizationBuffer(seconds: 1024.0 / 48000, amplitude: 0)
+        let tone = try normalizationBuffer(seconds: 1024.0 / 48000, amplitude: 0.2, frequency: 80)
+        let probe = MusicEnergyProbe()
+        for i in 0..<20 { probe.consume(silence, now: Double(i)) }
+        XCTAssertEqual(probe.snapshot(now: 19), .silence)
+        probe.consume(tone, now: 20)
+        XCTAssertGreaterThan(probe.snapshot(now: 20).pulse, 0)
+        XCTAssertEqual(probe.snapshot(now: 20.31), .silence, "No rendered PCM means no ongoing visual beat")
+        probe.reset(); XCTAssertEqual(probe.snapshot(now: 20), .silence)
+    }
+    func testReactiveBackgroundIntensityAccessibilityAndLegacySettings() throws {
+        var settings = AppSettings(); XCTAssertTrue(settings.usesReactiveBackground)
+        XCTAssertEqual(settings.reactiveBackgroundStrength, 0.5)
+        settings.reactiveBackgroundIntensity = .nan; XCTAssertEqual(settings.reactiveBackgroundStrength, 0.5)
+        settings.reactiveBackgroundIntensity = 3; XCTAssertEqual(settings.reactiveBackgroundStrength, 1)
+        settings.reactiveBackgroundEnabled = false
+        let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertFalse(restored.usesReactiveBackground)
+        var legacy = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(AppSettings())) as? [String: Any])
+        legacy.removeValue(forKey: "reactiveBackgroundEnabled"); legacy.removeValue(forKey: "reactiveBackgroundIntensity")
+        let oldSettings = try JSONDecoder().decode(AppSettings.self, from: JSONSerialization.data(withJSONObject: legacy))
+        XCTAssertTrue(oldSettings.usesReactiveBackground); XCTAssertEqual(oldSettings.reactiveBackgroundStrength, 0.5)
+        let energy = MusicEnergyFrame(level: 1, bass: 1, pulse: 1)
+        let neutral = ReactiveBackgroundStyle.make(energy, intensity: 0), full = ReactiveBackgroundStyle.make(energy, intensity: 1)
+        XCTAssertEqual(neutral.scale, 1); XCTAssertEqual(neutral.glow, 0)
+        XCTAssertLessThanOrEqual(full.scale, 1.05); XCTAssertLessThanOrEqual(full.glow, 0.04)
+        XCTAssertTrue(ReactiveBackgroundPolicy.shouldAnimate(enabled: true, reduceMotion: false, sceneActive: true, hasAudio: true, volume: 1, intensity: 1))
+        XCTAssertFalse(ReactiveBackgroundPolicy.shouldAnimate(enabled: false, reduceMotion: false, sceneActive: true, hasAudio: true, volume: 1, intensity: 1))
+        XCTAssertFalse(ReactiveBackgroundPolicy.shouldAnimate(enabled: true, reduceMotion: true, sceneActive: true, hasAudio: true, volume: 1, intensity: 1))
+        XCTAssertFalse(ReactiveBackgroundPolicy.shouldAnimate(enabled: true, reduceMotion: false, sceneActive: false, hasAudio: true, volume: 1, intensity: 1))
+        XCTAssertFalse(ReactiveBackgroundPolicy.shouldAnimate(enabled: true, reduceMotion: false, sceneActive: true, hasAudio: false, volume: 1, intensity: 1))
+        XCTAssertFalse(ReactiveBackgroundPolicy.shouldAnimate(enabled: true, reduceMotion: false, sceneActive: true, hasAudio: true, volume: 0, intensity: 1))
+        XCTAssertFalse(ReactiveBackgroundPolicy.shouldAnimate(enabled: true, reduceMotion: false, sceneActive: true, hasAudio: true, volume: 1, intensity: 0))
+    }
+    @MainActor func testReactiveBackgroundNativeOpusTapFollowsPlaybackAndDetachesSafely() async throws {
+        let file = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "opus-vbr", withExtension: "caf"))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("reactive-opus-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let library = LibraryStore(inMemory: true), store = OfflineAudioStore(root: root)
+        let track = Track(title: "Reactive Opus", artist: "Soryn", duration: 4, source: .invidious, location: "reactiveops")
+        _ = try await store.save(InvidiousAudio(fileURL: file, bitrate: 204234, instance: URL(string: "https://www.youtube.com")!, duration: 4, quality: .opus, codec: .opus), track: track)
+        let calls = OfflineDownloadFixtureCounter(), loader = OfflineFixtureLoader(file: file, calls: calls, failures: [track.location])
+        library.downloads = OfflineDownloads(library: library, store: store, loader: loader)
+        let player = AudioPlayer(library: library, onlineLoader: loader)
+        defer { player.setReactiveBackgroundVisible(false); player.pause() }
+        player.setReactiveBackgroundVisible(true); player.play(track, in: [track])
+        for _ in 0..<100 { if player.backgroundEnergy.level > 0 || player.error != nil { break }; try await Task.sleep(for: .milliseconds(25)) }
+        XCTAssertNil(player.error); XCTAssertTrue(player.isPlaying); XCTAssertTrue(player.debugEnergyTapAttached)
+        XCTAssertGreaterThan(player.backgroundEnergy.level, 0)
+        player.pause(); XCTAssertFalse(player.debugEnergyTapAttached); XCTAssertEqual(player.backgroundEnergy, .silence)
+        player.toggle()
+        XCTAssertTrue(player.debugEnergyTapAttached)
+        player.setReactiveBackgroundVisible(false)
+        XCTAssertFalse(player.debugEnergyTapAttached); XCTAssertTrue(player.isPlaying, "Hiding the animation must never stop playback")
+        player.setReactiveBackgroundVisible(true)
+        library.settings.reactiveBackgroundEnabled = false; player.apply(library.settings)
+        XCTAssertFalse(player.debugEnergyTapAttached)
+        library.settings.reactiveBackgroundEnabled = true; player.apply(library.settings)
+        XCTAssertTrue(player.debugEnergyTapAttached)
+        library.settings.volume = 0; player.apply(library.settings)
+        XCTAssertFalse(player.debugEnergyTapAttached); XCTAssertEqual(player.backgroundEnergy, .silence)
+        library.settings.volume = 1; player.apply(library.settings)
+        XCTAssertTrue(player.debugEnergyTapAttached)
+        for _ in 0..<3 {
+            player.setReactiveBackgroundVisible(false); player.setReactiveBackgroundVisible(true)
+            XCTAssertTrue(player.debugEnergyTapAttached)
+        }
+        player.seek(to: 1)
+        for _ in 0..<40 { if player.backgroundEnergy.level > 0 { break }; try await Task.sleep(for: .milliseconds(25)) }
+        XCTAssertGreaterThan(player.backgroundEnergy.level, 0); XCTAssertTrue(player.isPlaying)
+        let network = await calls.locations; XCTAssertTrue(network.isEmpty)
+    }
+
     func testRadioRankingUsesTasteDeduplicatesAndRespectsDislikes() {
         let seed = Track(title: "Seed", artist: "Alpha", source: .invidious, location: "seedxxxxxxx")
         let liked = Track(title: "Liked", artist: "Beta", source: .invidious, location: "likedxxxxxx")
@@ -154,6 +240,7 @@ final class BlusicTests: XCTestCase {
         XCTAssertNotNil(profile.bpm); XCTAssertGreaterThan(profile.confidence, 0.55)
         let library = LibraryStore(inMemory: true); library.settings.autoMixEnabled = true
         let player = AudioPlayer(library: library, onlineLoader: MixPlaybackFixtureLoader(first: url, second: other))
+        player.setReactiveBackgroundVisible(true)
         defer { player.pause() }
         let first = Track(title: "Pulse A", artist: "Test", duration: 32, source: .invidious, location: "pulseaaaaaa")
         let second = Track(title: "Pulse B", artist: "Test", duration: 32, source: .invidious, location: "pulsebbbbbb")
@@ -165,12 +252,14 @@ final class BlusicTests: XCTestCase {
         for _ in 0..<100 { if player.current?.id == second.id && player.isPlaying { break }; try await Task.sleep(for: .milliseconds(50)) }
         XCTAssertEqual(player.current?.id, second.id); XCTAssertTrue(player.isTransitioning)
         XCTAssertEqual(player.overlappingPlaybackCount, 2)
+        XCTAssertGreaterThan(player.backgroundEnergy.level, 0, "The outgoing/native mix must keep driving the visual during a transition")
         XCTAssertGreaterThanOrEqual(player.position, profile.activeStart - 0.05)
         XCTAssertTrue(player.autoMixMessage?.contains("BPM") == true)
         XCTAssertGreaterThan(player.debugAutoMixTempo, 1)
         XCTAssertLessThanOrEqual(player.debugAutoMixTempo, 1.04)
         XCTAssertEqual(player.debugTimePitchRate, player.debugAutoMixTempo, accuracy: 0.001)
         player.pause(); XCTAssertEqual(player.overlappingPlaybackCount, 0)
+        XCTAssertFalse(player.debugEnergyTapAttached); XCTAssertEqual(player.backgroundEnergy, .silence)
         XCTAssertEqual(library.settings.playbackRate, 1)
     }
 

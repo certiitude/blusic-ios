@@ -58,6 +58,8 @@ final class AudioPlayer {
         var active: @MainActor () -> Bool
         var baseGain: Float
         var normalization: @MainActor (Bool) -> Void
+        var energyTap: NativeMusicEnergyTap?
+        var energyNode: AVAudioNode?
     }
     private var outgoing: FadingDeck?
     private var fadeTask: Task<Void, Never>?
@@ -113,12 +115,36 @@ final class AudioPlayer {
     @ObservationIgnored private var mixTransitionTask: Task<Void, Never>?
     @ObservationIgnored private var mixTempoTask: Task<Void, Never>?
     @ObservationIgnored private var mixTempo: Float = 1
+    @ObservationIgnored private var energyTap = NativeMusicEnergyTap()
+    @ObservationIgnored private var reactiveBackgroundVisible = false
+    var hasReactiveAudioSource: Bool {
+        (isPlaying && !isStreaming) || (isTransitioning && outgoing?.energyNode != nil)
+    }
+
+    var backgroundEnergy: MusicEnergyFrame {
+        guard reactiveBackgroundVisible, library.settings.usesReactiveBackground, library.settings.volume > 0.001,
+              isPlaying || isTransitioning else { return .silence }
+        let current = !isStreaming && isPlaying ? energyTap.probe.snapshot() : .silence
+        return .combined(current, outgoing?.energyTap?.probe.snapshot() ?? .silence)
+    }
+    func setReactiveBackgroundVisible(_ visible: Bool) {
+        reactiveBackgroundVisible = visible; updateEnergyTaps()
+    }
+    private func updateEnergyTaps() {
+        let enabled = reactiveBackgroundVisible && library.settings.usesReactiveBackground &&
+            library.settings.volume > 0.001 && library.settings.reactiveBackgroundStrength > 0
+        if enabled, isPlaying, !isStreaming { energyTap.attach(to: engine.mainMixerNode) }
+        else { energyTap.detach() }
+        if enabled, let deck = outgoing, deck.active(), let node = deck.energyNode { deck.energyTap?.attach(to: node) }
+        else { outgoing?.energyTap?.detach() }
+    }
 
     #if DEBUG
     var overlappingPlaybackCount: Int { (isPlaying ? 1 : 0) + (outgoing?.active() == true ? 1 : 0) }
     var debugAutoMixPlan: AutoMixPlan? { mixPlan }
     var debugAutoMixTempo: Float { mixTempo }
     var debugTimePitchRate: Float { pitch.rate }
+    var debugEnergyTapAttached: Bool { energyTap.attached }
     #endif
 
     init(library: LibraryStore, loadingTimeout: TimeInterval = 20, streamBufferTimeout: TimeInterval = 4, onlineLoader: any OnlineAudioLoading = InvidiousAudioLoader(), radioCatalog: any RadioCatalogLoading = MusicCatalogService(), radioDefaults: UserDefaults = .standard) {
@@ -185,6 +211,7 @@ final class AudioPlayer {
         loadTask?.cancel(); loadingWatchdog?.cancel(); artworkTask?.cancel()
         alternateTask?.cancel(); bufferWatchdog?.cancel(); effectsTask?.cancel(); stopStreaming()
         generation = UUID()
+        energyTap.detach()
         node.stop(); engine.stop()
         audioFile = nil; isPlaying = false; isLoading = false
         error = nil; loadingMessage = ""; loadingProgress = nil
@@ -337,6 +364,7 @@ final class AudioPlayer {
             if !engine.isRunning { try engine.start() }
             if position >= duration - 0.1 { schedule(at: 0) }
             node.play(); isPlaying = true; lastTick = Date()
+            updateEnergyTaps()
             updateNowPlaying()
         } catch { self.error = error.localizedDescription }
     }
@@ -351,9 +379,11 @@ final class AudioPlayer {
         loadingWatchdog?.cancel(); loadingMessage = ""; loadingProgress = nil
         node.pause(); isPlaying = false
         cancelTransition()
+        updateEnergyTaps()
         updateNowPlaying()
     }
     func seek(to seconds: Double) {
+        energyTap.probe.reset()
         mixTransitionTask?.cancel(); mixTransitionTask = nil
         if let streamPlayer {
             let target = max(0, min(seconds, max(0, duration - 0.05)))
@@ -454,6 +484,7 @@ final class AudioPlayer {
         let algorithm: AVAudioTimePitchAlgorithm = settings.usesLinkedSpeedAndPitch ? .varispeed : .spectral
         if let item = streamPlayer?.currentItem, item.audioTimePitchAlgorithm != algorithm { item.audioTimePitchAlgorithm = algorithm }
         if isStreaming, settings.needsPreparedEffects { prepareNativeEffects() }
+        updateEnergyTaps()
         updateNowPlaying()
     }
 
@@ -490,20 +521,21 @@ final class AudioPlayer {
             outgoing = FadingDeck(volume: { player.volume = $0 }, stop: { player.pause() }, remaining: {
                 let seconds = player.currentTime().seconds
                 return seconds.isFinite ? max(0, oldDuration - seconds) / oldRate : 0
-            }, active: { player.timeControlStatus == .playing }, baseGain: baseGain, normalization: { _ in })
+            }, active: { player.timeControlStatus == .playing }, baseGain: baseGain, normalization: { _ in }, energyTap: nil, energyNode: nil)
             stopStreaming(pause: false)
         } else if let oldFile = audioFile, node.isPlaying {
-            let oldEngine = engine, oldNode = node, oldNormalizer = normalizer, oldProfile = loudnessProfile, offset = scheduledOffset
+            let oldEngine = engine, oldNode = node, oldNormalizer = normalizer, oldProfile = loudnessProfile, oldEnergyTap = energyTap, offset = scheduledOffset
             let sampleRate = oldFile.processingFormat.sampleRate
             outgoing = FadingDeck(volume: { oldEngine.mainMixerNode.outputVolume = $0 }, stop: {
-                oldNode.stop(); oldEngine.stop(); _ = oldFile
+                oldEnergyTap.detach(); oldNode.stop(); oldEngine.stop(); _ = oldFile
             }, remaining: {
                 guard let render = oldNode.lastRenderTime, let time = oldNode.playerTime(forNodeTime: render) else { return 0 }
                 return max(0, oldDuration - offset - Double(time.sampleTime) / sampleRate) / oldRate
             }, active: { oldEngine.isRunning && oldNode.isPlaying }, baseGain: baseGain, normalization: { enabled in
                 oldNormalizer.globalGain = enabled ? oldProfile?.gainDecibels ?? 0 : 0
                 oldNormalizer.bypass = !enabled || oldProfile == nil
-            })
+            }, energyTap: oldEnergyTap, energyNode: oldEngine.mainMixerNode)
+            energyTap = NativeMusicEnergyTap()
             engine = AVAudioEngine(); node = AVAudioPlayerNode(); varispeed = AVAudioUnitVarispeed()
             pitch = AVAudioUnitTimePitch(); equalizer = AVAudioUnitEQ(numberOfBands: 10); normalizer = AVAudioUnitEQ(numberOfBands: 1)
             wireGraph()
@@ -617,6 +649,7 @@ final class AudioPlayer {
         let quality = bitrate.flatMap { $0 > 0 ? " · \(Int((Double($0) / 1000).rounded())) kbit/s" : nil } ?? ""
         let fallback = library.settings.audioQuality == .opus && inspection.codec == .aac && provider?.contains("Secours AAC") != true ? " · Secours AAC" : ""
         formatLabel = track.source == .invidious ? "\(codec)\(quality)\(fallback) · \(provider ?? "cache audio")" : "\(codec) · \(rate) kHz"
+        energyTap.detach()
         engine.disconnectNodeOutput(node); engine.disconnectNodeOutput(normalizer); engine.disconnectNodeOutput(varispeed); engine.disconnectNodeOutput(pitch); engine.disconnectNodeOutput(equalizer)
         engine.connect(node, to: normalizer, format: file.processingFormat)
         engine.connect(normalizer, to: varispeed, format: file.processingFormat)
@@ -631,6 +664,7 @@ final class AudioPlayer {
         if shouldPlay { node.play() }
         if shouldPlay, activeMix != nil { beginCrossfade() }
         isPlaying = shouldPlay; wantsPlayback = shouldPlay; isLoading = false
+        updateEnergyTaps()
         loadingWatchdog?.cancel(); loadingMessage = ""; loadingProgress = nil
         lastTick = Date(); updateNowPlaying(loadArtwork: true)
     }
@@ -662,6 +696,7 @@ final class AudioPlayer {
         player.automaticallyWaitsToMinimizeStalling = false
         player.volume = library.settings.volume * incomingGain
         streamPlayer = player; streamSource = source; isStreaming = true; wantsPlayback = true
+        updateEnergyTaps()
         if declaredDuration <= 0, source.duration > 0 { declaredDuration = source.duration }
         duration = PlaybackDuration.effective(declared: declaredDuration, measured: source.duration)
         formatLabel = "AAC · \(Int((Double(source.bitrate) / 1000).rounded())) kbit/s · \(source.providerLabel)"
@@ -1054,7 +1089,7 @@ final class AudioPlayer {
                 guard let self, changed === engine, !isStreaming, !isTransitioning, isPlaying else { return }
                 let time = position
                 pause()
-                do { try engine.start(); schedule(at: time); node.play(); isPlaying = true; updateNowPlaying() }
+                do { try engine.start(); schedule(at: time); node.play(); isPlaying = true; updateEnergyTaps(); updateNowPlaying() }
                 catch { self.error = error.localizedDescription }
             }
         })

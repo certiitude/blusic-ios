@@ -17,7 +17,7 @@ struct PlayerView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                background
+                ReactivePlayerBackground()
                 if mode == "lyrics", let track = player.current {
                     lyricsLayout(track)
                 } else {
@@ -109,18 +109,6 @@ struct PlayerView: View {
             transport.frame(height: 72)
             tools.padding(.bottom, 8)
         }.padding(.horizontal, 28)
-    }
-    private var background: some View {
-        GeometryReader { geometry in
-            ZStack {
-                Color(red: 0.04, green: 0.09, blue: 0.14)
-                ArtworkView(track: player.current, size: 192, radius: 0, maximumPixels: 256)
-                    .blur(radius: 18, opaque: true)
-                    .scaleEffect(max(geometry.size.width, geometry.size.height) / 192 * 1.2)
-                    .frame(width: geometry.size.width, height: geometry.size.height).clipped().opacity(0.5)
-                LinearGradient(colors: [.black.opacity(0.1), .black.opacity(0.45)], startPoint: .top, endPoint: .bottom)
-            }.clipped()
-        }.ignoresSafeArea()
     }
     private var header: some View {
         HStack {

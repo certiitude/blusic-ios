@@ -15,6 +15,7 @@ struct SoundSettingsView: View {
     var body: some View {
         @Bindable var library = library
         Form {
+            Section("Fond rythmé") { ReactiveBackgroundControls() }
             Section("AutoMix") {
                 Toggle("Transitions intelligentes", isOn: Binding(get: { library.settings.usesAutoMix }, set: { library.settings.autoMixEnabled = $0 }))
                 Text("Le rythme est estimé sur l’iPhone. Ajustement temporaire du tempo sans changement de hauteur si l’écart est inférieur à 4 %, sinon fondu doux. Les réglages manuels de vitesse/tonalité désactivent l’adaptation rythmique.")
@@ -33,7 +34,7 @@ struct SoundSettingsView: View {
                     Text("La vitesse et la tonalité liées fonctionnent immédiatement en lecture progressive. L’égaliseur et la tonalité indépendante utilisent le moteur complet après préparation.")
                         .font(.caption).foregroundStyle(.secondary)
                     Button { player.prepareNativeEffects() } label: {
-                        HStack { Text(player.preparingEffects ? "Préparation des effets…" : "Préparer les effets audio"); if player.preparingEffects { Spacer(); ProgressView() } }
+                        HStack { Text(player.preparingEffects ? "Préparation des effets…" : "Préparer les effets et le fond rythmé"); if player.preparingEffects { Spacer(); ProgressView() } }
                     }.disabled(player.preparingEffects)
                     if let message = player.effectsMessage { Text(message).font(.caption).foregroundStyle(.secondary) }
                 }

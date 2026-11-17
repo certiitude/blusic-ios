@@ -158,11 +158,18 @@ struct AppSettings: Codable, Equatable, Sendable {
     var audioNormalization: Bool?
     var offlinePlaybackOnly: Bool?
     var autoMixEnabled: Bool?
+    var reactiveBackgroundEnabled: Bool?
+    var reactiveBackgroundIntensity: Double?
 
     var audioQuality: OnlineAudioQuality { opusAudio == true ? .opus : highQualityAudio == true ? .high : .standard }
     var usesAudioNormalization: Bool { audioNormalization ?? false }
     var usesOfflinePlaybackOnly: Bool { offlinePlaybackOnly ?? false }
     var usesAutoMix: Bool { autoMixEnabled ?? false }
+    var usesReactiveBackground: Bool { reactiveBackgroundEnabled ?? true }
+    var reactiveBackgroundStrength: Double {
+        let value = reactiveBackgroundIntensity ?? 0.5
+        return value.isFinite ? min(1, max(0, value)) : 0.5
+    }
     var audioSourceMode: String {
         guard let mode = onlineAudioMode, ["auto", "direct", "invidious", "youtubei"].contains(mode) else { return "auto" }
         return mode

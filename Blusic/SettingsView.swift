@@ -55,6 +55,7 @@ struct SettingsView: View {
                     Slider(value: $library.settings.artworkRadius, in: 0...36, step: 1).accessibilityLabel("Arrondi des pochettes")
                 }
                 Toggle("Animations des pochettes", isOn: $library.settings.animateArtwork)
+                ReactiveBackgroundControls()
                 Toggle("Retours haptiques", isOn: $library.settings.haptics)
                 Toggle("Listes compactes", isOn: $library.settings.compactRows)
             }
