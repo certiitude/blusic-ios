@@ -157,10 +157,12 @@ struct AppSettings: Codable, Equatable, Sendable {
     var opusAudio: Bool?
     var audioNormalization: Bool?
     var offlinePlaybackOnly: Bool?
+    var autoMixEnabled: Bool?
 
     var audioQuality: OnlineAudioQuality { opusAudio == true ? .opus : highQualityAudio == true ? .high : .standard }
     var usesAudioNormalization: Bool { audioNormalization ?? false }
     var usesOfflinePlaybackOnly: Bool { offlinePlaybackOnly ?? false }
+    var usesAutoMix: Bool { autoMixEnabled ?? false }
     var audioSourceMode: String {
         guard let mode = onlineAudioMode, ["auto", "direct", "invidious", "youtubei"].contains(mode) else { return "auto" }
         return mode
@@ -168,7 +170,7 @@ struct AppSettings: Codable, Equatable, Sendable {
     var usesInvidiousFallback: Bool { invidiousAutomaticFallback ?? true }
     var invidiousAddress: String { invidiousInstance ?? InvidiousService.defaultInstance }
     var usesLinkedSpeedAndPitch: Bool { linkSpeedAndPitch ?? true }
-    var usesCrossfade: Bool { crossfadeEnabled ?? false }
+    var usesCrossfade: Bool { usesAutoMix || (crossfadeEnabled ?? false) }
     var crossfadeSeconds: Double { min(8, max(0.5, crossfadeDuration ?? 3)) }
     var effectiveSemitones: Float { usesLinkedSpeedAndPitch ? Self.semitones(for: playbackRate) : pitch }
     var needsPreparedEffects: Bool { equalizerEnabled || (!usesLinkedSpeedAndPitch && abs(pitch) > 0.001) }

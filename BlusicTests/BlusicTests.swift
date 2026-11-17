@@ -12,6 +12,168 @@ import CryptoKit
 }
 
 final class BlusicTests: XCTestCase {
+    func testRadioRankingUsesTasteDeduplicatesAndRespectsDislikes() {
+        let seed = Track(title: "Seed", artist: "Alpha", source: .invidious, location: "seedxxxxxxx")
+        let liked = Track(title: "Liked", artist: "Beta", source: .invidious, location: "likedxxxxxx")
+        let duplicate = Track(title: "Duplicate", artist: "Beta", source: .youtube, location: liked.location)
+        let blocked = Track(title: "Blocked", artist: "Gamma", source: .invidious, location: "blockedxxxx")
+        let same = Track(title: "Another", artist: "Alpha", source: .invidious, location: "anotherxxxx")
+        let more = Track(title: "More", artist: "Beta", source: .invidious, location: "morexxxxxxx")
+        let result = RadioRanking.select([seed, liked, duplicate, blocked, same, more], seed: seed,
+            favorites: [RadioRanking.identity(liked)], listening: [:], excluded: [RadioRanking.identity(seed)],
+            disliked: [RadioRanking.identity(blocked)], limit: 12)
+        XCTAssertEqual(result.map(\.location), [liked.location, same.location, more.location])
+        XCTAssertEqual(Set(result.map(RadioRanking.identity)).count, result.count)
+    }
+    func testRadioCatalogRequestsAudioRadioAndRejectsMusicVideos() async throws {
+        let session = stubSession()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        InvidiousStubProtocol.handler = { request in
+            XCTAssertEqual(request.url?.path, "/youtubei/v1/next")
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+            XCTAssertEqual(body["playlistId"] as? String, "RDAMVMseedxxxxxxx")
+            XCTAssertEqual(body["isAudioOnly"] as? Bool, true)
+            return (200, Data(#"{"contents":[{"playlistPanelVideoRenderer":{"videoId":"audioxxxxxx","title":{"runs":[{"text":"Audio song"}]},"shortBylineText":{"runs":[{"text":"Singer"}]},"lengthText":{"simpleText":"3:10"},"navigationEndpoint":{"watchEndpoint":{"musicVideoType":"MUSIC_VIDEO_TYPE_ATV"}}}},{"playlistPanelVideoRenderer":{"videoId":"videoxxxxxx","title":{"simpleText":"Music video"},"navigationEndpoint":{"watchEndpoint":{"musicVideoType":"MUSIC_VIDEO_TYPE_OMV"}}}}]}"#.utf8))
+        }
+        let seed = Track(title: "Seed", artist: "Test", source: .invidious, location: "seedxxxxxxx")
+        let result = try await MusicCatalogService(session: session).recommendations(for: seed)
+        XCTAssertEqual(result.count, 1); XCTAssertEqual(result.first?.location, "audioxxxxxx")
+        XCTAssertEqual(result.first?.duration, 190); XCTAssertEqual(result.first?.source, .invidious)
+    }
+    @MainActor func testRadioRefillsWithoutRepeatingAndStopsWithoutChangingPlayback() async throws {
+        let library = LibraryStore(inMemory: true); library.tracks = []; library.playlists = []
+        let file = try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "orbite", withExtension: "wav"))
+        let seed = Track(title: "Radio seed", artist: "Test", duration: 48, source: .invidious, location: "seedxxxxxxx")
+        let candidates = (0..<15).map { Track(title: "Song \($0)", artist: "Artist \($0 % 3)", duration: 48, source: .invidious, location: String(format: "song%07d", $0)) }
+        let catalog = RadioCatalogFixture(tracks: [seed] + candidates), calls = OfflineDownloadFixtureCounter()
+        let suite = "radio-\(UUID().uuidString)", defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let player = AudioPlayer(library: library, onlineLoader: OfflineFixtureLoader(file: file, calls: calls), radioCatalog: catalog, radioDefaults: defaults)
+        defer { player.radio.stop(); player.pause() }
+        player.radio.start(seed)
+        for _ in 0..<100 { if !player.radio.loading, player.firstAudioLatency != nil { break }; try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertTrue(player.radio.active); XCTAssertEqual(player.queue.count, 13)
+        XCTAssertEqual(Set(player.queue.map(RadioRanking.identity)).count, player.queue.count)
+        let currentID = player.current?.id
+        player.radio.stop()
+        XCTAssertFalse(player.radio.active); XCTAssertEqual(player.current?.id, currentID); XCTAssertTrue(player.isPlaying)
+        player.play(candidates[0], in: candidates)
+        XCTAssertFalse(player.radio.active)
+    }
+    @MainActor func testRadioOfflineModeNeverCallsCatalogAndDislikesPersistLocally() async throws {
+        let library = LibraryStore(inMemory: true); library.settings.offlinePlaybackOnly = true
+        let catalog = RadioCatalogFixture(tracks: []), suite = "radio-offline-\(UUID().uuidString)", defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let player = AudioPlayer(library: library, radioCatalog: catalog, radioDefaults: defaults)
+        defer { player.radio.stop(); player.pause() }
+        let seed = try XCTUnwrap(library.tracks.first)
+        player.radio.start(seed)
+        for _ in 0..<60 { if !player.radio.loading, player.firstAudioLatency != nil { break }; try await Task.sleep(for: .milliseconds(50)) }
+        let network = await catalog.calls; XCTAssertEqual(network, 0)
+        XCTAssertTrue(player.queue.allSatisfy { $0.isOffline })
+        player.radio.dislikeCurrent()
+        XCTAssertTrue(player.radio.disliked.contains(RadioRanking.identity(seed)))
+        let restored = PersonalRadio(library: library, player: player, catalog: catalog, defaults: defaults)
+        XCTAssertTrue(restored.disliked.contains(RadioRanking.identity(seed)))
+    }
+    @MainActor func testStoppingRadioCancelsLateRecommendationsAndKeepsManualQueue() async throws {
+        let library = LibraryStore(inMemory: true)
+        let file = try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "orbite", withExtension: "wav"))
+        let seed = Track(title: "Seed", artist: "Test", duration: 48, source: .invidious, location: "seedxxxxxxx")
+        let late = Track(title: "Late recommendation", artist: "Test", duration: 48, source: .invidious, location: "latexxxxxxx")
+        let catalog = RadioCatalogFixture(tracks: [late], delay: 0.3), calls = OfflineDownloadFixtureCounter()
+        let player = AudioPlayer(library: library, onlineLoader: OfflineFixtureLoader(file: file, calls: calls), radioCatalog: catalog)
+        defer { player.pause() }
+        player.radio.start(seed)
+        try await Task.sleep(for: .milliseconds(50))
+        let manual = try XCTUnwrap(library.tracks.first { $0.source == .bundled })
+        player.play(manual, in: [manual])
+        try await Task.sleep(for: .milliseconds(450))
+        XCTAssertFalse(player.radio.active); XCTAssertEqual(player.queue.map(\.id), [manual.id])
+        XCTAssertEqual(player.current?.id, manual.id)
+    }
+    func testAutoMixEstimatesPulseTempoButDoesNotInventBeatsForSilence() {
+        var energy = [Double](repeating: 0, count: 6000)
+        for i in stride(from: 200, to: 5800, by: 50) { energy[i] = 1; energy[i + 1] = 0.5; energy[i + 2] = 0.1 }
+        let profile = MixRhythmEstimator.profile(energy: energy)
+        XCTAssertEqual(profile.duration, 60); XCTAssertEqual(profile.bpm ?? 0, 120, accuracy: 1)
+        XCTAssertGreaterThan(profile.confidence, 0.55)
+        XCTAssertEqual(profile.activeStart, 2, accuracy: 0.02)
+        XCTAssertNil(MixRhythmEstimator.profile(energy: Array(repeating: 0, count: 6000)).bpm)
+        XCTAssertNil(MixRhythmEstimator.profile(energy: Array(repeating: 0.1, count: 6000)).bpm)
+    }
+    func testAutoMixPlannerBoundsTempoBeatAlignmentAndSafeFallback() throws {
+        let outgoing = MixAudioProfile(duration: 180, activeStart: 0, activeEnd: 178, bpm: 120, beatOffset: 0.1, confidence: 0.9)
+        let incoming = MixAudioProfile(duration: 200, activeStart: 2, activeEnd: 199, bpm: 118, beatOffset: 0.05, confidence: 0.9)
+        let plan = AutoMixPlanner.plan(outgoing: outgoing, incoming: incoming)
+        XCTAssertTrue(plan.beatMatched); XCTAssertEqual(plan.tempoMultiplier, 120 / 118, accuracy: 0.001)
+        XCTAssertEqual((plan.outgoingStart - outgoing.beatOffset) / 0.5, ((plan.outgoingStart - outgoing.beatOffset) / 0.5).rounded(), accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(plan.incomingStart, incoming.activeStart); XCTAssertLessThanOrEqual(plan.seconds, 8)
+        var far = incoming; far.bpm = 150
+        XCTAssertFalse(AutoMixPlanner.plan(outgoing: outgoing, incoming: far).beatMatched)
+        XCTAssertFalse(AutoMixPlanner.plan(outgoing: outgoing, incoming: incoming, allowTempo: false).beatMatched)
+        var uncertain = incoming; uncertain.confidence = 0.1
+        XCTAssertFalse(AutoMixPlanner.plan(outgoing: outgoing, incoming: uncertain).beatMatched)
+        for i in 0...100 {
+            let gains = AutoMixPlanner.gains(at: Double(i) / 100)
+            XCTAssertGreaterThanOrEqual(gains.incoming, 0); XCTAssertGreaterThanOrEqual(gains.outgoing, 0)
+            XCTAssertLessThanOrEqual(gains.incoming + gains.outgoing, 1.0001)
+        }
+        var settings = AppSettings(); XCTAssertFalse(settings.usesAutoMix)
+        settings.autoMixEnabled = true
+        let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(settings))
+        XCTAssertTrue(restored.usesAutoMix); XCTAssertTrue(restored.usesCrossfade)
+    }
+    func testAutoMixNativeAnalysisCacheAndOriginalBytesRemainIntact() async throws {
+        let url = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "opus-vbr", withExtension: "caf"))
+        let before = try Data(contentsOf: url)
+        let profile = try await AutoMixAnalyzer.shared.analyze(url)
+        XCTAssertEqual(profile.duration, 4, accuracy: 0.05); XCTAssertTrue(profile.valid)
+        let again = try await AutoMixAnalyzer.shared.analyze(url)
+        XCTAssertEqual(again, profile); XCTAssertEqual(try Data(contentsOf: url), before)
+    }
+    @MainActor func testAutoMixActuallyOverlapsPreparedNativeTracksAndPauseStopsBoth() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("automix-play-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let rate = 48000.0
+        let format = try XCTUnwrap(AVAudioFormat(standardFormatWithSampleRate: rate, channels: 2))
+        func writePulse(_ name: String, bpm: Double) throws -> URL {
+            let url = root.appendingPathComponent(name)
+            let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 32 * 48000)); buffer.frameLength = buffer.frameCapacity
+            for i in 0..<Int(buffer.frameLength) {
+                let t = Double(i) / rate, phase = (t - 2).truncatingRemainder(dividingBy: 60 / bpm)
+                let value: Float = t >= 2 && t < 31 && phase >= 0 && phase < 0.08 ? Float(sin(2 * .pi * 160 * t) * exp(-phase * 40) * 0.2) : 0
+                buffer.floatChannelData![0][i] = value; buffer.floatChannelData![1][i] = value
+            }
+            let file = try AVAudioFile(forWriting: url, settings: format.settings); try file.write(from: buffer)
+            return url
+        }
+        let url = try writePulse("pulse120.wav", bpm: 120), other = try writePulse("pulse118.wav", bpm: 118)
+        let profile = try await AutoMixAnalyzer.shared.analyze(url)
+        XCTAssertNotNil(profile.bpm); XCTAssertGreaterThan(profile.confidence, 0.55)
+        let library = LibraryStore(inMemory: true); library.settings.autoMixEnabled = true
+        let player = AudioPlayer(library: library, onlineLoader: MixPlaybackFixtureLoader(first: url, second: other))
+        defer { player.pause() }
+        let first = Track(title: "Pulse A", artist: "Test", duration: 32, source: .invidious, location: "pulseaaaaaa")
+        let second = Track(title: "Pulse B", artist: "Test", duration: 32, source: .invidious, location: "pulsebbbbbb")
+        player.play(first, in: [first, second])
+        for _ in 0..<240 { if player.debugAutoMixPlan != nil || player.error != nil { break }; try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertNil(player.error)
+        let plan = try XCTUnwrap(player.debugAutoMixPlan); XCTAssertTrue(plan.beatMatched)
+        player.seek(to: plan.outgoingStart - 0.35)
+        for _ in 0..<100 { if player.current?.id == second.id && player.isPlaying { break }; try await Task.sleep(for: .milliseconds(50)) }
+        XCTAssertEqual(player.current?.id, second.id); XCTAssertTrue(player.isTransitioning)
+        XCTAssertEqual(player.overlappingPlaybackCount, 2)
+        XCTAssertGreaterThanOrEqual(player.position, profile.activeStart - 0.05)
+        XCTAssertTrue(player.autoMixMessage?.contains("BPM") == true)
+        XCTAssertGreaterThan(player.debugAutoMixTempo, 1)
+        XCTAssertLessThanOrEqual(player.debugAutoMixTempo, 1.04)
+        XCTAssertEqual(player.debugTimePitchRate, player.debugAutoMixTempo, accuracy: 0.001)
+        player.pause(); XCTAssertEqual(player.overlappingPlaybackCount, 0)
+        XCTAssertEqual(library.settings.playbackRate, 1)
+    }
+
     func testNormalizationKWeightingMatchesReferenceAt44100And48000Hz() throws {
         // FFmpeg ebur128 independently reports -20.0 LUFS for this 1 kHz,
         // amplitude 0.1 stereo signal. It is not a sample-RMS target.
@@ -2024,6 +2186,29 @@ private actor UpcomingPreparationCounter {
     private(set) var qualities: [OnlineAudioQuality] = []
     func record(_ location: String, quality: OnlineAudioQuality) { count += 1; lastLocation = location; locations.append(location); qualities.append(quality) }
     func calls(for location: String) -> Int { locations.filter { $0 == location }.count }
+}
+
+private struct MixPlaybackFixtureLoader: StreamingAudioLoading {
+    var first: URL
+    var second: URL
+    func load(_ track: Track, settings: AppSettings, progress: @escaping @Sendable (AudioLoadUpdate) -> Void) async throws -> InvidiousAudio {
+        InvidiousAudio(fileURL: track.location == "pulseaaaaaa" ? first : second, bitrate: 0, instance: URL(string: "https://fixture.invalid")!, duration: 32)
+    }
+    func playback(_ track: Track, settings: AppSettings, direct: Bool) async throws -> OnlinePlaybackResource {
+        .file(try await load(track, settings: settings, progress: { _ in }))
+    }
+}
+
+private actor RadioCatalogFixture: RadioCatalogLoading {
+    let tracks: [Track]
+    let delay: Double
+    private(set) var calls = 0
+    init(tracks: [Track], delay: Double = 0) { self.tracks = tracks; self.delay = delay }
+    func recommendations(for seed: Track) async throws -> [Track] {
+        calls += 1
+        if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
+        return tracks
+    }
 }
 
 private actor ReliableDownloadFixture {

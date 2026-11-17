@@ -135,6 +135,10 @@ struct PlayerView: View {
             Spacer()
             Menu {
                 if let track = player.current { TrackActions(track: track) }
+                if player.radio.active {
+                    Button("Moins de ce titre", systemImage: "hand.thumbsdown") { player.radio.dislikeCurrent() }
+                    Button("Arrêter la radio", systemImage: "stop.circle") { player.radio.stop() }
+                }
                 Button { showSleep = true } label: { Label("Minuterie de sommeil", systemImage: "moon.zzz") }
                 Button { showSound = true } label: { Label("Réglages audio", systemImage: "slider.horizontal.3") }
                 if player.loopA == nil { Button("Définir le début de boucle A") { player.loopA = player.position } }
@@ -164,6 +168,10 @@ struct PlayerView: View {
                 if let status = player.upcomingPreparationStatus {
                     Text(status).font(.system(size: 10)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
                 }
+                if let status = player.autoMixMessage {
+                    Text(status).font(.system(size: 10)).foregroundStyle(library.settings.color).lineLimit(2)
+                }
+                if player.radio.active { Label("Radio personnalisée", systemImage: "dot.radiowaves.left.and.right").font(.caption2).foregroundStyle(.white.opacity(0.7)) }
             }
             Spacer(minLength: 0)
             IconButton(symbol: library.isFavorite(track) ? "heart.fill" : "heart", label: "Favori") { library.toggleFavorite(track) }

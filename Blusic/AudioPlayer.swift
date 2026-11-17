@@ -22,6 +22,7 @@ final class AudioPlayer {
     private(set) var effectsMessage: String?
     private(set) var normalizationMessage: String?
     private(set) var normalizationGainDB: Float = 0
+    private(set) var autoMixMessage: String?
     private(set) var firstAudioLatency: Double?
     private(set) var isTransitioning = false
     private(set) var upcomingPreparationStatus: String?
@@ -71,6 +72,8 @@ final class AudioPlayer {
     private let loadingTimeout: TimeInterval
     private let streamBufferTimeout: TimeInterval
     private let onlineLoader: any OnlineAudioLoading
+    @ObservationIgnored private let radioCatalog: any RadioCatalogLoading
+    @ObservationIgnored private let radioDefaults: UserDefaults
     private var streamPlayer: AVPlayer?
     private var streamSource: InvidiousStream?
     private var streamObservations: [NSKeyValueObservation] = []
@@ -101,16 +104,29 @@ final class AudioPlayer {
     @ObservationIgnored private var upcomingKey: String?
     @ObservationIgnored private var preparationForCurrentID: UUID?
     @ObservationIgnored private var plannedNextID: UUID?
+    @ObservationIgnored lazy var radio = PersonalRadio(library: library, player: self, catalog: radioCatalog, defaults: radioDefaults)
+    @ObservationIgnored private var mixProfile: MixAudioProfile?
+    @ObservationIgnored private var nextMixProfile: MixAudioProfile?
+    @ObservationIgnored private var mixPlan: AutoMixPlan?
+    @ObservationIgnored private var pendingMix: AutoMixPlan?
+    @ObservationIgnored private var activeMix: AutoMixPlan?
+    @ObservationIgnored private var mixTransitionTask: Task<Void, Never>?
+    @ObservationIgnored private var mixTempoTask: Task<Void, Never>?
+    @ObservationIgnored private var mixTempo: Float = 1
 
     #if DEBUG
     var overlappingPlaybackCount: Int { (isPlaying ? 1 : 0) + (outgoing?.active() == true ? 1 : 0) }
+    var debugAutoMixPlan: AutoMixPlan? { mixPlan }
+    var debugAutoMixTempo: Float { mixTempo }
+    var debugTimePitchRate: Float { pitch.rate }
     #endif
 
-    init(library: LibraryStore, loadingTimeout: TimeInterval = 20, streamBufferTimeout: TimeInterval = 4, onlineLoader: any OnlineAudioLoading = InvidiousAudioLoader()) {
+    init(library: LibraryStore, loadingTimeout: TimeInterval = 20, streamBufferTimeout: TimeInterval = 4, onlineLoader: any OnlineAudioLoading = InvidiousAudioLoader(), radioCatalog: any RadioCatalogLoading = MusicCatalogService(), radioDefaults: UserDefaults = .standard) {
         self.library = library
         self.loadingTimeout = loadingTimeout
         self.streamBufferTimeout = streamBufferTimeout
         self.onlineLoader = onlineLoader
+        self.radioCatalog = radioCatalog; self.radioDefaults = radioDefaults
         wireGraph()
         apply(library.settings)
         configureRemoteCommands()
@@ -142,7 +158,10 @@ final class AudioPlayer {
         engine.connect(equalizer, to: engine.mainMixerNode, format: nil)
     }
 
-    func play(_ requested: Track, in tracks: [Track]? = nil) {
+    func play(_ requested: Track, in tracks: [Track]? = nil, preservingRadio: Bool = false) {
+        if !preservingRadio { radio.stop() }
+        let incomingMix = pendingMix; pendingMix = nil
+        mixTransitionTask?.cancel(); mixTransitionTask = nil; mixTempoTask?.cancel(); mixTempoTask = nil
         let incomingKey = Self.preparationKey(requested, settings: library.settings)
         let usePrepared = upcomingKey == incomingKey
         let incomingPreparation = usePrepared ? upcomingTask : nil
@@ -158,6 +177,10 @@ final class AudioPlayer {
         if !queue.contains(where: { $0.id == track.id }) { queue.append(track) }
         flushListening()
         retainOutgoingForFade(nextID: track.id)
+        activeMix = outgoing == nil ? nil : incomingMix
+        mixTempo = activeMix?.tempoMultiplier ?? 1
+        mixProfile = nil; nextMixProfile = nil; mixPlan = nil
+        autoMixMessage = activeMix?.explanation
         loudnessProfile = nil; normalizationGainDB = 0; normalizer.globalGain = 0; normalizer.bypass = true; normalizationMessage = nil
         loadTask?.cancel(); loadingWatchdog?.cancel(); artworkTask?.cancel()
         alternateTask?.cancel(); bufferWatchdog?.cancel(); effectsTask?.cancel(); stopStreaming()
@@ -191,7 +214,7 @@ final class AudioPlayer {
             guard let self else { return }
             let nativeTimeout: Double = library.settings.audioQuality == .opus ? 90 : 50
             let sourceTimeout = onlineLoader is InvidiousAudioLoader && (["auto", "youtubei"].contains(library.settings.audioSourceMode) || library.settings.audioQuality == .opus) ? max(loadingTimeout, nativeTimeout) : loadingTimeout
-            let timeout = library.settings.usesAudioNormalization ? max(sourceTimeout, 90) : sourceTimeout
+            let timeout = library.settings.usesAudioNormalization || library.settings.usesAutoMix ? max(sourceTimeout, 90) : sourceTimeout
             do { try await Task.sleep(for: .seconds(timeout)) } catch { return }
             guard generation == token, isLoading else { return }
             generation = UUID(); loadTask?.cancel()
@@ -308,7 +331,7 @@ final class AudioPlayer {
             wantsPlayback = true; streamPlayer.playImmediately(atRate: library.settings.playbackRate)
             return
         }
-        guard audioFile != nil else { play(current); return }
+        guard audioFile != nil else { play(current, preservingRadio: radio.active); return }
         do {
             try activateSession()
             if !engine.isRunning { try engine.start() }
@@ -318,6 +341,9 @@ final class AudioPlayer {
         } catch { self.error = error.localizedDescription }
     }
     func pause() {
+        radio.suspend()
+        mixTransitionTask?.cancel(); mixTransitionTask = nil; mixTempoTask?.cancel(); mixTempoTask = nil
+        mixTempo = 1; apply(library.settings)
         invalidateUpcomingPreparation()
         flushListening()
         if isLoading { generation = UUID(); loadTask?.cancel(); stopStreaming(); isLoading = false }
@@ -328,6 +354,7 @@ final class AudioPlayer {
         updateNowPlaying()
     }
     func seek(to seconds: Double) {
+        mixTransitionTask?.cancel(); mixTransitionTask = nil
         if let streamPlayer {
             let target = max(0, min(seconds, max(0, duration - 0.05)))
             streamPlayer.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
@@ -340,6 +367,8 @@ final class AudioPlayer {
         updateNowPlaying()
     }
     func next(userInitiated: Bool = true) {
+        if userInitiated, radio.active, let current, position < min(30, duration * 0.2) { radio.recordSkip(current) }
+        radio.fillIfNeeded()
         if stopAtEnd && !userInitiated { stopAtEnd = false; pause(); return }
         if repeatMode == .one && !userInitiated { seek(to: 0); return }
         guard !queue.isEmpty else { pause(); return }
@@ -351,18 +380,18 @@ final class AudioPlayer {
                 playedIDs = current.map { Set([$0.id]) } ?? []
                 choices = queue.filter { $0.id != current?.id }
             }
-            if let chosen = choices.first(where: { $0.id == plannedNextID }) ?? choices.randomElement() { play(chosen) }
-            else if repeatMode != .off || userInitiated, let first = queue.first { play(first) }
+            if let chosen = choices.first(where: { $0.id == plannedNextID }) ?? choices.randomElement() { play(chosen, preservingRadio: true) }
+            else if repeatMode != .off || userInitiated, let first = queue.first { play(first, preservingRadio: true) }
             else { pause() }
-        } else if index + 1 < queue.count { play(queue[index + 1]) }
-        else if repeatMode == .all || userInitiated { play(queue[0]) }
+        } else if index + 1 < queue.count { play(queue[index + 1], preservingRadio: true) }
+        else if repeatMode == .all || (userInitiated && !radio.active) { play(queue[0], preservingRadio: true) }
         else { pause(); position = duration }
     }
     func previous() {
         if position > 3 { seek(to: 0); return }
         guard !queue.isEmpty else { return }
         let index = queue.firstIndex { $0.id == current?.id } ?? 0
-        play(queue[max(0, index - 1)])
+        play(queue[max(0, index - 1)], preservingRadio: true)
     }
     func enqueue(_ track: Track, next: Bool = false) {
         guard track.id != current?.id else { library.notice = "Ce titre est déjà à l’écoute"; return }
@@ -374,6 +403,12 @@ final class AudioPlayer {
     func removeFromQueue(at offsets: IndexSet) { queue.remove(atOffsets: offsets); persistQueue() }
     func moveQueue(from offsets: IndexSet, to destination: Int) { queue.move(fromOffsets: offsets, toOffset: destination); persistQueue() }
     func clearQueue() { queue = current.map { [$0] } ?? []; persistQueue() }
+    func appendRadioTracks(_ tracks: [Track]) {
+        var identities = Set(queue.map(RadioRanking.identity))
+        let additions = library.add(tracks).filter { identities.insert(RadioRanking.identity($0)).inserted }
+        guard !additions.isEmpty else { return }
+        queue.append(contentsOf: additions); persistQueue()
+    }
     func openOfficialPlayer(for track: Track) {
         pause()
         youtubeTrack = track
@@ -392,11 +427,12 @@ final class AudioPlayer {
     func apply(_ settings: AppSettings) {
         if let key = upcomingKey, let next = queue.first(where: { $0.id == plannedNextID }), Self.preparationKey(next, settings: settings) != key { invalidateUpcomingPreparation() }
         let rate = min(2, max(0.5, settings.playbackRate))
-        varispeed.bypass = !settings.usesLinkedSpeedAndPitch || abs(rate - 1) < 0.0001
-        varispeed.rate = settings.usesLinkedSpeedAndPitch ? rate : 1
-        pitch.bypass = settings.usesLinkedSpeedAndPitch
-        pitch.rate = settings.usesLinkedSpeedAndPitch ? 1 : rate
-        pitch.pitch = settings.usesLinkedSpeedAndPitch ? 0 : min(1200, max(-1200, settings.pitch * 100))
+        let matching = settings.usesAutoMix && abs(mixTempo - 1) > 0.0001
+        varispeed.bypass = matching || !settings.usesLinkedSpeedAndPitch || abs(rate - 1) < 0.0001
+        varispeed.rate = !matching && settings.usesLinkedSpeedAndPitch ? rate : 1
+        pitch.bypass = settings.usesLinkedSpeedAndPitch && !matching
+        pitch.rate = matching ? rate * mixTempo : settings.usesLinkedSpeedAndPitch ? 1 : rate
+        pitch.pitch = matching || settings.usesLinkedSpeedAndPitch ? 0 : min(1200, max(-1200, settings.pitch * 100))
         pitch.overlap = 16
         equalizer.bypass = !settings.equalizerEnabled
         for index in equalizer.bands.indices {
@@ -405,6 +441,10 @@ final class AudioPlayer {
         // Headroom avoids clipping with positive EQ boosts.
         let headroom = settings.equalizerEnabled ? max(0, settings.equalizer.max() ?? 0) : 0
         equalizer.globalGain = -headroom
+        if !settings.usesAutoMix {
+            mixTransitionTask?.cancel(); mixTransitionTask = nil; mixTempoTask?.cancel(); mixTempoTask = nil
+            mixPlan = nil; activeMix = nil; mixTempo = 1; autoMixMessage = nil
+        }
         applyNormalization(settings)
         outgoing?.normalization(settings.usesAudioNormalization)
         if !settings.usesCrossfade, outgoing != nil { cancelTransition() }
@@ -435,6 +475,7 @@ final class AudioPlayer {
     }
     private func cancelTransition(restoreVolume: Bool = true) {
         fadeTask?.cancel(); fadeTask = nil
+        activeMix = nil
         outgoing?.stop(); outgoing = nil; outgoingGain = 0; isTransitioning = false
         if restoreVolume { setIncomingGain(1) }
     }
@@ -474,17 +515,20 @@ final class AudioPlayer {
     }
     private func beginCrossfade() {
         guard let deck = outgoing, fadeTask == nil else { return }
-        let seconds = min(library.settings.crossfadeSeconds, max(0.15, deck.remaining()))
+        let seconds = min(activeMix?.seconds ?? library.settings.crossfadeSeconds, max(0.15, deck.remaining()))
+        let smart = activeMix != nil
         let began = Date()
         fadeTask = Task { @MainActor [weak self] in
             guard let self else { return }
             while !Task.isCancelled {
                 let fraction = min(1, Date().timeIntervalSince(began) / seconds)
-                setIncomingGain(Float(fraction))
-                outgoingGain = deck.baseGain * Float(1 - fraction)
+                let gains = smart ? AutoMixPlanner.gains(at: fraction) : (Float(fraction), Float(1 - fraction))
+                setIncomingGain(gains.0)
+                outgoingGain = deck.baseGain * gains.1
                 deck.volume(library.settings.volume * outgoingGain)
                 if fraction >= 1 {
                     deck.stop(); outgoing = nil; isTransitioning = false; outgoingGain = 0; fadeTask = nil
+                    relaxMixTempo()
                     return
                 }
                 do { try await Task.sleep(for: .milliseconds(20)) } catch { return }
@@ -492,9 +536,48 @@ final class AudioPlayer {
         }
     }
 
+    private func armAutoMixIfPossible() {
+        guard library.settings.usesAutoMix, mixTransitionTask == nil, let plan = mixPlan, plan.seconds > 0,
+              isPlaying, !isLoading, !isStreaming, !isTransitioning, !stopAtEnd, repeatMode != .one,
+              loopB == nil, let currentID = current?.id, automaticFadeID != currentID,
+              plannedNextID != nil, upcomingTask != nil else { return }
+        let token = generation
+        let wait = max(0, plan.outgoingStart - position) / Double(max(0.5, library.settings.playbackRate))
+        // Seeking past the planned exit should use the normal end-of-track path.
+        guard position <= plan.outgoingStart + 0.5 else { mixPlan = nil; return }
+        mixTransitionTask = Task { @MainActor [weak self] in
+            do { try await Task.sleep(for: .seconds(wait)) } catch { return }
+            guard let self, !Task.isCancelled, generation == token, current?.id == currentID,
+                  library.settings.usesAutoMix, isPlaying, !isLoading, !stopAtEnd, repeatMode != .one,
+                  loopB == nil, !isTransitioning else { self?.mixTransitionTask = nil; return }
+            mixTransitionTask = nil; automaticFadeID = currentID; pendingMix = plan
+            next(userInitiated: false)
+        }
+    }
+    private func relaxMixTempo() {
+        activeMix = nil
+        guard abs(mixTempo - 1) > 0.0001 else { return }
+        let start = mixTempo, currentID = current?.id
+        mixTempoTask?.cancel()
+        mixTempoTask = Task { @MainActor [weak self] in
+            for step in 1...100 {
+                do { try await Task.sleep(for: .milliseconds(20)) } catch { return }
+                guard let self, self.current?.id == currentID, library.settings.usesAutoMix else { return }
+                mixTempo = start + (1 - start) * Float(step) / 100
+                apply(library.settings)
+            }
+        }
+    }
+
     private func startNativeFile(_ url: URL, track: Track, bitrate: Int?, at seconds: Double, autoplay: Bool, provider: String? = nil) async throws {
         let token = generation
         var measured: AudioLoudnessProfile?
+        var rhythm: MixAudioProfile?
+        if library.settings.usesAutoMix {
+            if isLoading { loadingMessage = "Analyse du rythme pour AutoMix…" }
+            do { rhythm = try await AutoMixAnalyzer.shared.analyze(url) }
+            catch { if Task.isCancelled || error is CancellationError { throw CancellationError() } }
+        }
         if library.settings.usesAudioNormalization {
             normalizationMessage = "Analyse du volume…"
             if isLoading { loadingMessage = "Analyse du volume du morceau…" }
@@ -507,8 +590,13 @@ final class AudioPlayer {
         }
         try Task.checkCancellation()
         guard generation == token else { throw CancellationError() }
+        mixProfile = rhythm
+        if library.settings.usesAutoMix, activeMix == nil {
+            if let bpm = rhythm?.bpm { autoMixMessage = String(format: "AutoMix · %.0f BPM estimés · préparation du suivant", bpm) }
+            else { autoMixMessage = "AutoMix · fondu doux si le rythme n’est pas fiable" }
+        }
         loudnessProfile = measured
-        applyNormalization(library.settings)
+        apply(library.settings)
         let shouldPlay = autoplay && wantsPlayback
         let file = try AVAudioFile(forReading: url)
         let inspection = try NativeAudioInspection.inspect(url)
@@ -536,18 +624,20 @@ final class AudioPlayer {
         engine.connect(pitch, to: equalizer, format: file.processingFormat)
         engine.connect(equalizer, to: engine.mainMixerNode, format: file.processingFormat)
         try activateSession(); try engine.start()
-        schedule(at: min(seconds, max(0, duration - 0.05)))
+        let entry = activeMix?.incomingStart ?? seconds
+        schedule(at: min(entry, max(0, duration - 0.05)))
         stopStreaming()
         setIncomingGain(incomingGain)
         if shouldPlay { node.play() }
+        if shouldPlay, activeMix != nil { beginCrossfade() }
         isPlaying = shouldPlay; wantsPlayback = shouldPlay; isLoading = false
         loadingWatchdog?.cancel(); loadingMessage = ""; loadingProgress = nil
         lastTick = Date(); updateNowPlaying(loadArtwork: true)
     }
 
     private func startStreaming(_ source: InvidiousStream, token: UUID, at seconds: Double = 0) async throws {
-        if library.settings.usesAudioNormalization, let current, let loader = onlineLoader as? any StreamingAudioLoading {
-            loadingMessage = "Préparation du fichier pour la normalisation…"
+        if library.settings.usesAudioNormalization || library.settings.usesAutoMix, let current, let loader = onlineLoader as? any StreamingAudioLoading {
+            loadingMessage = "Préparation du fichier pour le traitement audio…"
             do {
                 let audio = try await loader.prepareFile(source, for: current)
                 try Task.checkCancellation()
@@ -558,6 +648,7 @@ final class AudioPlayer {
                 if Task.isCancelled || error is CancellationError { throw CancellationError() }
                 guard generation == token else { throw CancellationError() }
                 normalizationMessage = "Normalisation indisponible : le flux continue au volume d’origine."
+                if library.settings.usesAutoMix { autoMixMessage = "AutoMix · fichier indisponible, fondu simple de secours" }
             }
         }
         stopStreaming()
@@ -769,9 +860,11 @@ final class AudioPlayer {
             if isStreaming, requestedEffects || library.settings.needsPreparedEffects { prepareNativeEffects() }
         }
         flushListening(force: false)
+        radio.fillIfNeeded()
         prepareUpcomingIfNeeded()
+        armAutoMixIfPossible()
         if library.settings.usesCrossfade, !isLoading, !isTransitioning, stopAtEnd == false, repeatMode != .one,
-           loopB == nil, let id = current?.id, automaticFadeID != id, duration > 0,
+           (!library.settings.usesAutoMix || mixPlan == nil), loopB == nil, let id = current?.id, automaticFadeID != id, duration > 0,
            (duration - position) / Double(max(0.5, library.settings.playbackRate)) <= library.settings.crossfadeSeconds {
             let index = queue.firstIndex { $0.id == id } ?? -1
             let canAdvance = shuffle ? queue.contains { !playedIDs.contains($0.id) } || repeatMode == .all : index + 1 < queue.count || repeatMode == .all
@@ -796,9 +889,10 @@ final class AudioPlayer {
         library.savedQueue = queue.map(\.id); library.savedCurrentID = current?.id
     }
     private static func preparationKey(_ track: Track, settings: AppSettings) -> String {
-        "\(track.source.rawValue)|\(track.location)|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(settings.youtubeiRelayAddress ?? "")|\(settings.youtubeiRelayDisabled ?? false)|\(settings.audioQuality.rawValue)|\(settings.usesAudioNormalization)|\(settings.usesOfflinePlaybackOnly)"
+        "\(track.source.rawValue)|\(track.location)|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(settings.youtubeiRelayAddress ?? "")|\(settings.youtubeiRelayDisabled ?? false)|\(settings.audioQuality.rawValue)|\(settings.usesAudioNormalization)|\(settings.usesOfflinePlaybackOnly)|\(settings.usesAutoMix)"
     }
     private func invalidateUpcomingPreparation() {
+        mixTransitionTask?.cancel(); mixTransitionTask = nil; nextMixProfile = nil; mixPlan = nil
         upcomingTask?.cancel(); upcomingTask = nil
         upcomingMonitor?.cancel(); upcomingMonitor = nil
         upcomingKey = nil; preparationForCurrentID = nil; plannedNextID = nil; upcomingPreparationStatus = nil
@@ -818,8 +912,9 @@ final class AudioPlayer {
         preparationForCurrentID = current.id
         guard let next else { return }
         plannedNextID = next.id
-        guard [.invidious, .remote].contains(next.source) else { return } // Local files already need no network preparation.
+        guard [.invidious, .remote].contains(next.source) || (library.settings.usesAutoMix && next.isOffline) else { return }
         let settings = library.settings, loader = onlineLoader, currentID = current.id
+        let local = next.isOffline ? library.nativeURL(for: next) : nil
         let downloads = library.downloads
         let key = Self.preparationKey(next, settings: settings)
         upcomingKey = key; upcomingPreparationStatus = "Préparation du titre suivant…"
@@ -827,6 +922,7 @@ final class AudioPlayer {
             try await QueuePreparationPolicy.retry(operation: {
                let audio = try await withThrowingTaskGroup(of: InvidiousAudio.self) { group in
                 group.addTask {
+                    if let local { return InvidiousAudio(fileURL: local, bitrate: 0, instance: local, duration: next.duration) }
                     if let audio = try await downloads.audio(for: next) { return audio }
                     if settings.usesOfflinePlaybackOnly { throw CancellationError() }
                     if next.source == .remote, let url = URL(string: next.location) {
@@ -851,6 +947,10 @@ final class AudioPlayer {
                    do { _ = try await AudioNormalizationAnalyzer.shared.analyze(audio.fileURL) }
                    catch { if Task.isCancelled || error is CancellationError { throw CancellationError() } }
                }
+               if settings.usesAutoMix {
+                   do { _ = try await AutoMixAnalyzer.shared.analyze(audio.fileURL) }
+                   catch { if Task.isCancelled || error is CancellationError { throw CancellationError() } }
+               }
                return audio
             }, onRetry: { attempt, wait in
                 if let streaming = loader as? any StreamingAudioLoading { await streaming.invalidate(next, settings: settings) }
@@ -863,8 +963,18 @@ final class AudioPlayer {
         upcomingTask = task
         upcomingMonitor = Task { @MainActor [weak self] in
             do {
-                _ = try await task.value
+                let audio = try await task.value
                 guard !Task.isCancelled, let self, self.current?.id == currentID, upcomingKey == key else { return }
+                if settings.usesAutoMix {
+                    let profile = try? await AutoMixAnalyzer.shared.analyze(audio.fileURL)
+                    guard !Task.isCancelled, self.current?.id == currentID, upcomingKey == key else { return }
+                    nextMixProfile = profile
+                    if let profile, let currentProfile = mixProfile {
+                        mixPlan = AutoMixPlanner.plan(outgoing: currentProfile, incoming: profile,
+                            allowTempo: abs(library.settings.playbackRate - 1) < 0.001 && abs(library.settings.pitch) < 0.001)
+                        autoMixMessage = mixPlan?.explanation
+                    }
+                }
                 upcomingPreparationStatus = "Titre suivant préchargé"
             } catch {
                 guard !Task.isCancelled, let self, self.current?.id == currentID, upcomingKey == key else { return }

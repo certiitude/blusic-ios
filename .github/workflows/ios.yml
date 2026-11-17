@@ -87,6 +87,32 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Start optional account PostgreSQL test fixture
         run: node account-server/test/ios-server.mjs > build/soryn-accounts-node.log 2>&1 &
+      - name: Personalized radio and analyzed AutoMix native playback
+        run: >-
+          xcodebuild test -project Blusic.xcodeproj -scheme Blusic
+          -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
+          -derivedDataPath build/DerivedData -resultBundlePath build/SorynRadioAutoMixTests.xcresult
+          -only-testing:BlusicTests/BlusicTests/testRadioRankingUsesTasteDeduplicatesAndRespectsDislikes
+          -only-testing:BlusicTests/BlusicTests/testRadioCatalogRequestsAudioRadioAndRejectsMusicVideos
+          -only-testing:BlusicTests/BlusicTests/testRadioRefillsWithoutRepeatingAndStopsWithoutChangingPlayback
+          -only-testing:BlusicTests/BlusicTests/testRadioOfflineModeNeverCallsCatalogAndDislikesPersistLocally
+          -only-testing:BlusicTests/BlusicTests/testStoppingRadioCancelsLateRecommendationsAndKeepsManualQueue
+          -only-testing:BlusicTests/BlusicTests/testAutoMixEstimatesPulseTempoButDoesNotInventBeatsForSilence
+          -only-testing:BlusicTests/BlusicTests/testAutoMixPlannerBoundsTempoBeatAlignmentAndSafeFallback
+          -only-testing:BlusicTests/BlusicTests/testAutoMixNativeAnalysisCacheAndOriginalBytesRemainIntact
+          -only-testing:BlusicTests/BlusicTests/testAutoMixActuallyOverlapsPreparedNativeTracksAndPauseStopsBoth
+          -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+      - name: Export radio and AutoMix results
+        if: ${{ !cancelled() && hashFiles('build/SorynRadioAutoMixTests.xcresult/Info.plist') != '' }}
+        run: xcrun xcresulttool get test-results summary --path build/SorynRadioAutoMixTests.xcresult > build/soryn-radio-automix-summary.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Soryn-radio-automix-tests
+          path: |
+            build/SorynRadioAutoMixTests.xcresult
+            build/soryn-radio-automix-summary.json
+          retention-days: 7
       - name: Native loudness normalization, gain safety and unchanged audio
         run: >-
           xcodebuild test -project Blusic.xcodeproj -scheme Blusic

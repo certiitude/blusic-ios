@@ -66,6 +66,7 @@ def main():
                        ("player", ["--blusic-preview-player"], 4),
                        ("opus", ["--blusic-preview-settings", "--blusic-opus"], 4),
                        ("sound", ["--blusic-preview-sound"], 4),
+                       ("radio", ["--blusic-preview-radio"], 4),
                        ("downloads", ["--blusic-preview-downloads"], 4)]
         for screen, launch_args, wait in screens:
             run("launch", "--terminate-running-process", device, "app.blusic.ios", *launch_args)

@@ -6,7 +6,7 @@ private enum AppTab: String, CaseIterable {
     var symbol: String { switch self { case .home: return "house.fill"; case .search: return "magnifyingglass"; case .library: return "square.stack.fill" } }
 }
 private enum AppSheet: String, Identifiable {
-    case player, settings, statistics, youtube, artist, sound, downloads
+    case player, settings, statistics, youtube, artist, sound, downloads, radio
     var id: String { rawValue }
 }
 
@@ -36,6 +36,7 @@ struct RootView: View {
             case .statistics: NavigationStack { StatisticsView() }
             case .sound: NavigationStack { SoundSettingsView() }
             case .downloads: NavigationStack { DownloadsView() }
+            case .radio: NavigationStack { RadioView() }
             case .youtube:
                 if let track = player.youtubeTrack ?? player.current { NavigationStack { YouTubePlayerView(track: track) } }
             case .artist:
@@ -99,6 +100,8 @@ struct RootView: View {
                 sheet = .settings
             } else if ProcessInfo.processInfo.arguments.contains("--blusic-preview-downloads") {
                 sheet = .downloads
+            } else if ProcessInfo.processInfo.arguments.contains("--blusic-preview-radio") {
+                sheet = .radio
             } else if ProcessInfo.processInfo.arguments.contains("--blusic-preview-mini"), let demo = library.tracks.first(where: { $0.source == .bundled }) {
                 player.play(demo, in: [demo]); player.pause()
             }

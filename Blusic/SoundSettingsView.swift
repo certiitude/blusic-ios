@@ -15,6 +15,12 @@ struct SoundSettingsView: View {
     var body: some View {
         @Bindable var library = library
         Form {
+            Section("AutoMix") {
+                Toggle("Transitions intelligentes", isOn: Binding(get: { library.settings.usesAutoMix }, set: { library.settings.autoMixEnabled = $0 }))
+                Text("Le rythme est estimé sur l’iPhone. Ajustement temporaire du tempo sans changement de hauteur si l’écart est inférieur à 4 %, sinon fondu doux. Les réglages manuels de vitesse/tonalité désactivent l’adaptation rythmique.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let message = player.autoMixMessage { Text(message).font(.caption).foregroundStyle(library.settings.color) }
+            }
             Section("Volume homogène") {
                 Toggle("Normalisation audio", isOn: Binding(get: { library.settings.usesAudioNormalization }, set: { library.settings.audioNormalization = $0 }))
                     .accessibilityIdentifier("audio-normalization")

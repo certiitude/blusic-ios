@@ -21,6 +21,37 @@ struct MusicCatalogService {
         return try Self.parseArtists(data)
     }
 
+    func callRadio(_ videoID: String) async throws -> Data {
+        try await call("next", payload: ["videoId": videoID, "playlistId": "RDAMVM" + videoID,
+                                        "isAudioOnly": true, "enablePersistentPlaylistPanel": true])
+    }
+    static func parseRadio(_ data: Data) throws -> [Track] {
+        guard let root = try JSONSerialization.jsonObject(with: data) as? [String: Any], root["error"] == nil else {
+            throw BlusicError.message("La radio YouTube Music est indisponible.")
+        }
+        var seen = Set<String>()
+        return dictionaries(named: "playlistPanelVideoRenderer", in: root).compactMap { row in
+            let types = strings(named: "musicVideoType", in: row)
+            guard types.contains("MUSIC_VIDEO_TYPE_ATV"), !types.contains("MUSIC_VIDEO_TYPE_OMV"),
+                  row["unplayableText"] == nil, let id = row["videoId"] as? String,
+                  InvidiousService.isVideoID(id), seen.insert(id).inserted else { return nil }
+            let title = text(row["title"])
+            guard !title.isEmpty else { return nil }
+            let bylineRuns = (row["longBylineText"] as? [String: Any])?["runs"] as? [[String: Any]] ?? []
+            let artists = bylineRuns.filter { run in
+                let endpoint = run["navigationEndpoint"] as? [String: Any]
+                return ((endpoint?["browseEndpoint"] as? [String: Any])?["browseId"] as? String)?.hasPrefix("UC") == true
+            }.compactMap { $0["text"] as? String }
+            let byline = artists.isEmpty ? text(row["shortBylineText"] ?? row["longBylineText"]) : artists.joined(separator: ", ")
+            let thumbnail = (row["thumbnail"] as? [String: Any])?["thumbnails"] as? [[String: Any]] ?? []
+            let image = (thumbnail.last?["url"] as? String).flatMap(URL.init(string:))
+            let artistID = dictionaries(named: "browseEndpoint", in: row).compactMap { $0["browseId"] as? String }.first { $0.hasPrefix("UC") }
+            return Track(title: title, artist: byline, duration: parseDuration(text(row["lengthText"])) ?? 0,
+                         source: .invidious, location: id, artworkURL: image?.scheme == "https" ? image : nil,
+                         isExplicit: strings(named: "iconType", in: row).contains("MUSIC_EXPLICIT_BADGE"), musicCatalog: "youtube-music", artistID: artistID)
+        }
+    }
+
     func match(_ reference: Track) async throws -> Track {
         let primary = reference.artist.components(separatedBy: CharacterSet(charactersIn: ";,")).first ?? reference.artist
         let page = try await search("\(Self.matchTitle(reference.title)) \(primary)")

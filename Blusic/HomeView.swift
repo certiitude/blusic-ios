@@ -13,6 +13,17 @@ struct HomeView: View {
     var body: some View {
         ScrollView(showsIndicators: false) {
             LazyVStack(alignment: .leading, spacing: 27) {
+                NavigationLink { RadioView() } label: {
+                    HStack(spacing: 16) {
+                        Image(systemName: "dot.radiowaves.left.and.right").font(.system(size: 32)).foregroundStyle(library.settings.color)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Ta radio personnalisée").font(.title3.bold())
+                            Text(player.radio.active ? player.radio.message : "Un morceau pour commencer. Des découvertes pour continuer.")
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        Spacer(minLength: 0); Image(systemName: "chevron.right").font(.caption)
+                    }.padding(18).surface(radius: 18)
+                }.buttonStyle(.plain).accessibilityIdentifier("open-personal-radio")
                 VStack(alignment: .leading, spacing: 13) {
                     heading("Accès rapide", symbol: "bolt.circle.fill")
                     LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
