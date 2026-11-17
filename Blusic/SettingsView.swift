@@ -59,6 +59,10 @@ struct SettingsView: View {
                 Toggle("Listes compactes", isOn: $library.settings.compactRows)
             }
             Section("Écoute") {
+                Toggle("Lecture hors ligne uniquement", isOn: Binding(get: { library.settings.usesOfflinePlaybackOnly }, set: { library.settings.offlinePlaybackOnly = $0 }))
+                    .accessibilityIdentifier("offline-playback-only")
+                Text("La lecture utilise uniquement les téléchargements et tes fichiers locaux, sans demander un nouveau flux audio. Recherche, pochettes et synchronisation restent indépendantes. Les téléchargements manuels restent possibles.")
+                    .font(.caption).foregroundStyle(.secondary)
                 Toggle("Normalisation audio", isOn: Binding(get: { library.settings.usesAudioNormalization }, set: { library.settings.audioNormalization = $0 }))
                     .accessibilityIdentifier("audio-normalization")
                 Text("Équilibre le volume des morceaux vers −16 LUFS, avec une marge de crête et une amplification limitée. Gain fixe à la lecture : pas de compression de la dynamique ni de réencodage. Analyse locale mise en cache ; la première lecture peut demander une préparation supplémentaire. S’applique au prochain titre.")

@@ -31,7 +31,7 @@ permissions:
 jobs:
   ios:
     runs-on: macos-15
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
@@ -76,6 +76,7 @@ jobs:
       - name: Select compatible iPhone simulator
         run: python3 tools/select_simulator.py >> "$GITHUB_ENV"
       - name: Boot iPhone simulator
+        id: simulator
         run: xcrun simctl bootstatus "$SIMULATOR_ID" -b
       - name: Start encrypted Windows protocol fixture for iPhone tests
         run: node windows/test/ios-server.mjs > build/soryn-sync-node.log 2>&1 &
@@ -101,7 +102,7 @@ jobs:
           -only-testing:BlusicTests/BlusicTests/testCancelledResolverJobCannotDiscardTheNextJobsAudio
           -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
       - name: Export normalization test summary
-        if: always()
+        if: ${{ !cancelled() && hashFiles('build/SorynNormalizationTests.xcresult/Info.plist') != '' }}
         run: xcrun xcresulttool get test-results summary --path build/SorynNormalizationTests.xcresult > build/soryn-normalization-summary.json
       - uses: actions/upload-artifact@v4
         if: always()
@@ -112,6 +113,7 @@ jobs:
             build/SorynNormalizationTests.xcresult
           retention-days: 7
       - name: Native iPhone Opus decode, seek, bridge and offline persistence
+        if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
         run: >-
           xcodebuild test -project Blusic.xcodeproj -scheme Blusic
           -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
@@ -121,7 +123,18 @@ jobs:
           -only-testing:BlusicTests/BlusicTests/testOpusOfflineFileSurvivesRestartWithoutLosingAACDownload
           -only-testing:BlusicTests/BlusicTests/testOpusSettingPersistsWithoutChangingLegacyAACPreference
           -only-testing:BlusicTests/BlusicTests/testOpusOfflineNativePlaybackAndSeekNeverCallsTheNetwork
+          -only-testing:BlusicTests/BlusicTests/testOpusPacketIdentitySurvivesSpoolCacheDownloadAndRestartRepeatedly
+          -only-testing:BlusicTests/BlusicTests/testOpusLabelCannotTurnAACOrPCMIntoAnOpusDownload
+          -only-testing:BlusicTests/BlusicTests/testOfflineAuditFindsMissingAndCorruptVariantsWithoutDeletingGoodAAC
+          -only-testing:BlusicTests/BlusicTests/testInterruptedDownloadQueueWaitsForConsentAndKeepsRequestedQuality
+          -only-testing:BlusicTests/BlusicTests/testRetryAllFailuresAndImmediateCancelThenRetryCannotLoseTheNewJob
+          -only-testing:BlusicTests/BlusicTests/testOfflineOnlyPlaybackRejectsNetworkResolutionAndPrefetch
+          -only-testing:BlusicTests/BlusicTests/testPlaylistDownloadsContinueAfterOneFailureAndDoNotDownloadDuplicates
+          -only-testing:BlusicTests/BlusicTests/testCancellingAnOfflineDownloadDoesNotLeaveACompletedEntry
           -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+      - name: Export offline and Opus regression summary
+        if: ${{ !cancelled() && hashFiles('build/SorynOpusTests.xcresult/Info.plist') != '' }}
+        run: xcrun xcresulttool get test-results summary --path build/SorynOpusTests.xcresult > build/soryn-opus-summary.json
       - name: Real-network on-device original Opus (no AAC fallback)
         continue-on-error: true
         run: >-
@@ -131,6 +144,7 @@ jobs:
           -only-testing:BlusicTests/BlusicTests/testLiveOpusOriginalResolvesOnDeviceAndDecodesTheWholeSong
           -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
       - name: Verify actual iPhone to Windows encrypted pairing and merge
+        if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
         run: >-
           xcodebuild test -project Blusic.xcodeproj -scheme Blusic
           -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
@@ -143,7 +157,7 @@ jobs:
           -only-testing:BlusicTests/BlusicTests/testSorynOptionalAccountTwoDevicesAndLocalPreservation
           -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
       - name: Export Soryn pairing test summary
-        if: always()
+        if: ${{ !cancelled() && hashFiles('build/SorynSyncTests.xcresult/Info.plist') != '' }}
         run: xcrun xcresulttool get test-results summary --path build/SorynSyncTests.xcresult > build/soryn-sync-summary.json
       - uses: actions/upload-artifact@v4
         if: always()
@@ -155,6 +169,7 @@ jobs:
             build/soryn-accounts-node.log
             build/SorynSyncTests.xcresult
             build/SorynOpusTests.xcresult
+            build/soryn-opus-summary.json
             build/SorynOpusNetworkTests.xcresult
           retention-days: 7
       - name: Unit tests on iPhone simulator
@@ -166,7 +181,7 @@ jobs:
           -skip-testing:BlusicTests/BlusicTests/testLiveOpusOriginalResolvesOnDeviceAndDecodesTheWholeSong
           -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
       - name: Export test summary
-        if: always()
+        if: ${{ !cancelled() && hashFiles('build/BlusicTests.xcresult/Info.plist') != '' }}
         run: xcrun xcresulttool get test-results summary --path build/BlusicTests.xcresult > build/test-summary.json
       - uses: actions/upload-artifact@v4
         if: always()
@@ -177,12 +192,13 @@ jobs:
             build/test-summary.json
           retention-days: 7
       - name: Capture native layouts on large and compact iPhones
-        if: always()
+        if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
         timeout-minutes: 7
         run: >-
           python3 tools/capture_simulator.py --device "$SIMULATOR_ID"
           --app build/DerivedData/Build/Products/Debug-iphonesimulator/Blusic.app
           --output build/screenshots
+          --focus-audio
       - uses: actions/upload-artifact@v4
         if: always()
         with:

@@ -190,6 +190,7 @@ struct InvidiousAudioLoader: StreamingAudioLoading {
         return .stream(stream)
     }
     static func prefetch(_ tracks: [Track], settings: AppSettings) async {
+        guard !settings.usesOfflinePlaybackOnly else { return }
         if settings.audioQuality == .opus {
             for track in tracks.prefix(1) { guard !Task.isCancelled else { return }; _ = try? await InvidiousAudioLoader().playback(track, settings: settings, direct: false) }
             return

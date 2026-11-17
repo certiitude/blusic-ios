@@ -212,6 +212,9 @@ final class AudioPlayer {
                     try await startNativeFile(downloaded.fileURL, track: track, bitrate: downloaded.bitrate, at: 0, autoplay: true, provider: downloaded.provider)
                     return
                 }
+                if library.settings.usesOfflinePlaybackOnly, !track.isOffline {
+                    throw BlusicError.message("Ce titre n’est pas disponible hors ligne. Télécharge-le ou désactive « Lecture hors ligne uniquement » dans les réglages.")
+                }
                 if track.source == .catalogReference {
                     loadingMessage = "Association au catalogue YouTube Music…"
                     do {
@@ -508,11 +511,12 @@ final class AudioPlayer {
         applyNormalization(library.settings)
         let shouldPlay = autoplay && wantsPlayback
         let file = try AVAudioFile(forReading: url)
+        let inspection = try NativeAudioInspection.inspect(url)
         guard file.length > 0 else { throw BlusicError.message("Le fichier audio est vide.") }
         audioFile = file
         duration = PlaybackDuration.effective(declared: declaredDuration, measured: Double(file.length) / file.processingFormat.sampleRate)
         let codec: String
-        switch file.fileFormat.streamDescription.pointee.mFormatID {
+        switch inspection.formatID {
         case kAudioFormatLinearPCM: codec = "PCM · sans perte"
         case kAudioFormatAppleLossless: codec = "ALAC · sans perte"
         case kAudioFormatFLAC: codec = "FLAC · sans perte"
@@ -523,7 +527,7 @@ final class AudioPlayer {
         }
         let rate = String(format: "%g", file.fileFormat.sampleRate / 1000)
         let quality = bitrate.flatMap { $0 > 0 ? " · \(Int((Double($0) / 1000).rounded())) kbit/s" : nil } ?? ""
-        let fallback = library.settings.audioQuality == .opus && file.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatMPEG4AAC && provider?.contains("Secours AAC") != true ? " · Secours AAC" : ""
+        let fallback = library.settings.audioQuality == .opus && inspection.codec == .aac && provider?.contains("Secours AAC") != true ? " · Secours AAC" : ""
         formatLabel = track.source == .invidious ? "\(codec)\(quality)\(fallback) · \(provider ?? "cache audio")" : "\(codec) · \(rate) kHz"
         engine.disconnectNodeOutput(node); engine.disconnectNodeOutput(normalizer); engine.disconnectNodeOutput(varispeed); engine.disconnectNodeOutput(pitch); engine.disconnectNodeOutput(equalizer)
         engine.connect(node, to: normalizer, format: file.processingFormat)
@@ -792,7 +796,7 @@ final class AudioPlayer {
         library.savedQueue = queue.map(\.id); library.savedCurrentID = current?.id
     }
     private static func preparationKey(_ track: Track, settings: AppSettings) -> String {
-        "\(track.source.rawValue)|\(track.location)|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(settings.youtubeiRelayAddress ?? "")|\(settings.youtubeiRelayDisabled ?? false)|\(settings.audioQuality.rawValue)|\(settings.usesAudioNormalization)"
+        "\(track.source.rawValue)|\(track.location)|\(settings.audioSourceMode)|\(settings.invidiousAddress)|\(settings.usesInvidiousFallback)|\(settings.youtubeiRelayAddress ?? "")|\(settings.youtubeiRelayDisabled ?? false)|\(settings.audioQuality.rawValue)|\(settings.usesAudioNormalization)|\(settings.usesOfflinePlaybackOnly)"
     }
     private func invalidateUpcomingPreparation() {
         upcomingTask?.cancel(); upcomingTask = nil
@@ -824,6 +828,7 @@ final class AudioPlayer {
                let audio = try await withThrowingTaskGroup(of: InvidiousAudio.self) { group in
                 group.addTask {
                     if let audio = try await downloads.audio(for: next) { return audio }
+                    if settings.usesOfflinePlaybackOnly { throw CancellationError() }
                     if next.source == .remote, let url = URL(string: next.location) {
                         let file = try await AudioCache.shared.localCopy(of: url, expectedDuration: next.duration)
                         return InvidiousAudio(fileURL: file, bitrate: 0, instance: url, duration: next.duration)
@@ -975,8 +980,7 @@ actor AudioCache {
         do {
             try validate(file, expectedDuration: expected)
             if codec == .opus {
-                let decoded = try AVAudioFile(forReading: file), format = decoded.fileFormat
-                guard withExtendedLifetime(format, { format.streamDescription.pointee.mFormatID }) == kAudioFormatOpus else { return nil }
+                guard try NativeAudioInspection.inspect(file, expectedDuration: expected).codec == .opus else { return nil }
             }
             return InvidiousAudio(fileURL: file, bitrate: source.bitrate, instance: source.instance, duration: expected, provider: source.provider, quality: quality, codec: codec)
         } catch { return nil }

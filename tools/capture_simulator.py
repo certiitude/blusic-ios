@@ -12,9 +12,10 @@ import subprocess
 import time
 
 
-def run(*args, capture=False, check=True):
+def run(*args, capture=False, check=True, timeout=60):
     return subprocess.run(["xcrun", "simctl", *args], check=check, text=True,
-                          stdout=subprocess.PIPE if capture else None, stderr=subprocess.PIPE if capture else None)
+                          stdout=subprocess.PIPE if capture else None, stderr=subprocess.PIPE if capture else None,
+                          timeout=timeout)
 
 
 def main():
@@ -22,6 +23,7 @@ def main():
     parser.add_argument("--device", required=True)
     parser.add_argument("--app", type=Path, required=True)
     parser.add_argument("--output", type=Path, default=Path("build/screenshots"))
+    parser.add_argument("--focus-audio", action="store_true", help="Capture audio settings and downloads without waiting for unrelated live searches")
     args = parser.parse_args()
     if not args.app.is_dir():
         raise RuntimeError("The simulator app has not been built.")
@@ -42,7 +44,7 @@ def main():
         raise RuntimeError("No compact iPhone SE simulator is installed; do not claim its layout was checked.")
     report = []
     for label, device in targets:
-        run("bootstatus", device, "-b")
+        run("bootstatus", device, "-b", timeout=150)
         run("install", device, str(args.app))
         run("status_bar", device, "override", "--time", "9:41", "--batteryLevel", "100", "--batteryState", "charged", "--wifiMode", "active", "--wifiBars", "3")
         screens = [
@@ -58,7 +60,13 @@ def main():
         if label == "large":
             screens += [("artists", ["--blusic-screen=search", "--blusic-query=Niska", "--blusic-kind=artists"], 13),
                         ("artist-profile", ["--blusic-preview-artist"], 13),
-                        ("sound", ["--blusic-preview-sound"], 4)]
+                         ("sound", ["--blusic-preview-sound"], 4)]
+        if args.focus_audio:
+            screens = [("home", ["--blusic-preview-mini"], 4),
+                       ("player", ["--blusic-preview-player"], 4),
+                       ("opus", ["--blusic-preview-settings", "--blusic-opus"], 4),
+                       ("sound", ["--blusic-preview-sound"], 4),
+                       ("downloads", ["--blusic-preview-downloads"], 4)]
         for screen, launch_args, wait in screens:
             run("launch", "--terminate-running-process", device, "app.blusic.ios", *launch_args)
             time.sleep(wait)

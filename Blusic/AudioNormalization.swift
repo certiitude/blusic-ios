@@ -110,8 +110,11 @@ actor AudioNormalizationAnalyzer {
     func analyze(_ url: URL) async throws -> AudioLoudnessProfile {
         try Task.checkCancellation()
         guard url.isFileURL else { throw BlusicError.message("La normalisation nécessite un fichier audio complet.") }
-        let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-        let identity = "bs1770-v1|\(url.standardizedFileURL.path)|\(values.fileSize ?? -1)|\(values.contentModificationDate?.timeIntervalSince1970 ?? 0)"
+        // URL.resourceValues can keep stale metadata on a reused URL instance.
+        // Stat the current file on every lookup, including after atomic replacement.
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        let modified = (attributes[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let identity = "bs1770-v2|\(url.standardizedFileURL.path)|\(attributes[.size] ?? 0)|\(modified)|\(attributes[.systemFileNumber] ?? 0)"
         let key = SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
         if let profile = memory[key] { return profile }
         let path = directory.appendingPathComponent(key).appendingPathExtension("json")

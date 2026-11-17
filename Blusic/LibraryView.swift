@@ -41,7 +41,7 @@ struct LibraryView: View {
                         Image(systemName: "arrow.down.circle.fill").font(.title2).foregroundStyle(library.settings.color)
                         VStack(alignment: .leading, spacing: 5) {
                             Text("Téléchargements").font(.headline)
-                            Text("\(library.downloads.records.count) titres · \(ByteCountFormatter.string(fromByteCount: library.downloads.totalBytes, countStyle: .file))" + (library.downloads.pendingCount > 0 ? " · \(library.downloads.pendingCount) en cours" : ""))
+                            Text("\(library.downloads.uniqueTrackCount) titres · \(ByteCountFormatter.string(fromByteCount: library.downloads.totalBytes, countStyle: .file))" + (library.downloads.pendingCount > 0 ? " · \(library.downloads.pendingCount) en cours" : ""))
                                 .font(.caption).foregroundStyle(.secondary)
                         }
                         Spacer(); Image(systemName: "chevron.right").font(.caption).foregroundStyle(.secondary)

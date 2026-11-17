@@ -1,6 +1,52 @@
 import Foundation
 import WebKit
 import AVFoundation
+import AudioToolbox
+
+/// Read the on-disk compressed format into an owned value. Never let a pointer
+/// from a temporary AVAudioFormat escape (it can report garbage/PCM for real Opus).
+struct NativeAudioInspection: Sendable {
+    var formatID: AudioFormatID
+    var duration: Double
+    var packetCount: UInt64
+    var codec: OnlineAudioCodec? {
+        if formatID == kAudioFormatOpus { return .opus }
+        if formatID == kAudioFormatMPEG4AAC || formatID == kAudioFormatMPEG4AAC_HE || formatID == kAudioFormatMPEG4AAC_HE_V2 { return .aac }
+        return nil
+    }
+    static func inspect(_ url: URL, expectedDuration: Double = 0) throws -> Self {
+        guard url.isFileURL else { throw BlusicError.message("Un fichier audio local complet est nécessaire.") }
+        var handle: AudioFileID?
+        let opened = AudioFileOpenURL(url as CFURL, .readPermission, 0, &handle)
+        guard opened == noErr, let handle else { throw BlusicError.message("Le fichier audio est absent ou illisible (\(opened)).") }
+        defer { AudioFileClose(handle) }
+        var description = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        guard AudioFileGetProperty(handle, kAudioFilePropertyDataFormat, &size, &description) == noErr else {
+            throw BlusicError.message("Le format réel du fichier audio ne peut pas être vérifié.")
+        }
+        var packets: UInt64 = 0
+        size = UInt32(MemoryLayout<UInt64>.size)
+        let packetStatus = AudioFileGetProperty(handle, kAudioFilePropertyAudioDataPacketCount, &size, &packets)
+        let file = try AVAudioFile(forReading: url)
+        let seconds = Double(file.length) / file.processingFormat.sampleRate
+        guard file.length > 0, seconds.isFinite, seconds > 0,
+              expectedDuration <= 0 || seconds >= expectedDuration * 0.8 else {
+            throw BlusicError.message("Le fichier audio est vide ou plus court que le morceau annoncé.")
+        }
+        if description.mFormatID == kAudioFormatOpus {
+            guard packetStatus == noErr, packets > 0 else { throw BlusicError.message("Le conteneur Opus est incomplet : aucun paquet audio vérifiable. Réessaie le téléchargement.") }
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else {
+                throw BlusicError.message("Le décodeur Opus natif n’a pas pu être préparé.")
+            }
+            for frame in [AVAudioFramePosition(0), file.length / 2, max(0, file.length - 4096)] {
+                file.framePosition = frame; try file.read(into: buffer)
+                guard buffer.frameLength > 0 else { throw BlusicError.message("Le fichier Opus est tronqué ou indécodable. Réessaie le téléchargement.") }
+            }
+        }
+        return Self(formatID: description.mFormatID, duration: seconds, packetCount: packets)
+    }
+}
 
 enum NativeYouTubeRequestPolicy {
     static func allows(_ url: URL) -> Bool {
@@ -242,15 +288,10 @@ actor NativeYouTubeSpool {
         guard self.token == token else { throw CancellationError() }
         guard let url, expected == self.expected, written == expected else { throw BlusicError.message("Fichier audio incomplet.") }
         try handle?.synchronize(); try handle?.close(); handle = nil
-        let file = try AVAudioFile(forReading: url)
-        let seconds = Double(file.length) / file.processingFormat.sampleRate
-        guard file.length > 0, duration > 0, seconds.isFinite, seconds >= duration * 0.8 else { throw BlusicError.message("Le fichier audio n’est pas décodable ou est tronqué.") }
+        let inspection = try NativeAudioInspection.inspect(url, expectedDuration: duration)
+        guard duration.isFinite, duration > 0 else { throw BlusicError.message("Durée audio invalide.") }
         if codec == .opus {
-            guard file.fileFormat.streamDescription.pointee.mFormatID == kAudioFormatOpus, abs(seconds - duration) < 0.1,
-                  let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: 4096) else { throw BlusicError.message("Le fichier préparé n’est pas de l’Opus natif décodable.") }
-            try file.read(into: buffer); guard buffer.frameLength > 0 else { throw BlusicError.message("Opus vide.") }
-            file.framePosition = max(0, file.length - 4096); try file.read(into: buffer)
-            guard buffer.frameLength > 0 else { throw BlusicError.message("Fin du fichier Opus illisible.") }
+            guard inspection.codec == .opus, abs(inspection.duration - duration) < 0.1 else { throw BlusicError.message("La source ne contient pas l’Opus complet demandé. Réessaie ou choisis AAC.") }
         }
         self.url = nil
         return InvidiousAudio(fileURL: url, bitrate: bitrate, instance: URL(string: "https://www.youtube.com")!, duration: duration, provider: "youtubei.js · iPhone", quality: quality, codec: codec)

@@ -48,7 +48,9 @@ final class BlusicTests: XCTestCase {
         let silent = try silence.finish(); XCTAssertNil(silent.integratedLUFS); XCTAssertEqual(silent.gainDecibels, 0)
         var gated = try AudioLoudnessMeter(sampleRate: 48000, channels: 2)
         try gated.consume(normalizationBuffer(amplitude: 0.1, silenceBefore: 2, silenceAfter: 2))
-        XCTAssertEqual(try XCTUnwrap(gated.finish().integratedLUFS), -20, accuracy: 0.3, "Silence must not cause a 3 dB boost")
+        // Independent FFmpeg ebur128 result with 2s leading/trailing silence:
+        // -20.3 LUFS, including the partially filled 400ms boundary blocks.
+        XCTAssertEqual(try XCTUnwrap(gated.finish().integratedLUFS), -20.3, accuracy: 0.1, "Silence must not cause a 3 dB boost")
         let dynamic = try normalizationBuffer(seconds: 8, amplitude: 0.1)
         for channel in 0..<2 { for i in 192000..<384000 { dynamic.floatChannelData![channel][i] *= 0.001 } }
         var relative = try AudioLoudnessMeter(sampleRate: 48000, channels: 2)
@@ -176,6 +178,121 @@ final class BlusicTests: XCTestCase {
         XCTAssertEqual(audio.codec, .opus); XCTAssertEqual(audio.fileURL.pathExtension, "caf")
         XCTAssertEqual(audio.quality, .opus)
         XCTAssertNotEqual(OnlineAudioQuality.opus.metadataKey(videoID: "RFzfXv9wzfo"), OnlineAudioQuality.high.metadataKey(videoID: "RFzfXv9wzfo"))
+    }
+    func testOpusPacketIdentitySurvivesSpoolCacheDownloadAndRestartRepeatedly() async throws {
+        let fixture = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "opus-vbr", withExtension: "caf"))
+        let bytes = try Data(contentsOf: fixture)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("opus-regression-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = OfflineAudioStore(root: root), cache = AudioCache()
+        for i in 0..<12 {
+            let spool = NativeYouTubeSpool(), token = UUID().uuidString
+            await spool.start(token: token, quality: .opus)
+            try await spool.begin(expected: bytes.count, token: token, codec: "opus")
+            try await spool.append(encoded: bytes.base64EncodedString(), token: token)
+            let prepared = try await spool.finish(expected: bytes.count, bitrate: 204234, duration: 4, token: token)
+            let track = Track(title: "Opus \(i)", artist: "Test", duration: 4, source: .invidious, location: String(UUID().uuidString.prefix(11)))
+            let adopted = try await cache.adoptNativeYouTubei(prepared, track: track)
+            let inspection = try NativeAudioInspection.inspect(adopted.fileURL)
+            XCTAssertEqual(inspection.codec, .opus); XCTAssertGreaterThan(inspection.packetCount, 0)
+            let cached = await cache.cachedInvidious(track: track, quality: .opus)
+            XCTAssertEqual(cached?.codec, .opus)
+            let entry = try await store.save(adopted, track: track, preferredQuality: .opus)
+            XCTAssertEqual(entry.codec, .opus)
+            let restored = try await OfflineAudioStore(root: root).audio(for: track, quality: .opus)
+            XCTAssertEqual(try Data(contentsOf: XCTUnwrap(restored?.fileURL)), bytes, "Compressed packets stay identical through the complete production path")
+            try FileManager.default.removeItem(at: adopted.fileURL)
+        }
+    }
+    func testOpusLabelCannotTurnAACOrPCMIntoAnOpusDownload() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("opus-spoof-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let track = Track(title: "Codec validation", artist: "Test", duration: 4, source: .invidious, location: "codecxxxxxx")
+        let aac = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "aac-standard", withExtension: "m4a"))
+        let store = OfflineAudioStore(root: root)
+        let previous = try await store.save(InvidiousAudio(fileURL: aac, bitrate: 128000, instance: URL(string: "https://www.youtube.com")!, duration: 4), track: track)
+        for url in [aac, try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "orbite", withExtension: "wav"))] {
+            let fake = InvidiousAudio(fileURL: url, bitrate: 160000, instance: URL(string: "https://www.youtube.com")!, duration: 4, quality: .opus, codec: .opus)
+            do { _ = try await store.save(fake, track: track); XCTFail("Never trust the label or extension over the real format") } catch {}
+        }
+        let entries = try await store.all(); XCTAssertEqual(entries.count, 1); XCTAssertEqual(entries.first?.filename, previous.filename)
+        let intact = try await store.audio(for: track)
+        XCTAssertEqual(try Data(contentsOf: XCTUnwrap(intact?.fileURL)), try Data(contentsOf: aac))
+    }
+    func testOfflineAuditFindsMissingAndCorruptVariantsWithoutDeletingGoodAAC() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("offline-audit-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let aac = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "aac-standard", withExtension: "m4a"))
+        let opus = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "opus-vbr", withExtension: "caf"))
+        let store = OfflineAudioStore(root: root)
+        let track = Track(title: "Audit", artist: "Test", duration: 4, source: .invidious, location: "auditxxxxxx")
+        _ = try await store.save(InvidiousAudio(fileURL: aac, bitrate: 128000, instance: URL(string: "https://www.youtube.com")!, duration: 4), track: track)
+        let entry = try await store.save(InvidiousAudio(fileURL: opus, bitrate: 204234, instance: URL(string: "https://www.youtube.com")!, duration: 4, quality: .opus, codec: .opus), track: track)
+        let initial = try await store.audit(); XCTAssertTrue(initial.isEmpty)
+        let path = root.appendingPathComponent(entry.filename)
+        try Data([0, 1, 2]).write(to: path)
+        let damaged = try await OfflineAudioStore(root: root).audit(); XCTAssertEqual(Set(damaged.keys), [entry.id])
+        let fallback = try await store.audio(for: track, quality: .opus); XCTAssertEqual(fallback?.codec, .aac)
+        try FileManager.default.removeItem(at: path)
+        let reopened = OfflineAudioStore(root: root), entries = try await reopened.all()
+        XCTAssertEqual(entries.count, 2, "A missing file stays visible for repair instead of silently disappearing")
+        let missing = try await reopened.audit(); XCTAssertEqual(Set(missing.keys), [entry.id])
+    }
+    @MainActor func testInterruptedDownloadQueueWaitsForConsentAndKeepsRequestedQuality() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("offline-resume-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let opus = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "opus-vbr", withExtension: "caf"))
+        let track = Track(title: "Resume", artist: "Test", duration: 4, source: .invidious, location: "resumexxxxx")
+        let store = OfflineAudioStore(root: root)
+        try await store.savePending([PendingAudioDownload(track: track, quality: "opus")], revision: 2)
+        try await store.savePending([], revision: 1)
+        let library = LibraryStore(inMemory: true), fixture = ReliableDownloadFixture()
+        let downloads = OfflineDownloads(library: library, store: OfflineAudioStore(root: root), loader: ReliableDownloadLoader(file: opus, fixture: fixture))
+        library.downloads = downloads
+        await downloads.waitUntilReady()
+        XCTAssertEqual(downloads.recoverable.count, 1)
+        let before = await fixture.qualities; XCTAssertTrue(before.isEmpty, "Restart must not silently consume mobile data")
+        library.settings.opusAudio = false
+        downloads.resumeInterrupted(); await downloads.waitUntilIdle()
+        let qualities = await fixture.qualities; XCTAssertEqual(qualities, [.opus])
+        XCTAssertEqual(downloads.record(for: track)?.codec, .opus)
+        let pending = try await OfflineAudioStore(root: root).pending(); XCTAssertTrue(pending.isEmpty)
+        XCTAssertEqual(downloads.uniqueTrackCount, 1)
+    }
+    @MainActor func testRetryAllFailuresAndImmediateCancelThenRetryCannotLoseTheNewJob() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("offline-retry-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let opus = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "opus-vbr", withExtension: "caf"))
+        let library = LibraryStore(inMemory: true); library.settings.opusAudio = true
+        let fixture = ReliableDownloadFixture(failures: 1, delay: 0.1)
+        let downloads = OfflineDownloads(library: library, store: OfflineAudioStore(root: root), loader: ReliableDownloadLoader(file: opus, fixture: fixture))
+        library.downloads = downloads
+        let track = Track(title: "Retry", artist: "Test", duration: 4, source: .invidious, location: "retryxxxxxx")
+        downloads.enqueue([track]); await downloads.waitUntilIdle()
+        XCTAssertEqual(downloads.failedCount, 1)
+        library.settings.opusAudio = false
+        downloads.retryFailed(); await downloads.waitUntilIdle()
+        XCTAssertEqual(downloads.failedCount, 0); XCTAssertEqual(downloads.record(for: track)?.codec, .opus)
+        let next = Track(title: "Cancel/retry", artist: "Test", duration: 4, source: .invidious, location: "cancelxxxxx")
+        library.settings.opusAudio = true
+        downloads.enqueue([next])
+        for _ in 0..<40 { let count = await fixture.qualities.count; if count >= 3 { break }; try await Task.sleep(for: .milliseconds(10)) }
+        downloads.cancel(next); downloads.enqueue([next]); await downloads.waitUntilIdle()
+        XCTAssertNotNil(downloads.record(for: next)); XCTAssertNil(downloads.status(for: next)); XCTAssertEqual(downloads.pendingCount, 0)
+        let pending = try await OfflineAudioStore(root: root).pending(); XCTAssertTrue(pending.isEmpty)
+    }
+    @MainActor func testOfflineOnlyPlaybackRejectsNetworkResolutionAndPrefetch() async throws {
+        let library = LibraryStore(inMemory: true); library.settings.offlinePlaybackOnly = true
+        let file = try XCTUnwrap(Bundle(for: AudioPlayer.self).url(forResource: "orbite", withExtension: "wav"))
+        let calls = OfflineDownloadFixtureCounter(), player = AudioPlayer(library: library, onlineLoader: OfflineFixtureLoader(file: file, calls: calls))
+        defer { player.pause() }
+        let track = Track(title: "Not downloaded", artist: "Test", source: .invidious, location: "offlineonly")
+        player.play(track, in: [track])
+        for _ in 0..<40 { if player.error != nil { break }; try await Task.sleep(for: .milliseconds(25)) }
+        XCTAssertTrue(player.error?.contains("hors ligne") == true)
+        let locations = await calls.locations; XCTAssertTrue(locations.isEmpty)
+        let restored = try JSONDecoder().decode(AppSettings.self, from: JSONEncoder().encode(library.settings))
+        XCTAssertTrue(restored.usesOfflinePlaybackOnly)
     }
     func testOpusOfflineFileSurvivesRestartWithoutLosingAACDownload() async throws {
         let url = try XCTUnwrap(Bundle(for: BlusicTests.self).url(forResource: "opus-vbr", withExtension: "caf"))
@@ -1904,6 +2021,27 @@ private actor UpcomingPreparationCounter {
     private(set) var qualities: [OnlineAudioQuality] = []
     func record(_ location: String, quality: OnlineAudioQuality) { count += 1; lastLocation = location; locations.append(location); qualities.append(quality) }
     func calls(for location: String) -> Int { locations.filter { $0 == location }.count }
+}
+
+private actor ReliableDownloadFixture {
+    private(set) var qualities: [OnlineAudioQuality] = []
+    private var failures: Int
+    let delay: Double
+    init(failures: Int = 0, delay: Double = 0) { self.failures = failures; self.delay = delay }
+    func request(_ quality: OnlineAudioQuality) async throws {
+        qualities.append(quality)
+        if delay > 0 { try await Task.sleep(for: .seconds(delay)) }
+        if failures > 0 { failures -= 1; throw URLError(.notConnectedToInternet) }
+    }
+}
+private struct ReliableDownloadLoader: OnlineAudioLoading {
+    var file: URL
+    var fixture: ReliableDownloadFixture
+    func load(_ track: Track, settings: AppSettings, progress: @escaping @Sendable (AudioLoadUpdate) -> Void) async throws -> InvidiousAudio {
+        try await fixture.request(settings.audioQuality)
+        return InvidiousAudio(fileURL: file, bitrate: 204234, instance: URL(string: "https://www.youtube.com")!, duration: 4,
+                              quality: settings.audioQuality, codec: settings.audioQuality == .opus ? .opus : .aac)
+    }
 }
 
 private actor OfflineDownloadFixtureCounter {
