@@ -20,6 +20,8 @@ on:
       - 'tools/package_ipa.py'
       - 'tools/verify_ipa.py'
       - 'tools/configure_ios_relay.py'
+      - 'tools/run_ios_test_group.py'
+      - 'tools/test_ios_test_groups.py'
       - 'native-resolver/**'
       - 'relay/audio-quality.mjs'
       - 'windows/core/**'
@@ -174,12 +176,8 @@ jobs:
           retention-days: 7
       - name: Unit tests on iPhone simulator
         id: iphone-tests
-        run: >-
-          xcodebuild test -project Blusic.xcodeproj -scheme Blusic
-          -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
-          -derivedDataPath build/DerivedData -resultBundlePath build/BlusicTests.xcresult
-          -skip-testing:BlusicTests/BlusicTests/testLiveOpusOriginalResolvesOnDeviceAndDecodesTheWholeSong
-          -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+        if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
+        run: python3 tools/run_ios_test_group.py --group deterministic
       - name: Export test summary
         if: ${{ !cancelled() && hashFiles('build/BlusicTests.xcresult/Info.plist') != '' }}
         run: xcrun xcresulttool get test-results summary --path build/BlusicTests.xcresult > build/test-summary.json
@@ -190,6 +188,21 @@ jobs:
           path: |
             build/BlusicTests.xcresult
             build/test-summary.json
+          retention-days: 7
+      - name: Other real-network probes (reported separately, never substituted for deterministic tests)
+        if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
+        continue-on-error: true
+        run: python3 tools/run_ios_test_group.py --group network --exclude testLiveOpusOriginalResolvesOnDeviceAndDecodesTheWholeSong
+      - name: Export independent network results
+        if: ${{ !cancelled() && hashFiles('build/SorynNetworkTests.xcresult/Info.plist') != '' }}
+        run: xcrun xcresulttool get test-results summary --path build/SorynNetworkTests.xcresult > build/network-summary.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Soryn-independent-network-tests
+          path: |
+            build/SorynNetworkTests.xcresult
+            build/network-summary.json
           retention-days: 7
       - name: Capture native layouts on large and compact iPhones
         if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
