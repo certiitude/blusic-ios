@@ -199,11 +199,13 @@ final class ProgressiveMusicEnergyTap {
                     offset += count
                 }
             })
-        var unmanaged: Unmanaged<MTAudioProcessingTap>?
-        let status = MTAudioProcessingTapCreate(kCFAllocatorDefault, &callbacks, kMTAudioProcessingTapCreationFlag_PostEffects, &unmanaged)
-        guard status == noErr, let unmanaged else { Unmanaged<ProgressiveEnergyContext>.fromOpaque(storage).release(); return false }
+        // Current Apple SDKs import this CF_RETURNS_RETAINED output as an ARC-
+        // managed tap, not the Unmanaged output found in older sample code.
+        var processor: MTAudioProcessingTap?
+        let status = MTAudioProcessingTapCreate(kCFAllocatorDefault, &callbacks, kMTAudioProcessingTapCreationFlag_PostEffects, &processor)
+        guard status == noErr, let processor else { Unmanaged<ProgressiveEnergyContext>.fromOpaque(storage).release(); return false }
         let parameters = AVMutableAudioMixInputParameters(track: track)
-        parameters.audioTapProcessor = unmanaged.takeRetainedValue()
+        parameters.audioTapProcessor = processor
         let mix = AVMutableAudioMix(); mix.inputParameters = [parameters]
         self.item = item; self.mix = mix; item.audioMix = mix
         return true
