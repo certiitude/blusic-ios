@@ -48,7 +48,10 @@ Pas d’abonnement, de compte imposé, de mode DJ ou de nouveau serveur.
   avec un UUID temporaire différent. Disponibilité hors ligne affichée correctement.
 - Mini-lecteur avec progression isolée : seul le petit indicateur observe l’horloge.
 - **File d’attente plein écran** : morceau courant, titres à suivre réordonnables,
-  titres déjà écoutés. Modifier la suite ne déplace ni ne supprime le morceau courant.
+  titres précédents de la file. En aléatoire, seuls les titres réellement visités
+  dans le cycle sont classés comme déjà écoutés ; le réordonnancement est suspendu
+  et la suppression cible les bons identifiants. Modifier la suite ne déplace ni
+  ne supprime le morceau courant.
   Toucher un titre conserve la file au lieu de la reconstruire.
 - Vider la suite demande confirmation, conserve la lecture et arrête explicitement
   la radio. Les données de bibliothèque ne sont jamais supprimées par cette action.

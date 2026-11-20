@@ -3,6 +3,7 @@ import SwiftUI
 struct HomeView: View {
     @Environment(LibraryStore.self) private var library
     @Environment(AudioPlayer.self) private var player
+    @Environment(\.dynamicTypeSize) private var typeSize
     @State private var discovery = CatalogSearchModel()
     @State private var mood = "Soul"
     @State private var refreshID = 0
@@ -23,19 +24,22 @@ struct HomeView: View {
                 if let track = resume { resumeCard(track) }
                 shortcuts
                 radioCard
-                if !library.recentTracks.isEmpty {
-                    MusicShelf(title: "Reviens-y", subtitle: "Tes dernières écoutes", tracks: eligible(library.recentTracks, limit: 10))
+                let recents = eligible(library.recentTracks, limit: 10)
+                if !recents.isEmpty {
+                    MusicShelf(title: "Reviens-y", subtitle: "Tes dernières écoutes", tracks: recents)
                 }
-                if !library.likedTracks.isEmpty {
-                    MusicShelf(title: "Toujours les bons", subtitle: "Tes favoris, à portée de main", tracks: eligible(library.likedTracks, limit: 12))
+                let favorites = eligible(library.likedTracks, limit: 12)
+                if !favorites.isEmpty {
+                    MusicShelf(title: "Toujours les bons", subtitle: "Tes favoris, à portée de main", tracks: favorites)
                 }
                 if offline {
                     if !available.isEmpty { MusicShelf(title: "Prêts à partir", subtitle: "Fichiers et téléchargements disponibles hors ligne", tracks: Array(available.prefix(12))) }
                 } else {
                     discoverySection
                 }
-                if !library.mostPlayedTracks.isEmpty {
-                    MusicShelf(title: "En boucle chez toi", subtitle: "D’après ton temps d’écoute réel", tracks: eligible(library.mostPlayedTracks, limit: 12), ranked: true)
+                let mostPlayed = eligible(library.mostPlayedTracks, limit: 12)
+                if !mostPlayed.isEmpty {
+                    MusicShelf(title: "En boucle chez toi", subtitle: "D’après ton temps d’écoute réel", tracks: mostPlayed, ranked: true)
                 }
                 let originals = library.tracks.filter { $0.source == .bundled }
                 if !originals.isEmpty { MusicShelf(title: "Premières ondes", subtitle: "Quatre instrumentaux originaux · hors ligne", tracks: originals) }
@@ -61,21 +65,33 @@ struct HomeView: View {
             if PlaybackIdentity.matches(player.current, track) { if !player.isPlaying { player.toggle() } }
             else { player.play(track, in: offline ? available : library.recentTracks.isEmpty ? [track] : library.recentTracks) }
         } label: {
-            HStack(alignment: .center, spacing: 18) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Label(PlaybackIdentity.matches(player.current, track) && player.isPlaying ? "À L’ÉCOUTE" : "REPRENDRE LE FIL", systemImage: "waveform")
-                        .font(.caption2.weight(.bold)).tracking(1.3).foregroundStyle(library.settings.color)
-                    Text(track.title).font(.title2.bold()).lineLimit(2).multilineTextAlignment(.leading)
-                    Text(track.subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                    Label(player.isPlaying && PlaybackIdentity.matches(player.current, track) ? "Continuer l’écoute" : "Écouter", systemImage: "play.fill")
-                        .font(.subheadline.weight(.semibold)).padding(.top, 2)
-                }.frame(maxWidth: .infinity, alignment: .leading)
-                ArtworkView(track: track, size: 100, radius: 20).rotationEffect(.degrees(5))
-                    .shadow(color: .black.opacity(0.22), radius: 14, y: 10)
+            Group {
+                if typeSize >= .xxLarge {
+                    VStack(alignment: .leading, spacing: 18) {
+                        ArtworkView(track: track, size: 100, radius: 20)
+                        resumeMetadata(track)
+                    }
+                } else {
+                    HStack(alignment: .center, spacing: 18) {
+                        resumeMetadata(track)
+                        ArtworkView(track: track, size: 100, radius: 20).rotationEffect(.degrees(5))
+                            .shadow(color: .black.opacity(0.22), radius: 14, y: 10)
+                    }
+                }
             }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
                 .background(LinearGradient(colors: [library.settings.color.opacity(0.15), Palette.surface], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 28))
                 .overlay(RoundedRectangle(cornerRadius: 28).stroke(library.settings.color.opacity(0.18), lineWidth: 1))
         }.buttonStyle(.plain).accessibilityIdentifier("home-resume")
+    }
+    private func resumeMetadata(_ track: Track) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label(PlaybackIdentity.matches(player.current, track) && player.isPlaying ? "À L’ÉCOUTE" : "REPRENDRE LE FIL", systemImage: "waveform")
+                .font(.caption2.weight(.bold)).tracking(1.3).foregroundStyle(library.settings.color)
+            Text(track.title).font(.title2.bold()).lineLimit(2).multilineTextAlignment(.leading)
+            Text(track.subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+            Label(player.isPlaying && PlaybackIdentity.matches(player.current, track) ? "Continuer l’écoute" : "Écouter", systemImage: "play.fill")
+                .font(.subheadline.weight(.semibold)).padding(.top, 2)
+        }.frame(maxWidth: .infinity, alignment: .leading)
     }
     private var shortcuts: some View {
         HStack(spacing: 10) {

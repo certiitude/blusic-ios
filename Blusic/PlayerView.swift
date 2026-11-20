@@ -158,7 +158,7 @@ struct PlayerView: View {
                     if player.loopB != nil { Text("· BOUCLE A–B") }
                 }.font(.caption2).foregroundStyle(.white.opacity(0.6)).lineLimit(2).padding(.top, 3)
                 Button { showDetails = true } label: {
-                    Label(player.isTransitioning ? "Transition AutoMix / fondu" : player.radio.active ? "Radio personnalisée · détails" : "Détails audio", systemImage: "info.circle")
+                    Label(player.isTransitioning ? (library.settings.usesAutoMix ? "Transition AutoMix" : "Fondu en cours") : player.radio.active ? "Radio personnalisée · détails" : "Détails audio", systemImage: "info.circle")
                         .font(.caption).foregroundStyle(.white.opacity(0.7)).frame(minHeight: 32)
                 }.buttonStyle(.plain)
             }
@@ -211,10 +211,10 @@ struct PlayerView: View {
             HStack {
                 VStack(alignment: .leading, spacing: 5) {
                     Text("À suivre").font(.title2.bold())
-                    Text("\(player.queueTimeline.upcoming.count) titres · glisse pour réordonner").font(.caption).foregroundStyle(.secondary)
+                    Text("\(player.queueTimeline.upcoming.count) titres · " + (player.shuffle ? "ordre aléatoire" : "glisse pour réordonner")).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("Vider") { confirmClearQueue = true }.font(.subheadline).frame(minHeight: 44).disabled(player.queueTimeline.upcoming.isEmpty)
+                Button("Vider") { confirmClearQueue = true }.font(.subheadline).frame(minHeight: 44).disabled(player.queueTimeline.upcoming.isEmpty && !player.radio.active)
             }.padding(.vertical, 12)
             List {
                 if let track = player.current {
@@ -225,12 +225,12 @@ struct PlayerView: View {
                         Text("Ajoute un titre avec « Écouter ensuite » depuis son menu.").font(.subheadline).foregroundStyle(.secondary).listRowBackground(Color.clear)
                     }
                     ForEach(player.queueTimeline.upcoming) { track in
-                        TrackRow(track: track) { player.playQueued(track) }.listRowBackground(Color.clear)
+                        TrackRow(track: track) { player.playQueued(track) }.listRowBackground(Color.clear).moveDisabled(player.shuffle)
                     }.onDelete { player.removeUpcoming(at: $0) }.onMove { player.moveUpcoming(from: $0, to: $1) }
                 }
                 if !player.queueTimeline.previous.isEmpty {
                     Section {
-                        DisclosureGroup("Déjà écoutés", isExpanded: $showPrevious) {
+                        DisclosureGroup(player.shuffle ? "Déjà écoutés dans ce cycle" : "Précédents dans la file", isExpanded: $showPrevious) {
                             if showPrevious {
                                 ForEach(player.queueTimeline.previous) { track in TrackRow(track: track) { player.playQueued(track) } }
                             }
@@ -290,7 +290,7 @@ private struct PlaybackDetailsView: View {
                 Text("Le format du fichier ne garantit pas une sortie bit-perfect. iOS et la liaison audio peuvent convertir le signal.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Fond rythmé") {
-                Text(player.hasReactiveAudioSource ? "Réagit au PCM du moteur natif quand le lecteur est visible. Respecte la réduction des animations." : "Fond fixe : un flux progressif non préparé n’est pas analysé.")
+                Text(!library.settings.usesReactiveBackground ? "Désactivé dans tes réglages." : player.isStreaming ? "Fond fixe : un flux progressif non préparé n’est pas analysé." : "Réagit au PCM du moteur natif quand le lecteur est visible. Suspendu en pause et avec la réduction des animations.")
                     .font(.subheadline)
             }
         }.navigationTitle("Détails audio").navigationBarTitleDisplayMode(.inline)

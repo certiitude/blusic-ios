@@ -433,17 +433,18 @@ final class AudioPlayer {
     func removeFromQueue(at offsets: IndexSet) { queue.remove(atOffsets: offsets); persistQueue() }
     func moveQueue(from offsets: IndexSet, to destination: Int) { queue.move(fromOffsets: offsets, toOffset: destination); persistQueue() }
     func clearQueue() { queue = current.map { [$0] } ?? []; persistQueue() }
-    var queueTimeline: QueueTimeline { QueueTimeline(queue: queue, currentID: current?.id) }
+    var queueTimeline: QueueTimeline { QueueTimeline(queue: queue, currentID: current?.id, playedIDs: shuffle ? playedIDs : nil) }
     func playQueued(_ track: Track) {
         guard queue.contains(where: { $0.id == track.id }) else { return }
         play(track, preservingRadio: true)
     }
     func removeUpcoming(at offsets: IndexSet) {
-        let start = queueTimeline.upcomingStart
-        let valid = IndexSet(offsets.filter { $0 >= 0 && start + $0 < queue.count }.map { start + $0 })
-        queue.remove(atOffsets: valid); persistQueue()
+        let upcoming = queueTimeline.upcoming
+        let ids = Set(offsets.filter { upcoming.indices.contains($0) }.map { upcoming[$0].id })
+        queue.removeAll { ids.contains($0.id) && $0.id != current?.id }; persistQueue()
     }
     func moveUpcoming(from offsets: IndexSet, to destination: Int) {
+        guard !shuffle else { return }
         let timeline = queueTimeline
         var upcoming = timeline.upcoming
         guard offsets.allSatisfy({ upcoming.indices.contains($0) }), (0...upcoming.count).contains(destination) else { return }

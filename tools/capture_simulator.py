@@ -80,6 +80,9 @@ def main():
     for label, device in targets:
         if args.isolate_devices and label == "compact":
             run("shutdown", args.device, capture=True, check=False)
+        if args.isolate_devices:
+            # Start with a clean process graph after XCTest; keep app data intact.
+            run("shutdown", device, capture=True, check=False)
         run("bootstatus", device, "-b", timeout=150)
         run("install", device, str(args.app))
         run("status_bar", device, "override", "--time", "9:41", "--batteryLevel", "100", "--batteryState", "charged", "--wifiMode", "active", "--wifiBars", "3")

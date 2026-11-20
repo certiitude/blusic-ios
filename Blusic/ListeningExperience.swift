@@ -158,7 +158,14 @@ enum LibraryBrowse {
 struct QueueTimeline {
     var queue: [Track]
     var currentID: UUID?
+    var playedIDs: Set<UUID>? = nil
     var upcomingStart: Int { currentID.flatMap { id in queue.firstIndex { $0.id == id } }.map { $0 + 1 } ?? 0 }
-    var upcoming: [Track] { Array(queue.dropFirst(upcomingStart)) }
-    var previous: [Track] { Array(queue.prefix(max(0, upcomingStart - 1))) }
+    var upcoming: [Track] {
+        if let playedIDs { return queue.filter { $0.id != currentID && !playedIDs.contains($0.id) } }
+        return Array(queue.dropFirst(upcomingStart))
+    }
+    var previous: [Track] {
+        if let playedIDs { return queue.filter { $0.id != currentID && playedIDs.contains($0.id) } }
+        return Array(queue.prefix(max(0, upcomingStart - 1)))
+    }
 }

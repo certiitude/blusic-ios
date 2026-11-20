@@ -109,6 +109,12 @@ final class BlusicTests: XCTestCase {
         XCTAssertEqual(player.queue.map(\.id), [tracks[0].id, tracks[1].id, tracks[2].id]); XCTAssertEqual(player.current?.id, tracks[1].id)
         XCTAssertTrue(player.isPlaying); XCTAssertEqual(library.savedQueue, player.queue.map(\.id))
         player.removeUpcoming(at: IndexSet(integer: 999)); XCTAssertEqual(player.queue.count, 3)
+        player.shuffle = true
+        XCTAssertEqual(player.queueTimeline.upcoming.map(\.id), [tracks[0].id, tracks[2].id])
+        player.removeUpcoming(at: IndexSet(integer: 0))
+        XCTAssertEqual(player.queue.map(\.id), [tracks[1].id, tracks[2].id]); XCTAssertEqual(player.current?.id, tracks[1].id)
+        player.moveUpcoming(from: IndexSet(integer: 0), to: 1)
+        XCTAssertEqual(player.queue.map(\.id), [tracks[1].id, tracks[2].id], "Manual reordering is disabled during shuffle")
         player.clearQueue(); XCTAssertEqual(player.queue.map(\.id), [tracks[1].id]); XCTAssertTrue(player.isPlaying)
         XCTAssertEqual(library.tracks.count, tracks.count, "Queue operations never delete library songs")
     }
@@ -118,6 +124,8 @@ final class BlusicTests: XCTestCase {
         XCTAssertEqual(QueueTimeline(queue: tracks, currentID: UUID()).upcoming.count, 3)
         XCTAssertTrue(QueueTimeline(queue: tracks, currentID: tracks[2].id).upcoming.isEmpty)
         XCTAssertEqual(QueueTimeline(queue: tracks, currentID: tracks[2].id).previous.count, 2)
+        let shuffled = QueueTimeline(queue: tracks, currentID: tracks[1].id, playedIDs: [tracks[0].id, tracks[1].id])
+        XCTAssertEqual(shuffled.upcoming.map(\.id), [tracks[2].id]); XCTAssertEqual(shuffled.previous.map(\.id), [tracks[0].id])
     }
     func testExperienceOfflineArtworkDoesNotStartNetworkRequests() async throws {
         let session = stubSession(), counter = NetworkRequestCounter()

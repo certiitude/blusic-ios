@@ -103,9 +103,10 @@ struct SearchView: View {
                 }
             }
             if local {
+                let localTracks = localResults
                 SectionHeading(title: "Tout est déjà chez toi", subtitle: "Recherche aussi par album. Les accents et l’ordre des mots ne bloquent pas la recherche.")
-                ForEach(Array((offline ? library.tracks.filter { library.downloads.isAvailable($0) } : library.recentTracks).prefix(6))) { track in
-                    TrackRow(track: track, context: localResults)
+                ForEach(Array((offline ? localTracks : library.recentTracks).prefix(6))) { track in
+                    TrackRow(track: track, context: localTracks)
                 }
             } else {
                 SectionHeading(title: "Suis ton envie", subtitle: "Quelques portes d’entrée, pas des recommandations inventées.")
