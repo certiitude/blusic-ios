@@ -12,6 +12,64 @@ import CryptoKit
 }
 
 final class BlusicTests: XCTestCase {
+    func testReactiveProgressiveInterleavedPCMIsMeasuredWithoutChangingItsBytes() throws {
+        let format = try XCTUnwrap(AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48000, channels: 2, interleaved: true))
+        let buffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1024)); buffer.frameLength = 1024
+        let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: buffer.audioBufferList))
+        let memory = try XCTUnwrap(list[0].mData), samples = memory.assumingMemoryBound(to: Float.self)
+        for i in 0..<1024 { let x = Float(sin(2 * .pi * 80 * Double(i) / 48000) * 0.2); samples[i * 2] = x; samples[i * 2 + 1] = x }
+        let before = Data(bytes: memory, count: Int(list[0].mDataByteSize)), probe = MusicEnergyProbe()
+        for i in 0..<20 { probe.consume(buffer, now: Double(i)) }
+        XCTAssertGreaterThan(probe.snapshot(now: 19).bass, 0.5)
+        XCTAssertEqual(Data(bytes: memory, count: Int(list[0].mDataByteSize)), before)
+        probe.setEnabled(false); probe.consume(buffer, now: 20); XCTAssertEqual(probe.snapshot(now: 20), .silence)
+    }
+    func testReactivePresentationBufferFollowsPlaybackNotDecodeAhead() {
+        let timeline = PresentationEnergyBuffer(), quiet = MusicEnergyFrame(level: 0.1, bass: 0, pulse: 0), kick = MusicEnergyFrame(level: 1, bass: 1, pulse: 1)
+        timeline.record(quiet, start: 0, duration: 1); timeline.record(kick, start: 10, duration: 1)
+        XCTAssertEqual(timeline.snapshot(at: 0.5), quiet)
+        XCTAssertEqual(timeline.snapshot(at: 10.5), kick)
+        XCTAssertEqual(timeline.snapshot(at: 2), .silence); XCTAssertEqual(timeline.snapshot(at: .nan), .silence)
+        let still = ReactiveBackgroundStyle.make(quiet, intensity: 0.5), moving = ReactiveBackgroundStyle.make(kick, intensity: 0.5)
+        XCTAssertGreaterThan(moving.scale - still.scale, 0.04)
+        XCTAssertGreaterThan(abs(moving.y - still.y), 10)
+    }
+    @MainActor func testReactiveProgressiveAACMeasuresRenderedPCMWithoutPreparingAFile() async throws {
+        let library = LibraryStore(inMemory: true), calls = ProgressiveEnergyFixtureCalls()
+        let loader = ProgressiveEnergyFixtureLoader(calls: calls)
+        let player = AudioPlayer(library: library, onlineLoader: loader)
+        let track = Track(title: "HTTP progressive AAC", artist: "Fixture", duration: 4, source: .invidious, location: "reactiveaac")
+        defer { player.pause(); player.setReactiveBackgroundVisible(false) }
+        player.setReactiveBackgroundVisible(true); player.play(track, in: [track])
+        for _ in 0..<320 { if player.backgroundEnergy.level > 0 || player.error != nil { break }; try await Task.sleep(for: .milliseconds(25)) }
+        XCTAssertNil(player.error); XCTAssertTrue(player.isStreaming); XCTAssertTrue(player.streamEnergyAvailable)
+        XCTAssertTrue(player.debugProgressiveEnergyTapAttached); XCTAssertGreaterThan(player.backgroundEnergy.level, 0)
+        player.pause(); XCTAssertEqual(player.backgroundEnergy, .silence)
+        player.toggle(); player.seek(to: 0.5)
+        for _ in 0..<100 { if player.isPlaying && player.backgroundEnergy.level > 0 { break }; try await Task.sleep(for: .milliseconds(25)) }
+        XCTAssertTrue(player.isStreaming); XCTAssertGreaterThan(player.backgroundEnergy.level, 0)
+        player.setReactiveBackgroundVisible(false)
+        XCTAssertEqual(player.backgroundEnergy, .silence); XCTAssertTrue(player.isPlaying)
+        let prepared = await calls.prepared; XCTAssertEqual(prepared, 0, "Animation must not download/prepare a second audio file")
+    }
+    @MainActor func testReactiveProgressivePulseProducesChangingCoverMotionAtPresentationTime() async throws {
+        let item = AVPlayerItem(url: URL(string: "http://127.0.0.1:48766/pulses.wav")!)
+        let tap = ProgressiveMusicEnergyTap(), player = AVPlayer(playerItem: item)
+        defer { player.pause(); tap.detach() }
+        tap.probe.setEnabled(true)
+        let attached = try await tap.attach(to: item); XCTAssertTrue(attached)
+        player.play()
+        var minimum = 2.0, maximum = 0.0, framesWithEnergy = 0
+        for _ in 0..<125 {
+            try await Task.sleep(for: .milliseconds(40))
+            let frame = tap.snapshot(at: player.currentTime().seconds)
+            if frame.level > 0.01 { framesWithEnergy += 1 }
+            let style = ReactiveBackgroundStyle.make(frame, intensity: 0.5)
+            minimum = min(minimum, style.scale); maximum = max(maximum, style.scale)
+        }
+        XCTAssertNil(item.error); XCTAssertGreaterThan(framesWithEnergy, 10)
+        XCTAssertGreaterThan(maximum - minimum, 0.015, "Real HTTP-rendered kick pulses must visibly change the cover background, not just attach a tap")
+    }
     @MainActor func testExperienceSearchRejectsLateRepliesAndKeepsLatestLoadingState() async throws {
         let catalog = ExperienceCatalogFixture(), model = CatalogSearchModel(catalog: catalog)
         let old = Task { await model.search("slow", immediately: true) }
@@ -174,7 +232,7 @@ final class BlusicTests: XCTestCase {
         let energy = MusicEnergyFrame(level: 1, bass: 1, pulse: 1)
         let neutral = ReactiveBackgroundStyle.make(energy, intensity: 0), full = ReactiveBackgroundStyle.make(energy, intensity: 1)
         XCTAssertEqual(neutral.scale, 1); XCTAssertEqual(neutral.glow, 0)
-        XCTAssertLessThanOrEqual(full.scale, 1.05); XCTAssertLessThanOrEqual(full.glow, 0.04)
+        XCTAssertLessThanOrEqual(full.scale, 1.100001); XCTAssertLessThanOrEqual(full.glow, 0.080001)
         XCTAssertTrue(ReactiveBackgroundPolicy.shouldAnimate(enabled: true, reduceMotion: false, sceneActive: true, hasAudio: true, volume: 1, intensity: 1))
         XCTAssertFalse(ReactiveBackgroundPolicy.shouldAnimate(enabled: false, reduceMotion: false, sceneActive: true, hasAudio: true, volume: 1, intensity: 1))
         XCTAssertFalse(ReactiveBackgroundPolicy.shouldAnimate(enabled: true, reduceMotion: true, sceneActive: true, hasAudio: true, volume: 1, intensity: 1))
@@ -2375,6 +2433,21 @@ final class BlusicTests: XCTestCase {
         XCTAssertEqual(player.current?.location, next.location)
         let count = await calls.count
         XCTAssertEqual(count, 2, "The high-quality preparation must be reused, not resolved a third time")
+    }
+}
+
+private actor ProgressiveEnergyFixtureCalls {
+    private(set) var prepared = 0
+    func preparing() { prepared += 1 }
+}
+private struct ProgressiveEnergyFixtureLoader: StreamingAudioLoading {
+    let calls: ProgressiveEnergyFixtureCalls
+    func load(_ track: Track, settings: AppSettings, progress: @escaping @Sendable (AudioLoadUpdate) -> Void) async throws -> InvidiousAudio { throw BlusicError.message("This test requires progressive playback") }
+    func playback(_ track: Track, settings: AppSettings, direct: Bool) async throws -> OnlinePlaybackResource {
+        .stream(InvidiousStream(url: URL(string: "http://127.0.0.1:48766/aac.m4a")!, bitrate: 128000, instance: URL(string: "https://fixture.invalid")!, duration: 4))
+    }
+    func prepareFile(_ stream: InvidiousStream, for track: Track) async throws -> InvidiousAudio {
+        await calls.preparing(); throw BlusicError.message("Preparing a file is forbidden in the progressive background test")
     }
 }
 

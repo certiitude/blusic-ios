@@ -290,7 +290,7 @@ private struct PlaybackDetailsView: View {
                 Text("Le format du fichier ne garantit pas une sortie bit-perfect. iOS et la liaison audio peuvent convertir le signal.").font(.caption).foregroundStyle(.secondary)
             }
             Section("Fond rythmé") {
-                Text(!library.settings.usesReactiveBackground ? "Désactivé dans tes réglages." : player.isStreaming ? "Fond fixe : un flux progressif non préparé n’est pas analysé." : "Réagit au PCM du moteur natif quand le lecteur est visible. Suspendu en pause et avec la réduction des animations.")
+                Text(!library.settings.usesReactiveBackground ? "Désactivé dans tes réglages." : player.isStreaming ? (player.reactiveBackgroundMessage ?? "Connexion de l’analyse au flux…") : "Réagit au PCM du moteur natif quand le lecteur est visible. Suspendu en pause et avec la réduction des animations.")
                     .font(.subheadline)
             }
         }.navigationTitle("Détails audio").navigationBarTitleDisplayMode(.inline)

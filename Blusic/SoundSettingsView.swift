@@ -15,7 +15,10 @@ struct SoundSettingsView: View {
     var body: some View {
         @Bindable var library = library
         Form {
-            Section("Fond rythmé") { ReactiveBackgroundControls() }
+            Section("Fond rythmé") {
+                ReactiveBackgroundControls()
+                if let message = player.reactiveBackgroundMessage { Text(message).font(.caption).foregroundStyle(.secondary) }
+            }
             Section("AutoMix") {
                 Toggle("Transitions intelligentes", isOn: Binding(get: { library.settings.usesAutoMix }, set: { library.settings.autoMixEnabled = $0 }))
                 Text("Le rythme est estimé sur l’iPhone. Ajustement temporaire du tempo sans changement de hauteur si l’écart est inférieur à 4 %, sinon fondu doux. Les réglages manuels de vitesse/tonalité désactivent l’adaptation rythmique.")

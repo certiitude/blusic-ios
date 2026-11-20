@@ -60,6 +60,9 @@ Pas d’abonnement, de compte imposé, de mode DJ ou de nouveau serveur.
 - Un changement de morceau pendant un déplacement sur la barre de progression
   ne peut pas appliquer la position de l’ancien morceau au nouveau.
 - Le fond réactif et AutoMix restent intégrés, avec leurs limites documentées.
+- Correctif du fond progressif : accès au PCM AVPlayer par audio mix, mesures
+  alignées sur le temps de présentation, mouvement des couleurs plus visible.
+  [Architecture, limites et tests HTTP réels](SORYN-REACTIVE-BACKGROUND.md).
 
 ## Compatibilité et réseau
 

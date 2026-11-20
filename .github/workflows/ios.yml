@@ -17,6 +17,8 @@ on:
       - 'tools/check_project.py'
       - 'tools/capture_simulator.py'
       - 'tools/test_capture_simulator.py'
+      - 'tools/reactive_audio_fixture.mjs'
+      - 'tools/test_reactive_audio_fixture.mjs'
       - 'tools/select_simulator.py'
       - 'tools/package_ipa.py'
       - 'tools/verify_ipa.py'
@@ -53,6 +55,8 @@ jobs:
       - name: Build packaged youtubei.js SABR resolver
         working-directory: native-resolver
         run: npm ci --ignore-scripts --no-audit --no-fund && npm test && npm run build
+      - name: Verify progressive PCM HTTP fixture
+        run: node --test tools/test_reactive_audio_fixture.mjs
       - name: Verify host-native Opus CAF decoder
         run: swift tools/check_opus_caf.swift BlusicTests/opus-vbr.caf
       - name: Configure bundled youtubei.js relay
@@ -92,6 +96,8 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Start optional account PostgreSQL test fixture
         run: node account-server/test/ios-server.mjs > build/soryn-accounts-node.log 2>&1 &
+      - name: Start loopback progressive PCM audio fixture
+        run: node tools/reactive_audio_fixture.mjs > build/soryn-reactive-media.log 2>&1 &
       - name: Real PCM reactive background and safe tap lifecycle
         if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
         run: >-
@@ -102,6 +108,10 @@ jobs:
           -only-testing:BlusicTests/BlusicTests/testReactiveBackgroundSilenceStaleFramesAndResetDoNotInventBeats
           -only-testing:BlusicTests/BlusicTests/testReactiveBackgroundIntensityAccessibilityAndLegacySettings
           -only-testing:BlusicTests/BlusicTests/testReactiveBackgroundNativeOpusTapFollowsPlaybackAndDetachesSafely
+          -only-testing:BlusicTests/BlusicTests/testReactiveProgressiveInterleavedPCMIsMeasuredWithoutChangingItsBytes
+          -only-testing:BlusicTests/BlusicTests/testReactivePresentationBufferFollowsPlaybackNotDecodeAhead
+          -only-testing:BlusicTests/BlusicTests/testReactiveProgressiveAACMeasuresRenderedPCMWithoutPreparingAFile
+          -only-testing:BlusicTests/BlusicTests/testReactiveProgressivePulseProducesChangingCoverMotionAtPresentationTime
           -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
       - name: Export reactive background results
         if: ${{ !cancelled() && hashFiles('build/SorynReactiveBackgroundTests.xcresult/Info.plist') != '' }}
@@ -113,6 +123,7 @@ jobs:
           path: |
             build/SorynReactiveBackgroundTests.xcresult
             build/soryn-reactive-background-summary.json
+            build/soryn-reactive-media.log
           retention-days: 7
       - name: Personalized radio and analyzed AutoMix native playback
         if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}

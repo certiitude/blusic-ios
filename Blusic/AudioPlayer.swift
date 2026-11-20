@@ -26,6 +26,8 @@ final class AudioPlayer {
     private(set) var firstAudioLatency: Double?
     private(set) var isTransitioning = false
     private(set) var upcomingPreparationStatus: String?
+    private(set) var reactiveBackgroundMessage: String?
+    private(set) var streamEnergyAvailable = false
     #if DEBUG
     private(set) var artworkFetchCount = 0
     #endif
@@ -60,6 +62,8 @@ final class AudioPlayer {
         var normalization: @MainActor (Bool) -> Void
         var energyTap: NativeMusicEnergyTap?
         var energyNode: AVAudioNode?
+        var progressiveEnergyTap: ProgressiveMusicEnergyTap? = nil
+        var progressiveEnergyFrame: (@MainActor () -> MusicEnergyFrame)? = nil
     }
     private var outgoing: FadingDeck?
     private var fadeTask: Task<Void, Never>?
@@ -117,15 +121,19 @@ final class AudioPlayer {
     @ObservationIgnored private var mixTempo: Float = 1
     @ObservationIgnored private var energyTap = NativeMusicEnergyTap()
     @ObservationIgnored private var reactiveBackgroundVisible = false
+    @ObservationIgnored private var progressiveEnergyTap = ProgressiveMusicEnergyTap()
+    @ObservationIgnored private var progressiveEnergyTask: Task<Void, Never>?
     var hasReactiveAudioSource: Bool {
-        (isPlaying && !isStreaming) || (isTransitioning && outgoing?.energyNode != nil)
+        (isPlaying && (!isStreaming || streamEnergyAvailable)) ||
+            (isTransitioning && (outgoing?.energyNode != nil || outgoing?.progressiveEnergyTap?.attached == true))
     }
 
     var backgroundEnergy: MusicEnergyFrame {
         guard reactiveBackgroundVisible, library.settings.usesReactiveBackground, library.settings.volume > 0.001,
               isPlaying || isTransitioning else { return .silence }
-        let current = !isStreaming && isPlaying ? energyTap.probe.snapshot() : .silence
-        return .combined(current, outgoing?.energyTap?.probe.snapshot() ?? .silence)
+        let current = isPlaying ? (isStreaming ? progressiveEnergyTap.snapshot(at: streamPlayer?.currentTime().seconds ?? position).applyingGain(streamPlayer?.volume ?? 0) : energyTap.probe.snapshot()) : .silence
+        let previous = outgoing?.energyTap?.probe.snapshot() ?? outgoing?.progressiveEnergyFrame?() ?? .silence
+        return .combined(current, previous)
     }
     func setReactiveBackgroundVisible(_ visible: Bool) {
         reactiveBackgroundVisible = visible; updateEnergyTaps()
@@ -135,6 +143,8 @@ final class AudioPlayer {
             library.settings.volume > 0.001 && library.settings.reactiveBackgroundStrength > 0
         if enabled, isPlaying, !isStreaming { energyTap.attach(to: engine.mainMixerNode) }
         else { energyTap.detach() }
+        progressiveEnergyTap.probe.setEnabled(enabled && wantsPlayback && isStreaming)
+        outgoing?.progressiveEnergyTap?.probe.setEnabled(enabled && outgoing?.active() == true)
         if enabled, let deck = outgoing, deck.active(), let node = deck.energyNode { deck.energyTap?.attach(to: node) }
         else { outgoing?.energyTap?.detach() }
     }
@@ -145,6 +155,7 @@ final class AudioPlayer {
     var debugAutoMixTempo: Float { mixTempo }
     var debugTimePitchRate: Float { pitch.rate }
     var debugEnergyTapAttached: Bool { energyTap.attached }
+    var debugProgressiveEnergyTapAttached: Bool { progressiveEnergyTap.attached }
     #endif
 
     init(library: LibraryStore, loadingTimeout: TimeInterval = 20, streamBufferTimeout: TimeInterval = 4, onlineLoader: any OnlineAudioLoading = InvidiousAudioLoader(), radioCatalog: any RadioCatalogLoading = MusicCatalogService(), radioDefaults: UserDefaults = .standard) {
@@ -384,6 +395,7 @@ final class AudioPlayer {
     }
     func seek(to seconds: Double) {
         energyTap.probe.reset()
+        progressiveEnergyTap.probe.reset()
         mixTransitionTask?.cancel(); mixTransitionTask = nil
         if let streamPlayer {
             let target = max(0, min(seconds, max(0, duration - 0.05)))
@@ -536,10 +548,14 @@ final class AudioPlayer {
         let oldRate = Double(max(0.5, library.settings.playbackRate))
         let baseGain = min(1, max(0, actualVolume / max(0.001, library.settings.volume)))
         if let player = streamPlayer {
-            outgoing = FadingDeck(volume: { player.volume = $0 }, stop: { player.pause() }, remaining: {
+            progressiveEnergyTask?.cancel(); progressiveEnergyTask = nil
+            let oldEnergyTap = progressiveEnergyTap
+            outgoing = FadingDeck(volume: { player.volume = $0 }, stop: { oldEnergyTap.detach(); player.pause() }, remaining: {
                 let seconds = player.currentTime().seconds
                 return seconds.isFinite ? max(0, oldDuration - seconds) / oldRate : 0
-            }, active: { player.timeControlStatus == .playing }, baseGain: baseGain, normalization: { _ in }, energyTap: nil, energyNode: nil)
+            }, active: { player.timeControlStatus == .playing }, baseGain: baseGain, normalization: { _ in }, energyTap: nil, energyNode: nil, progressiveEnergyTap: oldEnergyTap,
+                progressiveEnergyFrame: { oldEnergyTap.snapshot(at: player.currentTime().seconds).applyingGain(player.volume) })
+            progressiveEnergyTap = ProgressiveMusicEnergyTap()
             stopStreaming(pause: false)
         } else if let oldFile = audioFile, node.isPlaying {
             let oldEngine = engine, oldNode = node, oldNormalizer = normalizer, oldProfile = loudnessProfile, oldEnergyTap = energyTap, offset = scheduledOffset
@@ -714,6 +730,20 @@ final class AudioPlayer {
         player.automaticallyWaitsToMinimizeStalling = false
         player.volume = library.settings.volume * incomingGain
         streamPlayer = player; streamSource = source; isStreaming = true; wantsPlayback = true
+        reactiveBackgroundMessage = "Connexion de l’analyse PCM au flux progressif…"
+        let sensor = progressiveEnergyTap
+        progressiveEnergyTask = Task { @MainActor [weak self] in
+            do {
+                let attached = try await sensor.attach(to: item)
+                guard let self, !Task.isCancelled, streamPlayer === player else { sensor.detach(); return }
+                streamEnergyAvailable = attached
+                reactiveBackgroundMessage = attached ? "Analyse PCM du flux progressif connectée." : "Ce flux n’expose pas de PCM analysable ; fond fixe."
+                updateEnergyTaps()
+            } catch {
+                guard let self, !Task.isCancelled, streamPlayer === player else { sensor.detach(); return }
+                reactiveBackgroundMessage = "Analyse du fond indisponible pour ce flux ; la musique continue."
+            }
+        }
         updateEnergyTaps()
         if declaredDuration <= 0, source.duration > 0 { declaredDuration = source.duration }
         duration = PlaybackDuration.effective(declared: declaredDuration, measured: source.duration)
@@ -725,10 +755,12 @@ final class AudioPlayer {
                     guard let self, streamPlayer === observed, generation == token else { return }
                     if observed.timeControlStatus == .playing {
                         isPlaying = true; lastTick = Date()
+                        updateEnergyTaps()
                         if firstAudioLatency != nil { finishLoading() }
                         updateNowPlaying()
                     } else if observed.timeControlStatus == .waitingToPlayAtSpecifiedRate, wantsPlayback {
                         flushListening(); isPlaying = false; isLoading = true
+                        updateEnergyTaps()
                         loadingMessage = "Mise en tampon du flux…"
                         if bufferWatchdog == nil {
                             bufferWatchdog = Task { @MainActor [weak self] in
@@ -833,6 +865,9 @@ final class AudioPlayer {
     }
 
     private func stopStreaming(pause: Bool = true) {
+        progressiveEnergyTask?.cancel(); progressiveEnergyTask = nil
+        progressiveEnergyTap.detach(); progressiveEnergyTap = ProgressiveMusicEnergyTap()
+        streamEnergyAvailable = false; reactiveBackgroundMessage = nil
         streamObservations.removeAll()
         if let observer = streamEndObservation { NotificationCenter.default.removeObserver(observer); streamEndObservation = nil }
         if pause { streamPlayer?.pause() }
