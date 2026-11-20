@@ -8,17 +8,23 @@ struct PlayerView: View {
     @State private var mode = {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--blusic-lyrics") { return "lyrics" }
+        if ProcessInfo.processInfo.arguments.contains("--blusic-queue") { return "queue" }
         #endif
         return "artwork"
     }()
     @State private var showSound = false
     @State private var showSleep = false
+    @State private var showDetails = false
+    @State private var confirmClearQueue = false
+    @State private var showPrevious = false
 
     var body: some View {
         GeometryReader { geometry in
             ZStack {
                 ReactivePlayerBackground()
-                if mode == "lyrics", let track = player.current {
+                if mode == "queue" {
+                    queueLayout
+                } else if mode == "lyrics", let track = player.current {
                     lyricsLayout(track)
                 } else {
                   ScrollView(showsIndicators: false) {
@@ -28,14 +34,11 @@ struct PlayerView: View {
                         if let track = player.current {
                             let size = min(geometry.size.width - 64, max(160, geometry.size.height * 0.30))
                             Group {
-                                if mode == "queue" { queue.frame(height: size + 20) }
-                                else {
                                     ArtworkView(track: track, size: size, radius: library.settings.artworkRadius + 5)
                                         .shadow(color: .black.opacity(0.3), radius: 25, y: 17)
                                         .scaleEffect(player.isPlaying || !library.settings.animateArtwork ? 1 : 0.91)
                                         .animation(reduceMotion ? nil : .spring(response: 0.6, dampingFraction: 0.8), value: player.isPlaying)
                                         .frame(maxWidth: .infinity).frame(height: size + 20)
-                                }
                             }.padding(.bottom, 20)
 
                             metadata(track).padding(.bottom, 17)
@@ -81,6 +84,10 @@ struct PlayerView: View {
         .foregroundStyle(.white).preferredColorScheme(.dark)
         .sheet(isPresented: $showSound) { NavigationStack { SoundSettingsView() }.presentationDetents([.large]) }
         .sheet(isPresented: $showSleep) { SleepTimerView().presentationDetents([.height(380)]) }
+        .sheet(isPresented: $showDetails) { NavigationStack { PlaybackDetailsView() } }
+        .confirmationDialog("Vider les titres à suivre ?", isPresented: $confirmClearQueue, titleVisibility: .visible) {
+            Button("Vider la suite", role: .destructive) { player.radio.stop(); player.clearQueue() }
+        } message: { Text("Le titre en cours continue. La radio sera arrêtée, sans supprimer de musique.") }
     }
     private func lyricsLayout(_ track: Track) -> some View {
         VStack(spacing: 0) {
@@ -139,27 +146,21 @@ struct PlayerView: View {
     private func metadata(_ track: Track) -> some View {
         HStack(spacing: 10) {
             VStack(alignment: .leading, spacing: 7) {
-                Text(track.title).font(.system(size: 24, weight: .bold)).tracking(-0.5).lineLimit(1).minimumScaleFactor(0.7)
+                Text(track.title).font(.title2.bold()).tracking(-0.5).lineLimit(2)
                 Button {
                     if let artistID = track.artistID { library.requestedArtist = MusicArtist(id: artistID, name: track.subtitle) }
                 } label: {
                     Text(track.subtitle).font(.system(size: 17)).foregroundStyle(.white.opacity(0.58)).lineLimit(1)
                 }.buttonStyle(.plain).disabled(track.artistID == nil)
                 HStack(spacing: 5) {
-                    Image(systemName: track.isOffline ? "checkmark.circle" : "waveform")
+                    Image(systemName: library.downloads.isAvailable(track) ? "checkmark.circle" : "waveform")
                     Text(player.formatLabel.isEmpty ? track.sourceLabel : player.formatLabel)
                     if player.loopB != nil { Text("· BOUCLE A–B") }
-                }.font(.system(size: 9, weight: .semibold)).tracking(0.7).foregroundStyle(.white.opacity(0.45)).padding(.top, 3)
-                if let seconds = player.firstAudioLatency {
-                    Text(String(format: "Démarrage : %.1f s", seconds)).font(.system(size: 9)).foregroundStyle(.white.opacity(0.4))
-                }
-                if let status = player.upcomingPreparationStatus {
-                    Text(status).font(.system(size: 10)).foregroundStyle(.white.opacity(0.5)).lineLimit(1)
-                }
-                if let status = player.autoMixMessage {
-                    Text(status).font(.system(size: 10)).foregroundStyle(library.settings.color).lineLimit(2)
-                }
-                if player.radio.active { Label("Radio personnalisée", systemImage: "dot.radiowaves.left.and.right").font(.caption2).foregroundStyle(.white.opacity(0.7)) }
+                }.font(.caption2).foregroundStyle(.white.opacity(0.6)).lineLimit(2).padding(.top, 3)
+                Button { showDetails = true } label: {
+                    Label(player.isTransitioning ? "Transition AutoMix / fondu" : player.radio.active ? "Radio personnalisée · détails" : "Détails audio", systemImage: "info.circle")
+                        .font(.caption).foregroundStyle(.white.opacity(0.7)).frame(minHeight: 32)
+                }.buttonStyle(.plain)
             }
             Spacer(minLength: 0)
             IconButton(symbol: library.isFavorite(track) ? "heart.fill" : "heart", label: "Favori") { library.toggleFavorite(track) }
@@ -203,19 +204,45 @@ struct PlayerView: View {
                 .background(mode == "queue" ? .white.opacity(0.12) : .clear, in: RoundedRectangle(cornerRadius: 13))
         }.foregroundStyle(.white.opacity(0.7))
     }
-    private var queue: some View {
-        VStack(alignment: .leading, spacing: 12) {
+    private var queueLayout: some View {
+        VStack(spacing: 0) {
+            Capsule().fill(.white.opacity(0.28)).frame(width: 36, height: 5).padding(.top, 12)
+            header.padding(.top, 6)
             HStack {
-                Text("File d’attente").font(.title3.bold())
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("À suivre").font(.title2.bold())
+                    Text("\(player.queueTimeline.upcoming.count) titres · glisse pour réordonner").font(.caption).foregroundStyle(.secondary)
+                }
                 Spacer()
-                Button("Vider") { player.clearQueue() }.font(.caption).tint(.white.opacity(0.6))
-            }
+                Button("Vider") { confirmClearQueue = true }.font(.subheadline).frame(minHeight: 44).disabled(player.queueTimeline.upcoming.isEmpty)
+            }.padding(.vertical, 12)
             List {
-                ForEach(Array(player.queue.enumerated()), id: \.offset) { _, track in
-                    TrackRow(track: track, context: player.queue).listRowInsets(EdgeInsets(top: 2, leading: 0, bottom: 2, trailing: 0)).listRowBackground(Color.clear)
-                }.onDelete { player.removeFromQueue(at: $0) }.onMove { player.moveQueue(from: $0, to: $1) }
+                if let track = player.current {
+                    Section("À l’écoute") { TrackRow(track: track) { player.toggle() }.listRowBackground(Color.clear) }
+                }
+                Section(player.radio.active ? "Ta radio continue" : "Les prochains titres") {
+                    if player.queueTimeline.upcoming.isEmpty {
+                        Text("Ajoute un titre avec « Écouter ensuite » depuis son menu.").font(.subheadline).foregroundStyle(.secondary).listRowBackground(Color.clear)
+                    }
+                    ForEach(player.queueTimeline.upcoming) { track in
+                        TrackRow(track: track) { player.playQueued(track) }.listRowBackground(Color.clear)
+                    }.onDelete { player.removeUpcoming(at: $0) }.onMove { player.moveUpcoming(from: $0, to: $1) }
+                }
+                if !player.queueTimeline.previous.isEmpty {
+                    Section {
+                        DisclosureGroup("Déjà écoutés", isExpanded: $showPrevious) {
+                            if showPrevious {
+                                ForEach(player.queueTimeline.previous) { track in TrackRow(track: track) { player.playQueued(track) } }
+                            }
+                        }.listRowBackground(Color.clear)
+                    }
+                }
             }.listStyle(.plain).scrollContentBackground(.hidden).environment(\.editMode, .constant(.active))
-        }
+                .accessibilityIdentifier("playback-queue")
+            progress.padding(.top, 8)
+            transport.frame(height: 80)
+            tools.padding(.bottom, 8)
+        }.padding(.horizontal, 24)
     }
 }
 
@@ -223,12 +250,13 @@ private struct PlaybackProgressView: View {
     @Environment(AudioPlayer.self) private var player
     @State private var scrubbing = false
     @State private var scrubPosition = 0.0
+    @State private var scrubTrackID: UUID?
     var body: some View {
         VStack(spacing: 3) {
             Slider(value: Binding(get: { scrubbing ? scrubPosition : min(player.position, max(0.01, player.duration)) }, set: { scrubPosition = $0 }),
                    in: 0...max(0.01, player.duration), onEditingChanged: { editing in
-                if editing { scrubPosition = player.position; scrubbing = true }
-                else { scrubbing = false; player.seek(to: scrubPosition) }
+                if editing { scrubPosition = player.position; scrubTrackID = player.current?.id; scrubbing = true }
+                else { scrubbing = false; if scrubTrackID == player.current?.id { player.seek(to: scrubPosition) } }
             }).tint(.white).disabled(player.current?.isNative != true).accessibilityLabel("Position de lecture")
             HStack {
                 Text((scrubbing ? scrubPosition : player.position).clock)
@@ -236,6 +264,37 @@ private struct PlaybackProgressView: View {
                 Text("−" + max(0, player.duration - (scrubbing ? scrubPosition : player.position)).clock)
             }.font(.system(size: 11, weight: .medium, design: .monospaced)).foregroundStyle(.white.opacity(0.4))
         }
+        .onChange(of: player.current?.id) { _, _ in scrubbing = false; scrubTrackID = nil }
+    }
+}
+
+private struct PlaybackDetailsView: View {
+    @Environment(AudioPlayer.self) private var player
+    @Environment(LibraryStore.self) private var library
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        Form {
+            if let track = player.current {
+                Section("Le titre") {
+                    LabeledContent("Titre", value: track.title)
+                    LabeledContent("Artiste", value: track.subtitle)
+                    Label(library.downloads.isAvailable(track) ? "Disponible hors ligne" : "Connexion nécessaire", systemImage: library.downloads.isAvailable(track) ? "checkmark.circle.fill" : "network")
+                }
+            }
+            Section("Le son, sans promesses inventées") {
+                Text(player.formatLabel.isEmpty ? "Format en cours de détection" : player.formatLabel)
+                if let latency = player.firstAudioLatency { LabeledContent("Démarrage mesuré", value: String(format: "%.1f s", latency)) }
+                if let status = player.normalizationMessage { Text(status) }
+                if let status = player.autoMixMessage { Text(status) }
+                if let status = player.upcomingPreparationStatus { Text(status) }
+                Text("Le format du fichier ne garantit pas une sortie bit-perfect. iOS et la liaison audio peuvent convertir le signal.").font(.caption).foregroundStyle(.secondary)
+            }
+            Section("Fond rythmé") {
+                Text(player.hasReactiveAudioSource ? "Réagit au PCM du moteur natif quand le lecteur est visible. Respecte la réduction des animations." : "Fond fixe : un flux progressif non préparé n’est pas analysé.")
+                    .font(.subheadline)
+            }
+        }.navigationTitle("Détails audio").navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Terminé") { dismiss() } } }
     }
 }
 

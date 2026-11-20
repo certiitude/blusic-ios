@@ -1,5 +1,7 @@
 # Soryn (anciennement Blusic)
 
+**En préparation — Soryn iOS 1.15 :** accueil personnel, recherche avec historique local effaçable, bibliothèque filtrable et file d’attente plein écran. Préserve Opus, téléchargements, fichiers et comptes facultatifs. [Détails, protections et état de validation](docs/SORYN-1.15-EXPERIENCE.md). Les notes historiques ci-dessous ne constituent pas le résultat des tests de cette version.
+
 **Windows et iPhone :** nouvelle identité Soryn et synchronisation locale chiffrée de la bibliothèque. [Application Windows, compilation et appairage iPhone](windows/README.md). Le nom et le logo changent ; les identifiants et dossiers iOS historiques restent inchangés pour conserver les données existantes. La synchronisation ne transfère pas les fichiers audio et ne nécessite pas de serveur cloud.
 
 **Ta musique, simplement.** Application iPhone native en SwiftUI, pensée autour d’une interface sombre, de pochettes immersives et d’un lecteur en verre translucide. Identité adaptée de l’icône Blusic fournie ; ergonomie mobile inspirée des captures et d’Apple Music.

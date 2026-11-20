@@ -16,6 +16,7 @@ on:
       - '.github/workflows/ios.yml'
       - 'tools/check_project.py'
       - 'tools/capture_simulator.py'
+      - 'tools/test_capture_simulator.py'
       - 'tools/select_simulator.py'
       - 'tools/package_ipa.py'
       - 'tools/verify_ipa.py'
@@ -33,13 +34,17 @@ permissions:
 jobs:
   ios:
     runs-on: macos-15
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
     steps:
       - uses: actions/checkout@v4
       - name: Xcode version
         run: xcodebuild -version
+      - name: Deterministic capture and test-selection tooling
+        run: |
+          python3 tools/test_capture_simulator.py
+          python3 tools/test_ios_test_groups.py
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -135,6 +140,34 @@ jobs:
           path: |
             build/SorynRadioAutoMixTests.xcresult
             build/soryn-radio-automix-summary.json
+          retention-days: 7
+      - name: Listening experience, search races, offline isolation and queue safety
+        if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
+        run: >-
+          xcodebuild test -project Blusic.xcodeproj -scheme Blusic
+          -destination "platform=iOS Simulator,id=$SIMULATOR_ID"
+          -derivedDataPath build/DerivedData -resultBundlePath build/SorynExperienceTests.xcresult
+          -only-testing:BlusicTests/BlusicTests/testExperienceSearchRejectsLateRepliesAndKeepsLatestLoadingState
+          -only-testing:BlusicTests/BlusicTests/testExperienceSearchDebouncesCancellationAndOfflineNeverCallsCatalog
+          -only-testing:BlusicTests/BlusicTests/testExperienceMetadataCacheExpiresAndRefreshReallyReloads
+          -only-testing:BlusicTests/BlusicTests/testExperiencePaginationDeduplicatesAndStopsRepeatedContinuation
+          -only-testing:BlusicTests/BlusicTests/testExperiencePaginationFailureKeepsSongsAndCanRetry
+          -only-testing:BlusicTests/BlusicTests/testExperienceRecentSearchesAreBoundedLocalAndErasable
+          -only-testing:BlusicTests/BlusicTests/testExperienceLibrarySearchMatchesAllWordsAcrossArtistAlbumAndAccents
+          -only-testing:BlusicTests/BlusicTests/testExperienceQueueEditingProtectsCurrentAndKeepsPreviousOrder
+          -only-testing:BlusicTests/BlusicTests/testExperienceQueueTimelineHandlesEmptyMissingAndLastCurrent
+          -only-testing:BlusicTests/BlusicTests/testExperienceOfflineArtworkDoesNotStartNetworkRequests
+          -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
+      - name: Export listening experience results
+        if: ${{ !cancelled() && hashFiles('build/SorynExperienceTests.xcresult/Info.plist') != '' }}
+        run: xcrun xcresulttool get test-results summary --path build/SorynExperienceTests.xcresult > build/soryn-experience-summary.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Soryn-listening-experience-tests
+          path: |
+            build/SorynExperienceTests.xcresult
+            build/soryn-experience-summary.json
           retention-days: 7
       - name: Native loudness normalization, gain safety and unchanged audio
         if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
@@ -256,12 +289,12 @@ jobs:
           retention-days: 7
       - name: Capture native layouts on large and compact iPhones
         if: ${{ !cancelled() && steps.simulator.outcome == 'success' }}
-        timeout-minutes: 7
+        timeout-minutes: 10
         run: >-
           python3 tools/capture_simulator.py --device "$SIMULATOR_ID"
           --app build/DerivedData/Build/Products/Debug-iphonesimulator/Blusic.app
           --output build/screenshots
-          --focus-audio
+          --local-fixture --isolate-devices
       - uses: actions/upload-artifact@v4
         if: always()
         with:

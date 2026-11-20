@@ -4,10 +4,10 @@ import ImageIO
 
 enum Palette {
     static let background = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark
-        ? UIColor(red: 0.035, green: 0.035, blue: 0.035, alpha: 1)
+        ? UIColor(red: 0.035, green: 0.043, blue: 0.055, alpha: 1)
         : UIColor(red: 0.957, green: 0.965, blue: 0.98, alpha: 1) })
     static let surface = Color(uiColor: UIColor { $0.userInterfaceStyle == .dark
-        ? UIColor(red: 0.075, green: 0.075, blue: 0.075, alpha: 1) : .white })
+        ? UIColor(red: 0.073, green: 0.084, blue: 0.105, alpha: 1) : .white })
     static let line = Color.primary.opacity(0.07)
 }
 
@@ -94,8 +94,8 @@ struct ArtworkView: View {
                                     Image(uiImage: loadedImage).resizable().scaledToFill()
                                         .frame(width: geometry.size.width, height: geometry.size.height).clipped()
                                 } else { Color.clear }
-                            }.task(id: request) {
-                                let image = await ArtworkImageCache.shared.image(for: request)
+                            }.task(id: ArtworkLoadRequest(request: request, offline: library.settings.usesOfflinePlaybackOnly)) {
+                                let image = await ArtworkImageCache.shared.image(for: request, allowNetwork: !library.settings.usesOfflinePlaybackOnly)
                                 guard !Task.isCancelled else { return }
                                 loadedImage = image; loadedRequest = request
                             }
@@ -119,6 +119,11 @@ struct ArtworkRequest: Hashable, Sendable {
     }
 }
 
+private struct ArtworkLoadRequest: Hashable {
+    var request: ArtworkRequest
+    var offline: Bool
+}
+
 /// Decode and downsample away from the UI; reuse decoded thumbnails between rows.
 actor ArtworkImageCache {
     static let shared = ArtworkImageCache()
@@ -137,9 +142,10 @@ actor ArtworkImageCache {
             self.session = URLSession(configuration: config)
         }
     }
-    func image(for request: ArtworkRequest) async -> UIImage? {
+    func image(for request: ArtworkRequest, allowNetwork: Bool = true) async -> UIImage? {
         let key = "\(request.url.absoluteString)|\(request.pixels)|\(request.square)" as NSString
         if let image = cache.object(forKey: key) { return image }
+        guard allowNetwork || request.url.isFileURL else { return nil }
         if let work = pending[request] { return await work.value }
         let session = session
         let work = Task.detached(priority: .utility) { () -> UIImage? in
@@ -202,6 +208,92 @@ struct SectionHeading: View {
     }
 }
 
+struct PageTitle: View {
+    var eyebrow: String
+    var title: String
+    var subtitle: String
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(eyebrow.uppercased()).font(.caption2.weight(.bold)).tracking(2).foregroundStyle(.secondary)
+            Text(title).font(.largeTitle.bold()).tracking(-1).accessibilityAddTraits(.isHeader)
+            Text(subtitle).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct FilterPill: View {
+    @Environment(LibraryStore.self) private var library
+    var title: String
+    var symbol: String? = nil
+    var selected = false
+    var action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                if let symbol { Image(systemName: symbol) }
+                Text(title)
+            }.font(.subheadline.weight(.semibold)).padding(.horizontal, 15).frame(minHeight: 44)
+                .foregroundStyle(selected ? library.settings.color : .secondary)
+                .background(selected ? library.settings.color.opacity(0.12) : Palette.surface, in: Capsule())
+                .overlay(Capsule().stroke(selected ? library.settings.color.opacity(0.35) : Palette.line, lineWidth: 1))
+        }.buttonStyle(.plain).accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+struct LibrarySearchField: View {
+    @Binding var text: String
+    var prompt = "Dans ta bibliothèque"
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            TextField(prompt, text: $text).autocorrectionDisabled().submitLabel(.search)
+            if !text.isEmpty {
+                Button { text = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary) }
+                    .frame(minWidth: 44, minHeight: 44).accessibilityLabel("Effacer la recherche")
+            }
+        }.padding(.leading, 15).padding(.trailing, text.isEmpty ? 15 : 0).frame(minHeight: 52).surface(radius: 16)
+    }
+}
+
+struct MusicShelf: View {
+    @Environment(AudioPlayer.self) private var player
+    @Environment(LibraryStore.self) private var library
+    @ScaledMetric(relativeTo: .body) private var cardWidth = 148.0
+    var title: String
+    var subtitle: String
+    var tracks: [Track]
+    var ranked = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionHeading(title: title, subtitle: subtitle)
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(alignment: .top, spacing: 16) {
+                    ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
+                        VStack(alignment: .leading, spacing: 9) {
+                            Button { player.play(track, in: tracks) } label: {
+                                ArtworkView(track: track, size: min(200, cardWidth), radius: 18)
+                                    .overlay(alignment: .bottomTrailing) {
+                                        Image(systemName: "play.fill").font(.caption.bold()).foregroundStyle(.white)
+                                            .frame(width: 32, height: 32).background(.black.opacity(0.5), in: Circle()).padding(10)
+                                    }
+                            }.buttonStyle(.plain).accessibilityLabel("Écouter \(track.title), \(track.subtitle)")
+                            HStack(alignment: .top, spacing: 2) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text((ranked ? "\(index + 1). " : "") + track.title).font(.subheadline.weight(.semibold)).lineLimit(2)
+                                    Text(track.subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                                }.frame(maxWidth: .infinity, alignment: .leading)
+                                Menu { TrackActions(track: track) } label: {
+                                    Image(systemName: "ellipsis").frame(width: 28, height: 44).contentShape(Rectangle())
+                                }.tint(.secondary).accessibilityLabel("Options pour \(track.title)")
+                            }
+                        }.frame(width: min(200, cardWidth), alignment: .leading)
+                    }
+                }.padding(.bottom, 2)
+            }
+        }
+    }
+}
+
 struct TrackRow: View {
     @Environment(LibraryStore.self) private var library
     @Environment(AudioPlayer.self) private var player
@@ -209,7 +301,7 @@ struct TrackRow: View {
     var context: [Track] = []
     var rank: Int? = nil
     var action: (() -> Void)? = nil
-    var isCurrent: Bool { player.current?.id == track.id }
+    var isCurrent: Bool { PlaybackIdentity.matches(player.current, track) }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -221,12 +313,12 @@ struct TrackRow: View {
                     ArtworkView(track: track, size: library.settings.compactRows ? 44 : 52, radius: 10)
                         .overlay { if isCurrent && player.isPlaying { Image(systemName: "waveform").foregroundStyle(.white).padding(9).background(.black.opacity(0.5), in: Circle()) } }
                     VStack(alignment: .leading, spacing: 5) {
-                        Text(track.title).font(.system(size: 15, weight: .semibold)).foregroundStyle(isCurrent ? library.settings.color : .primary).lineLimit(1)
+                        Text(track.title).font(.subheadline.weight(.semibold)).foregroundStyle(isCurrent ? library.settings.color : .primary).lineLimit(1)
                         HStack(spacing: 4) {
                             if track.isExplicit { Image(systemName: "e.square.fill").font(.system(size: 10)) }
                             Text(track.subtitle).lineLimit(1)
                             if track.source == .unresolved || track.source == .catalogReference { Image(systemName: "link.badge.plus").accessibilityLabel("Source à associer") }
-                            if library.downloads.record(for: track) != nil { Image(systemName: "arrow.down.circle.fill").accessibilityLabel("Téléchargé pour l’écoute hors ligne") }
+                            if library.downloads.isAvailable(track) { Image(systemName: "checkmark.circle.fill").accessibilityLabel("Disponible hors ligne") }
                             else if track.isYouTubeContent { Image(systemName: track.source == .invidious ? "network" : "play.rectangle").accessibilityLabel(track.sourceLabel) }
                         }.font(.system(size: 12)).foregroundStyle(.secondary)
                     }

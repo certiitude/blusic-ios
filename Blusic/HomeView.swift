@@ -3,130 +3,130 @@ import SwiftUI
 struct HomeView: View {
     @Environment(LibraryStore.self) private var library
     @Environment(AudioPlayer.self) private var player
-    @State private var online: [Track] = []
-    @State private var onlineError: String?
-    @State private var loadingCatalogue = false
-    @State private var retry = 0
-    private var quickTracks: [Track] { Array((library.recentTracks.isEmpty ? online : library.recentTracks).prefix(4)) }
-    private var mostPlayed: [Track] { library.mostPlayedTracks }
+    @State private var discovery = CatalogSearchModel()
+    @State private var mood = "Soul"
+    @State private var refreshID = 0
+    private let moods = ["Soul", "Rap français", "Électronique", "Jazz", "Indie", "Piano"]
+    private var offline: Bool { library.settings.usesOfflinePlaybackOnly }
+    private var available: [Track] { library.tracks.filter { library.downloads.isAvailable($0) } }
+    private var resume: Track? {
+        let candidates = [player.current].compactMap { $0 } + library.recentTracks + library.likedTracks
+        return candidates.first { !offline || library.downloads.isAvailable($0) }
+    }
+    private var requestKey: String { "\(mood)|\(offline)|\(refreshID)" }
 
     var body: some View {
         ScrollView(showsIndicators: false) {
-            LazyVStack(alignment: .leading, spacing: 27) {
-                NavigationLink { RadioView() } label: {
-                    HStack(spacing: 16) {
-                        Image(systemName: "dot.radiowaves.left.and.right").font(.system(size: 32)).foregroundStyle(library.settings.color)
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Ta radio personnalisée").font(.title3.bold())
-                            Text(player.radio.active ? player.radio.message : "Un morceau pour commencer. Des découvertes pour continuer.")
-                                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        }
-                        Spacer(minLength: 0); Image(systemName: "chevron.right").font(.caption)
-                    }.padding(18).surface(radius: 18)
-                }.buttonStyle(.plain).accessibilityIdentifier("open-personal-radio")
-                VStack(alignment: .leading, spacing: 13) {
-                    heading("Accès rapide", symbol: "bolt.circle.fill")
-                    LazyVGrid(columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)], spacing: 8) {
-                        NavigationLink { TrackCollectionView(title: "Titres favoris", subtitle: "Tes morceaux favoris", trackIDs: [], kind: .favorites) } label: {
-                            quickCard("Titres favoris", detail: "\(library.likedTracks.count) titre\(library.likedTracks.count > 1 ? "s" : "")", symbol: "heart.fill")
-                        }
-                        NavigationLink { TrackCollectionView(title: "Récemment écoutés", subtitle: "Ton historique", trackIDs: [], kind: .recent) } label: {
-                            quickCard("Récents", detail: "Ton historique", symbol: "clock")
-                        }
-                        ForEach(quickTracks) { track in
-                            Button { player.play(track, in: quickTracks) } label: {
-                                HStack(spacing: 9) {
-                                    ArtworkView(track: track, size: 36, radius: 5)
-                                    VStack(alignment: .leading, spacing: 4) {
-                                        Text(track.title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                                        Text(track.subtitle).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
-                                    }.frame(maxWidth: .infinity, alignment: .leading)
-                                }.padding(8).frame(height: 52).surface(radius: 8)
-                            }
-                        }
-                    }.buttonStyle(.plain)
-                }
-
-                if !mostPlayed.isEmpty {
-                    albumSection("Les plus écoutés par toi", subtitle: "Tes écoutes, tout simplement", symbol: "chart.bar.fill", tracks: mostPlayed, ranked: true)
-                }
-                if loadingCatalogue && online.isEmpty {
-                    HStack(spacing: 10) { ProgressView(); Text("Chargement de YouTube Music…").font(.caption).foregroundStyle(.secondary) }.padding(.vertical, 12)
-                } else if let onlineError {
-                    VStack(alignment: .leading, spacing: 9) {
-                        Label("Catalogue indisponible", systemImage: "wifi.exclamationmark").font(.subheadline.bold())
-                        Text(onlineError).font(.caption).foregroundStyle(.secondary).lineLimit(3)
-                        Button("Réessayer") { retry += 1 }.font(.caption.bold())
-                    }.padding(14).surface(radius: 10)
-                }
-                if !online.isEmpty {
-                    albumSection("À l’écoute en ce moment", subtitle: "Chansons YouTube Music", symbol: "flame.fill", tracks: online)
-                }
+            LazyVStack(alignment: .leading, spacing: 30) {
+                PageTitle(eyebrow: "À ton rythme", title: "Ta prochaine écoute.",
+                          subtitle: offline ? "Ta musique est déjà là. Même sans réseau." : "Tes repères. De nouvelles ondes. Rien de plus.")
+                if let track = resume { resumeCard(track) }
+                shortcuts
+                radioCard
                 if !library.recentTracks.isEmpty {
-                    VStack(alignment: .leading, spacing: 12) {
-                        heading("Récemment écoutés", symbol: "clock.arrow.circlepath")
-                        ForEach(Array(library.recentTracks.prefix(5))) { TrackRow(track: $0, context: library.recentTracks) }
-                    }
+                    MusicShelf(title: "Reviens-y", subtitle: "Tes dernières écoutes", tracks: eligible(library.recentTracks, limit: 10))
+                }
+                if !library.likedTracks.isEmpty {
+                    MusicShelf(title: "Toujours les bons", subtitle: "Tes favoris, à portée de main", tracks: eligible(library.likedTracks, limit: 12))
+                }
+                if offline {
+                    if !available.isEmpty { MusicShelf(title: "Prêts à partir", subtitle: "Fichiers et téléchargements disponibles hors ligne", tracks: Array(available.prefix(12))) }
+                } else {
+                    discoverySection
+                }
+                if !library.mostPlayedTracks.isEmpty {
+                    MusicShelf(title: "En boucle chez toi", subtitle: "D’après ton temps d’écoute réel", tracks: eligible(library.mostPlayedTracks, limit: 12), ranked: true)
                 }
                 let originals = library.tracks.filter { $0.source == .bundled }
-                if !originals.isEmpty {
-                    albumSection("Premières ondes", subtitle: "Démos Soryn · disponibles hors ligne", symbol: "waveform", tracks: originals)
-                }
-            }
-            .padding(.horizontal, 20).padding(.top, 14).padding(.bottom, 24)
-            .frame(maxWidth: .infinity, alignment: .leading)
+                if !originals.isEmpty { MusicShelf(title: "Premières ondes", subtitle: "Quatre instrumentaux originaux · hors ligne", tracks: originals) }
+                HStack(spacing: 7) {
+                    Image(systemName: "lock.shield")
+                    Text("Tes goûts restent les tiens. Compte facultatif.")
+                }.font(.caption).foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 8)
+            }.padding(.horizontal, 22).padding(.top, 24).padding(.bottom, 28)
         }
         .background(Palette.background)
-        .task(id: retry) {
-            loadingCatalogue = true; onlineError = nil
-            defer { loadingCatalogue = false }
-            do {
-                let result = try await MusicCatalogService().search("rap français")
-                try Task.checkCancellation()
-                online = Array(result.tracks.prefix(12))
-                await InvidiousAudioLoader.prefetch(online, settings: library.settings)
-            } catch { if !Task.isCancelled { onlineError = error.localizedDescription } }
+        .refreshable { refreshID += 1 }
+        .task(id: requestKey) {
+            await discovery.search(mood, offline: offline, immediately: true, refresh: refreshID > 0)
         }
+        .onDisappear { discovery.cancel() }
     }
 
-    private func heading(_ title: String, symbol: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: symbol).font(.system(size: 17, weight: .semibold))
-            Text(title).font(.system(size: 22, weight: .bold)).tracking(-0.6)
-        }.foregroundStyle(.primary).frame(maxWidth: .infinity, alignment: .leading)
+    private func eligible(_ tracks: [Track], limit: Int) -> [Track] {
+        Array(tracks.lazy.filter { !offline || library.downloads.isAvailable($0) }.prefix(limit))
     }
-    private func albumSection(_ title: String, subtitle: String, symbol: String, tracks: [Track], ranked: Bool = false) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                heading(title, symbol: symbol)
-                Text(subtitle).font(.system(size: 12)).foregroundStyle(.secondary)
+    private func resumeCard(_ track: Track) -> some View {
+        Button {
+            if PlaybackIdentity.matches(player.current, track) { if !player.isPlaying { player.toggle() } }
+            else { player.play(track, in: offline ? available : library.recentTracks.isEmpty ? [track] : library.recentTracks) }
+        } label: {
+            HStack(alignment: .center, spacing: 18) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Label(PlaybackIdentity.matches(player.current, track) && player.isPlaying ? "À L’ÉCOUTE" : "REPRENDRE LE FIL", systemImage: "waveform")
+                        .font(.caption2.weight(.bold)).tracking(1.3).foregroundStyle(library.settings.color)
+                    Text(track.title).font(.title2.bold()).lineLimit(2).multilineTextAlignment(.leading)
+                    Text(track.subtitle).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    Label(player.isPlaying && PlaybackIdentity.matches(player.current, track) ? "Continuer l’écoute" : "Écouter", systemImage: "play.fill")
+                        .font(.subheadline.weight(.semibold)).padding(.top, 2)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                ArtworkView(track: track, size: 100, radius: 20).rotationEffect(.degrees(5))
+                    .shadow(color: .black.opacity(0.22), radius: 14, y: 10)
+            }.padding(22).frame(maxWidth: .infinity, alignment: .leading)
+                .background(LinearGradient(colors: [library.settings.color.opacity(0.15), Palette.surface], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 28))
+                .overlay(RoundedRectangle(cornerRadius: 28).stroke(library.settings.color.opacity(0.18), lineWidth: 1))
+        }.buttonStyle(.plain).accessibilityIdentifier("home-resume")
+    }
+    private var shortcuts: some View {
+        HStack(spacing: 10) {
+            NavigationLink { TrackCollectionView(title: "Titres favoris", subtitle: "Ce qui compte pour toi", trackIDs: [], kind: .favorites) } label: {
+                shortcut("Favoris", detail: "\(library.likedTracks.count) titres", symbol: "heart.fill", color: .pink)
             }
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(alignment: .top, spacing: 14) {
-                    ForEach(Array(tracks.enumerated()), id: \.element.id) { index, track in
-                        Button { player.play(track, in: tracks) } label: {
-                            VStack(alignment: .leading, spacing: 6) {
-                                ArtworkView(track: track, size: 144, radius: 8)
-                                    .overlay(alignment: .topLeading) {
-                                        if ranked { Text("#\(index + 1)").font(.system(size: 9, weight: .bold)).padding(5).background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: 4)).padding(6) }
-                                    }
-                                Text(track.title).font(.system(size: 13, weight: .semibold)).lineLimit(1)
-                                Text(track.subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
-                            }.frame(width: 144, alignment: .leading)
-                        }.buttonStyle(.plain)
-                    }
-                }
-            }.frame(height: 196)
-        }
+            NavigationLink { DownloadsView() } label: {
+                shortcut("Hors ligne", detail: "\(available.count) prêts", symbol: "arrow.down.circle.fill", color: .mint)
+            }
+        }.buttonStyle(.plain)
     }
-    private func quickCard(_ title: String, detail: String, symbol: String) -> some View {
-        HStack(spacing: 9) {
-            Image(systemName: symbol).font(.system(size: 18)).frame(width: 36, height: 36)
-                .background(.white.opacity(0.025), in: RoundedRectangle(cornerRadius: 5))
+    private func shortcut(_ title: String, detail: String, symbol: String, color: Color) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: symbol).font(.title3).foregroundStyle(color)
             VStack(alignment: .leading, spacing: 4) {
-                Text(title).font(.system(size: 12, weight: .semibold)).lineLimit(1)
-                Text(detail).font(.system(size: 10)).foregroundStyle(.secondary)
+                Text(title).font(.subheadline.weight(.semibold))
+                Text(detail).font(.caption).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading)
-        }.padding(8).frame(height: 52).surface(radius: 8)
+        }.padding(16).surface(radius: 20)
+    }
+    private var radioCard: some View {
+        NavigationLink { RadioView() } label: {
+            HStack(spacing: 16) {
+                Image(systemName: "dot.radiowaves.left.and.right").font(.title2).foregroundStyle(library.settings.color)
+                    .frame(width: 50, height: 50).background(library.settings.color.opacity(0.1), in: RoundedRectangle(cornerRadius: 16))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(player.radio.active ? "Ta radio continue" : "Un titre. Et la suite.").font(.headline)
+                    Text(player.radio.active ? player.radio.message : offline ? "Une radio depuis ta musique disponible." : "Une radio personnelle, à partir d’un morceau.")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                }.frame(maxWidth: .infinity, alignment: .leading)
+                Image(systemName: "arrow.up.right").font(.subheadline).foregroundStyle(.secondary)
+            }.padding(16).surface(radius: 22)
+        }.buttonStyle(.plain).accessibilityIdentifier("open-personal-radio")
+    }
+    private var discoverySection: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            SectionHeading(title: "Change d’horizon", subtitle: "Choisis une couleur musicale")
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) { ForEach(moods, id: \.self) { value in FilterPill(title: value, selected: mood == value) { mood = value } } }
+            }
+            if discovery.loading {
+                HStack(spacing: 12) { ProgressView(); Text("À la recherche de nouvelles ondes…").font(.subheadline).foregroundStyle(.secondary) }.padding(.vertical, 30)
+            } else if let error = discovery.error {
+                VStack(alignment: .leading, spacing: 12) {
+                    Label("La découverte peut attendre", systemImage: "wifi.exclamationmark").font(.headline)
+                    Text(error).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    Button("Réessayer") { refreshID += 1 }.buttonStyle(.bordered)
+                }.padding(18).surface()
+            } else if !discovery.tracks.isEmpty {
+                MusicShelf(title: mood, subtitle: "À explorer sur YouTube Music · pas un classement", tracks: Array(discovery.tracks.prefix(12)))
+            }
+        }
     }
 }

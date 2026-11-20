@@ -12,6 +12,122 @@ import CryptoKit
 }
 
 final class BlusicTests: XCTestCase {
+    @MainActor func testExperienceSearchRejectsLateRepliesAndKeepsLatestLoadingState() async throws {
+        let catalog = ExperienceCatalogFixture(), model = CatalogSearchModel(catalog: catalog)
+        let old = Task { await model.search("slow", immediately: true) }
+        try await Task.sleep(for: .milliseconds(15))
+        await model.search("new", immediately: true)
+        await old.value
+        XCTAssertEqual(model.tracks.map(\.title), ["new"]); XCTAssertFalse(model.loading); XCTAssertNil(model.error)
+        let pending = Task { await model.search("slow", immediately: true) }
+        try await Task.sleep(for: .milliseconds(15))
+        model.cancel(); await pending.value
+        XCTAssertFalse(model.loading); XCTAssertTrue(model.tracks.isEmpty, "A hidden screen cannot publish its late results")
+    }
+    @MainActor func testExperienceSearchDebouncesCancellationAndOfflineNeverCallsCatalog() async throws {
+        let catalog = ExperienceCatalogFixture(), model = CatalogSearchModel(catalog: catalog)
+        let typing = Task { await model.search("typing") }
+        try await Task.sleep(for: .milliseconds(10)); typing.cancel(); await typing.value
+        await model.search("Soul", offline: true, immediately: true)
+        await model.search("Singer", category: .artists, offline: true, immediately: true)
+        let calls = await catalog.calls
+        XCTAssertTrue(calls.isEmpty); XCTAssertFalse(model.loading); XCTAssertTrue(model.tracks.isEmpty)
+    }
+    @MainActor func testExperienceMetadataCacheExpiresAndRefreshReallyReloads() async {
+        let catalog = ExperienceCatalogFixture(), model = CatalogSearchModel(catalog: catalog)
+        let now = Date(timeIntervalSince1970: 1000)
+        await model.search("Soul", immediately: true, now: now)
+        await model.search(" soul  ", immediately: true, now: now.addingTimeInterval(10))
+        var calls = await catalog.calls; XCTAssertEqual(calls.count, 1)
+        await model.search("soul", immediately: true, now: now.addingTimeInterval(301))
+        calls = await catalog.calls; XCTAssertEqual(calls.count, 2)
+        await model.search("soul", immediately: true, refresh: true, now: now.addingTimeInterval(302))
+        await model.search("soul", category: .artists, immediately: true, now: now.addingTimeInterval(302))
+        calls = await catalog.calls; XCTAssertEqual(calls.count, 4)
+        XCTAssertEqual(model.artists.count, 1); XCTAssertTrue(model.tracks.isEmpty)
+    }
+    @MainActor func testExperiencePaginationDeduplicatesAndStopsRepeatedContinuation() async {
+        let catalog = ExperienceCatalogFixture(), model = CatalogSearchModel(catalog: catalog)
+        await model.search("pages", immediately: true)
+        XCTAssertEqual(model.tracks.count, 1); XCTAssertEqual(model.continuation, "next")
+        await model.loadMore()
+        XCTAssertEqual(model.tracks.map(\.title), ["pages", "extra"])
+        XCTAssertNil(model.continuation); XCTAssertFalse(model.loadingMore)
+        await model.loadMore()
+        let calls = await catalog.calls; XCTAssertEqual(calls.count, 2)
+        await model.search("pages", immediately: true)
+        let latePage = Task { await model.loadMore() }
+        try? await Task.sleep(for: .milliseconds(5))
+        await model.search("different", immediately: true)
+        await latePage.value
+        XCTAssertEqual(model.tracks.map(\.title), ["different"]); XCTAssertFalse(model.loadingMore)
+    }
+    @MainActor func testExperiencePaginationFailureKeepsSongsAndCanRetry() async {
+        let catalog = ExperienceCatalogFixture(failPageOnce: true), model = CatalogSearchModel(catalog: catalog)
+        await model.search("pages", immediately: true); await model.loadMore()
+        XCTAssertEqual(model.tracks.count, 1); XCTAssertNotNil(model.pageError); XCTAssertEqual(model.continuation, "next")
+        XCTAssertFalse(model.loadingMore)
+        await model.loadMore()
+        XCTAssertEqual(model.tracks.count, 2); XCTAssertNil(model.pageError)
+    }
+    @MainActor func testExperienceRecentSearchesAreBoundedLocalAndErasable() throws {
+        let name = "search-history-\(UUID().uuidString)", defaults = try XCTUnwrap(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        let history = RecentSearches(defaults: defaults)
+        history.record("  Électronique  \n douce "); history.record("electronique douce")
+        XCTAssertEqual(history.terms, ["electronique douce"])
+        history.record("   "); XCTAssertEqual(history.terms.count, 1)
+        for i in 0..<12 { history.record("query \(i)") }
+        XCTAssertEqual(history.terms.count, 8); XCTAssertEqual(history.terms.first, "query 11")
+        XCTAssertEqual(RecentSearches(defaults: defaults).terms, history.terms)
+        history.remove("QUERY 11"); XCTAssertEqual(history.terms.count, 7)
+        history.clear(); XCTAssertTrue(RecentSearches(defaults: defaults).terms.isEmpty)
+    }
+    func testExperienceLibrarySearchMatchesAllWordsAcrossArtistAlbumAndAccents() {
+        let a = Track(title: "Été bleu", artist: "Zoé", album: "Nuits", source: .local, location: "a.m4a")
+        let b = Track(title: "Autre", artist: "Alpha", album: "Été", source: .local, location: "b.m4a")
+        XCTAssertEqual(LibraryBrowse.filter([a, b], query: "zoe ete nuits").map(\.id), [a.id])
+        XCTAssertEqual(LibraryBrowse.filter([a, b], query: "ete introuvable").count, 0)
+        XCTAssertEqual(LibraryBrowse.filter([a, b], query: "", sort: .artist).map(\.id), [b.id, a.id])
+        XCTAssertEqual(LibraryBrowse.filter([a, b], query: "", sort: .title).map(\.id), [b.id, a.id])
+        var duplicate = a; duplicate.id = UUID()
+        XCTAssertTrue(PlaybackIdentity.matches(a, duplicate))
+        duplicate.location = "other.m4a"; XCTAssertFalse(PlaybackIdentity.matches(a, duplicate))
+    }
+    @MainActor func testExperienceQueueEditingProtectsCurrentAndKeepsPreviousOrder() async throws {
+        let library = LibraryStore(inMemory: true), player = AudioPlayer(library: library)
+        let tracks = library.tracks.filter { $0.source == .bundled }
+        XCTAssertGreaterThanOrEqual(tracks.count, 4)
+        player.play(tracks[1], in: tracks)
+        defer { player.pause() }
+        for _ in 0..<60 { if player.isPlaying || player.error != nil { break }; try await Task.sleep(for: .milliseconds(25)) }
+        XCTAssertNil(player.error)
+        XCTAssertEqual(player.queueTimeline.previous.map(\.id), [tracks[0].id])
+        player.moveUpcoming(from: IndexSet(integer: 0), to: 2)
+        XCTAssertEqual(player.queue.map(\.id), [tracks[0].id, tracks[1].id, tracks[3].id, tracks[2].id])
+        player.removeUpcoming(at: IndexSet(integer: 0))
+        XCTAssertEqual(player.queue.map(\.id), [tracks[0].id, tracks[1].id, tracks[2].id]); XCTAssertEqual(player.current?.id, tracks[1].id)
+        XCTAssertTrue(player.isPlaying); XCTAssertEqual(library.savedQueue, player.queue.map(\.id))
+        player.removeUpcoming(at: IndexSet(integer: 999)); XCTAssertEqual(player.queue.count, 3)
+        player.clearQueue(); XCTAssertEqual(player.queue.map(\.id), [tracks[1].id]); XCTAssertTrue(player.isPlaying)
+        XCTAssertEqual(library.tracks.count, tracks.count, "Queue operations never delete library songs")
+    }
+    func testExperienceQueueTimelineHandlesEmptyMissingAndLastCurrent() {
+        let tracks = (0..<3).map { Track(title: "\($0)", artist: "Test", source: .local, location: "\($0).wav") }
+        XCTAssertTrue(QueueTimeline(queue: [], currentID: nil).upcoming.isEmpty)
+        XCTAssertEqual(QueueTimeline(queue: tracks, currentID: UUID()).upcoming.count, 3)
+        XCTAssertTrue(QueueTimeline(queue: tracks, currentID: tracks[2].id).upcoming.isEmpty)
+        XCTAssertEqual(QueueTimeline(queue: tracks, currentID: tracks[2].id).previous.count, 2)
+    }
+    func testExperienceOfflineArtworkDoesNotStartNetworkRequests() async throws {
+        let session = stubSession(), counter = NetworkRequestCounter()
+        defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
+        InvidiousStubProtocol.handler = { _ in counter.increment(); return (200, Data()) }
+        let cache = ArtworkImageCache(session: session)
+        let image = await cache.image(for: ArtworkRequest(url: URL(string: "https://fixture.invalid/cover.png")!, pixels: 128), allowNetwork: false)
+        XCTAssertNil(image); XCTAssertEqual(counter.count, 0)
+    }
+
     func testReactiveBackgroundMeasuresRealBassAndLeavesPCMUnchanged() throws {
         let low = try normalizationBuffer(seconds: 1024.0 / 48000, amplitude: 0.2, frequency: 80)
         let high = try normalizationBuffer(seconds: 1024.0 / 48000, amplitude: 0.2, frequency: 6000)
@@ -2251,6 +2367,29 @@ final class BlusicTests: XCTestCase {
         XCTAssertEqual(player.current?.location, next.location)
         let count = await calls.count
         XCTAssertEqual(count, 2, "The high-quality preparation must be reused, not resolved a third time")
+    }
+}
+
+private actor ExperienceCatalogFixture: CatalogSearching {
+    private(set) var calls: [String] = []
+    var failPageOnce: Bool
+    init(failPageOnce: Bool = false) { self.failPageOnce = failPageOnce }
+    func search(_ query: String, continuation: String?) async throws -> MusicSearchPage {
+        calls.append(query + "|" + (continuation ?? "first"))
+        if query == "slow" { try await Task.sleep(for: .milliseconds(100)) }
+        let first = Track(title: query, artist: "Fixture", source: .invidious, location: query)
+        if continuation != nil {
+            try await Task.sleep(for: .milliseconds(40))
+            if failPageOnce { failPageOnce = false; throw URLError(.networkConnectionLost) }
+            let extra = Track(title: "extra", artist: "Fixture", source: .invidious, location: "extra")
+            return MusicSearchPage(tracks: [first, extra, extra], continuation: "next")
+        }
+        return MusicSearchPage(tracks: [first, first], continuation: query == "pages" ? "next" : nil)
+    }
+    func searchArtists(_ query: String) async throws -> [MusicArtist] {
+        calls.append("artist|" + query)
+        let artist = MusicArtist(id: "fixture", name: query)
+        return [artist, artist]
     }
 }
 

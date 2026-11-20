@@ -433,6 +433,23 @@ final class AudioPlayer {
     func removeFromQueue(at offsets: IndexSet) { queue.remove(atOffsets: offsets); persistQueue() }
     func moveQueue(from offsets: IndexSet, to destination: Int) { queue.move(fromOffsets: offsets, toOffset: destination); persistQueue() }
     func clearQueue() { queue = current.map { [$0] } ?? []; persistQueue() }
+    var queueTimeline: QueueTimeline { QueueTimeline(queue: queue, currentID: current?.id) }
+    func playQueued(_ track: Track) {
+        guard queue.contains(where: { $0.id == track.id }) else { return }
+        play(track, preservingRadio: true)
+    }
+    func removeUpcoming(at offsets: IndexSet) {
+        let start = queueTimeline.upcomingStart
+        let valid = IndexSet(offsets.filter { $0 >= 0 && start + $0 < queue.count }.map { start + $0 })
+        queue.remove(atOffsets: valid); persistQueue()
+    }
+    func moveUpcoming(from offsets: IndexSet, to destination: Int) {
+        let timeline = queueTimeline
+        var upcoming = timeline.upcoming
+        guard offsets.allSatisfy({ upcoming.indices.contains($0) }), (0...upcoming.count).contains(destination) else { return }
+        upcoming.move(fromOffsets: offsets, toOffset: destination)
+        queue = Array(queue.prefix(timeline.upcomingStart)) + upcoming; persistQueue()
+    }
     func appendRadioTracks(_ tracks: [Track]) {
         var identities = Set(queue.map(RadioRanking.identity))
         let additions = library.add(tracks).filter { identities.insert(RadioRanking.identity($0)).inserted }
@@ -1031,14 +1048,15 @@ final class AudioPlayer {
             info[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }
         }
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
-        if loadArtwork, let url = current.artworkURL {
+        if loadArtwork, let url = library.downloads.artworkURL(for: current) ?? current.artworkURL {
             artworkTask?.cancel()
             #if DEBUG
             artworkFetchCount += 1
             #endif
             let id = current.id
+            let allowNetwork = !library.settings.usesOfflinePlaybackOnly
             artworkTask = Task { [weak self] in
-                let image = await ArtworkImageCache.shared.image(for: ArtworkRequest(url: url, pixels: 512))
+                let image = await ArtworkImageCache.shared.image(for: ArtworkRequest(url: url, pixels: 512), allowNetwork: allowNetwork)
                 guard !Task.isCancelled, let self, self.current?.id == id, let image else { return }
                 var updated = MPNowPlayingInfoCenter.default().nowPlayingInfo ?? [:]
                 updated[MPMediaItemPropertyArtwork] = MPMediaItemArtwork(boundsSize: image.size) { _ in image }

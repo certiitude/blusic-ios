@@ -8,6 +8,10 @@ struct LibraryView: View {
     @State private var showCreate = false
     @State private var playlistName = ""
     @State private var section = "Playlists"
+    @State private var query = ""
+    @State private var sort = LibrarySort.added
+    @State private var favoritesOnly = false
+    @State private var playlistToDelete: Playlist?
     private let sections = ["Playlists", "Titres", "Artistes", "Hors ligne"]
 
     var body: some View {
@@ -15,7 +19,7 @@ struct LibraryView: View {
             LazyVStack(alignment: .leading, spacing: 24) {
                 VStack(alignment: .leading, spacing: 7) {
                     HStack {
-                        Text("Bibliothèque").font(.system(size: 27, weight: .bold)).tracking(-0.8)
+                        PageTitle(eyebrow: "Tes essentiels", title: "Ta musique.", subtitle: "\(library.tracks.count) titres. Toujours à toi.")
                         Spacer()
                         Menu {
                             Button { showAudioImport = true } label: { Label("Importer des fichiers audio", systemImage: "square.and.arrow.down") }
@@ -24,7 +28,6 @@ struct LibraryView: View {
                         } label: { Image(systemName: "plus").font(.title3.weight(.medium)).frame(width: 42, height: 42).blusicGlass(radius: 21) }
                             .accessibilityLabel("Ajouter à la bibliothèque")
                     }
-                    Text("\(library.tracks.count) titres. Une infinité de moments.").font(.subheadline).foregroundStyle(.secondary)
                 }.padding(.top, 18)
 
                 HStack(spacing: 12) {
@@ -48,14 +51,12 @@ struct LibraryView: View {
                     }.padding(16).surface()
                 }.buttonStyle(.plain).accessibilityIdentifier("open-downloads")
 
+                LibrarySearchField(text: $query, prompt: section == "Playlists" ? "Une playlist…" : section == "Artistes" ? "Un artiste…" : "Titre, artiste, album…")
+
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(sections, id: \.self) { item in
-                            Button { section = item } label: {
-                                Text(item).font(.system(size: 12, weight: .semibold)).padding(.horizontal, 15).padding(.vertical, 10)
-                                    .foregroundStyle(section == item ? Palette.background : .secondary)
-                                    .background(section == item ? Color.primary : Palette.surface, in: Capsule())
-                            }.buttonStyle(.plain)
+                            FilterPill(title: item, selected: section == item) { section = item; query = "" }
                         }
                     }
                 }
@@ -63,12 +64,27 @@ struct LibraryView: View {
                 case "Playlists": playlists
                 case "Artistes": artists
                 default:
-                    let tracks = section == "Hors ligne" ? library.tracks.filter { library.downloads.isAvailable($0) } : library.tracks
-                    if tracks.isEmpty { EmptyState(symbol: "music.note", title: "Tout commence ici", message: "Ajoute tes premiers fichiers audio avec le bouton +.") }
+                    HStack {
+                        FilterPill(title: "Favoris", symbol: "heart.fill", selected: favoritesOnly) { favoritesOnly.toggle() }
+                        Spacer()
+                        Menu {
+                            Picker("Trier les titres", selection: $sort) { ForEach(LibrarySort.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                        } label: { Label(sort.rawValue, systemImage: "arrow.up.arrow.down").font(.caption.weight(.semibold)).frame(minHeight: 44) }
+                    }
+                    let base = favoritesOnly ? library.likedTracks : library.tracks
+                    let tracks = LibraryBrowse.filter(section == "Hors ligne" ? base.filter { library.downloads.isAvailable($0) } : base, query: query, sort: sort)
+                    if tracks.isEmpty { EmptyState(symbol: "music.note", title: query.isEmpty ? "Un espace à remplir" : "Aucun titre correspondant", message: query.isEmpty ? "Ajoute des fichiers, télécharge tes titres ou retire le filtre Favoris." : "Essaie un autre mot ou un autre filtre.") }
                     ForEach(tracks) { TrackRow(track: $0, context: tracks) }
                 }
             }.pagePadding().padding(.bottom, 24)
         }
+        .scrollDismissesKeyboard(.interactively)
+        .confirmationDialog("Supprimer « \(playlistToDelete?.name ?? "") » ?", isPresented: Binding(get: { playlistToDelete != nil }, set: { if !$0 { playlistToDelete = nil } }), titleVisibility: .visible) {
+            Button("Supprimer la playlist", role: .destructive) {
+                if let playlistToDelete { library.playlists.removeAll { $0.id == playlistToDelete.id } }
+                playlistToDelete = nil
+            }
+        } message: { Text("Les titres et les fichiers audio restent dans ta bibliothèque.") }
         .alert("Nouvelle playlist", isPresented: $showCreate) {
             TextField("Le nom de ta playlist", text: $playlistName)
             Button("Créer") {
@@ -87,7 +103,11 @@ struct LibraryView: View {
     }
     private var playlists: some View {
         LazyVStack(spacing: 16) {
-            ForEach(library.playlists) { playlist in
+            let matches = library.playlists.filter { query.isEmpty || SearchTerms.key($0.name).contains(SearchTerms.key(query)) }
+            if matches.isEmpty {
+                EmptyState(symbol: "rectangle.stack", title: query.isEmpty ? "Ta prochaine sélection commence ici" : "Aucune playlist trouvée", message: query.isEmpty ? "Crée une playlist avec + ou importe une sélection existante." : "Essaie un autre nom.")
+            }
+            ForEach(matches) { playlist in
                 NavigationLink {
                     TrackCollectionView(title: playlist.name, subtitle: playlist.detail, trackIDs: playlist.trackIDs, kind: .playlist(playlist.id))
                 } label: {
@@ -103,7 +123,7 @@ struct LibraryView: View {
                 }.buttonStyle(.plain)
                     .contextMenu {
                         Button("Télécharger la playlist", systemImage: "arrow.down.circle") { library.downloads.enqueue(library.tracks(in: playlist)) }
-                        Button("Supprimer la playlist", role: .destructive) { library.playlists.removeAll { $0.id == playlist.id } }
+                        Button("Supprimer la playlist", role: .destructive) { playlistToDelete = playlist }
                     }
             }
             Button { showPlaylistImport = true } label: {
@@ -119,9 +139,14 @@ struct LibraryView: View {
         }
     }
     private var artists: some View {
-        let names = Array(Set(library.tracks.map(\.subtitle))).sorted()
+        let followed = library.followedArtists.filter { query.isEmpty || SearchTerms.key($0.name).contains(SearchTerms.key(query)) }
+        let followedNames = Set(followed.map { SearchTerms.key($0.name) })
+        let names = Array(Set(library.tracks.map(\.subtitle))).filter {
+            !followedNames.contains(SearchTerms.key($0)) && (query.isEmpty || SearchTerms.key($0).contains(SearchTerms.key(query)))
+        }.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
         return LazyVStack(spacing: 20) {
-            ForEach(library.followedArtists) { artist in
+            if followed.isEmpty && names.isEmpty { EmptyState(symbol: "person.crop.circle", title: "Aucun artiste ici", message: "Retrouve un artiste dans la recherche ou importe sa musique.") }
+            ForEach(followed) { artist in
                 NavigationLink { ArtistView(name: artist.name, artistID: artist.id, initialArtworkURL: artist.artworkURL) } label: {
                     HStack(spacing: 14) {
                         ArtworkView(track: nil, size: 64, radius: 32, artworkURL: artist.artworkURL)
@@ -150,7 +175,7 @@ struct LibraryView: View {
                 Text("\(count) titres").font(.system(size: 11)).foregroundStyle(.secondary)
             }
         }.frame(maxWidth: .infinity, alignment: .leading).padding(19)
-            .surface(radius: 12)
+            .background(LinearGradient(colors: [colors[0].opacity(0.18), Palette.surface], startPoint: .topLeading, endPoint: .bottomTrailing), in: RoundedRectangle(cornerRadius: 22))
     }
 }
 
@@ -191,6 +216,7 @@ struct TrackCollectionView: View {
     @State private var exporting: URL?
     @State private var showShare = false
     @State private var addingTracks = false
+    @State private var confirmDeletion = false
 
     private var playlist: Playlist? {
         if case let .playlist(id) = kind { return library.playlists.first { $0.id == id } }; return nil
@@ -266,8 +292,8 @@ struct TrackCollectionView: View {
                         Button { addingTracks = true } label: { Label("Ajouter des titres", systemImage: "plus") }
                         Button { name = resolvedTitle; rename = true } label: { Label("Renommer", systemImage: "pencil") }
                         Button { exportCSV() } label: { Label("Exporter en CSV", systemImage: "square.and.arrow.up") }
-                        Button("Supprimer la playlist", role: .destructive) {
-                            if let playlist { library.playlists.removeAll { $0.id == playlist.id }; dismiss() }
+                         Button("Supprimer la playlist", role: .destructive) {
+                             confirmDeletion = true
                         }
                     } label: { Image(systemName: "ellipsis.circle") }
                 }
@@ -281,6 +307,11 @@ struct TrackCollectionView: View {
             }
             Button("Annuler", role: .cancel) {}
         }
+        .confirmationDialog("Supprimer cette playlist ?", isPresented: $confirmDeletion, titleVisibility: .visible) {
+            Button("Supprimer la playlist", role: .destructive) {
+                if let playlist { library.playlists.removeAll { $0.id == playlist.id }; dismiss() }
+            }
+        } message: { Text("Les titres et les fichiers audio sont conservés.") }
         .sheet(isPresented: $showShare) { if let exporting { ShareSheet(items: [exporting]) } }
         .sheet(isPresented: $addingTracks) {
             NavigationStack {

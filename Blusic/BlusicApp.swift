@@ -7,7 +7,14 @@ struct BlusicApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        #if DEBUG
+        let fixture = ProcessInfo.processInfo.arguments.contains("--blusic-fixture") || ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        let store = LibraryStore(inMemory: fixture)
+        if fixture { store.settings.offlinePlaybackOnly = true }
+        if fixture && ProcessInfo.processInfo.arguments.contains("--blusic-light") { store.settings.appearance = "light" }
+        #else
         let store = LibraryStore()
+        #endif
         do { try BundledRelayConfiguration.load()?.install(in: store) }
         catch { store.notice = "La configuration du relais n’a pas pu être enregistrée dans le trousseau. \(error.localizedDescription)" }
         _library = State(initialValue: store)
@@ -17,6 +24,11 @@ struct BlusicApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                .transformEnvironment(\.dynamicTypeSize) { size in
+                    #if DEBUG
+                    if ProcessInfo.processInfo.arguments.contains("--blusic-large-text") { size = .xxxLarge }
+                    #endif
+                }
                 .task { await library.downloads.waitUntilReady() }
                 .task(id: scenePhase) { if scenePhase == .active { await library.sync.runWhileActive() } }
                 .task(id: scenePhase) { if scenePhase == .active { await library.account.runWhileActive() } }

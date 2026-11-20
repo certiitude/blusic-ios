@@ -89,7 +89,7 @@ struct RootView: View {
                 library.tracks[index].lyrics = "[00:00.00]Chaque note trouve sa place\n[00:04.00]Le rythme suit ton envie\n[00:08.00]Un exemple de paroles\n[00:12.00]Pour vérifier le défilement"
             }
             if ProcessInfo.processInfo.arguments.contains("--blusic-preview-player"), let demo = library.tracks.first(where: { $0.source == .bundled }) {
-                player.play(demo, in: [demo]); sheet = .player
+                player.play(demo, in: library.tracks.filter { $0.source == .bundled }); sheet = .player
             } else if ProcessInfo.processInfo.arguments.contains("--blusic-preview-artist") {
                 library.requestedArtist = MusicArtist(id: "UC2ISePqOr39OQ90kNN1WLjA", name: "Niska")
             } else if ProcessInfo.processInfo.arguments.contains("--blusic-preview-sound") {
@@ -161,19 +161,23 @@ struct RootView: View {
             BlusicMark().foregroundStyle(.primary).frame(width: 28, height: 28)
             Text("soryn.").font(.system(size: 21, weight: .bold)).tracking(-0.7)
             Spacer()
+            if library.settings.usesOfflinePlaybackOnly {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(library.settings.color).accessibilityLabel("Lecture hors ligne uniquement")
+            }
             IconButton(symbol: "chart.bar.xaxis", label: "Statistiques") { sheet = .statistics }.blusicGlass(radius: 22)
             IconButton(symbol: "slider.horizontal.3", label: "Réglages") { sheet = .settings }.blusicGlass(radius: 22)
         }.padding(.leading, 20).padding(.trailing, 10).frame(height: 48).background(Palette.background)
     }
 
     private func miniPlayer(_ current: Track) -> some View {
-                HStack(spacing: 12) {
+        VStack(spacing: 0) {
+                 HStack(spacing: 12) {
                     Button { sheet = current.source == .youtube ? .youtube : .player } label: {
                         HStack(spacing: 12) {
                             ArtworkView(track: current, size: 36, radius: 6)
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(current.title).font(.system(size: 14, weight: .semibold)).lineLimit(1)
-                                Text(player.isLoading ? player.loadingMessage : player.isTransitioning ? "Fondu en cours…" : current.subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                                 Text(player.isLoading ? player.loadingMessage : player.error != nil ? "Lecture interrompue · réessayer" : player.isTransitioning ? "Transition en cours…" : current.subtitle).font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                             Spacer(minLength: 0)
                         }.contentShape(Rectangle())
@@ -186,6 +190,21 @@ struct RootView: View {
                     IconButton(symbol: "forward.end.fill", label: "Titre suivant") { player.next() }
                 }
                 .padding(.horizontal, 12).padding(.vertical, 4)
-                .accessibilityElement(children: .contain)
+                 .accessibilityElement(children: .contain)
+            MiniPlaybackProgress().padding(.horizontal, 14)
+        }
+    }
+}
+
+/// Only this thin progress strip observes the playback clock, not the whole app shell.
+private struct MiniPlaybackProgress: View {
+    @Environment(AudioPlayer.self) private var player
+    @Environment(LibraryStore.self) private var library
+    var body: some View {
+        GeometryReader { geometry in
+            let fraction = player.duration > 0 ? min(1, max(0, player.position / player.duration)) : 0
+            Capsule().fill(.primary.opacity(0.08))
+                .overlay(alignment: .leading) { Capsule().fill(library.settings.color).frame(width: geometry.size.width * fraction) }
+        }.frame(height: 2).accessibilityHidden(true)
     }
 }

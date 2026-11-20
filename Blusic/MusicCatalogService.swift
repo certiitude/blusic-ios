@@ -1,13 +1,13 @@
 import Foundation
 
-struct MusicSearchPage {
+struct MusicSearchPage: Sendable {
     var tracks: [Track]
     var continuation: String?
 }
 
 /// Public YouTube Music metadata search. Invidious remains the audio resolver.
 /// No fallback to generic YouTube video search: a song must be identified as an ATV.
-struct MusicCatalogService {
+struct MusicCatalogService: CatalogSearching {
     static let songsFilter = "EgWKAQIIAWoMEA4QChADEAQQCRAF"
     static let clientVersion = "1.20261021.01.00"
     var session: URLSession = .shared
