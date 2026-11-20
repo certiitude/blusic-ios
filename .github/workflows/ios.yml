@@ -133,6 +133,7 @@ jobs:
           -derivedDataPath build/DerivedData -resultBundlePath build/SorynRadioAutoMixTests.xcresult
           -only-testing:BlusicTests/BlusicTests/testRadioRankingUsesTasteDeduplicatesAndRespectsDislikes
           -only-testing:BlusicTests/BlusicTests/testRadioCatalogRequestsAudioRadioAndRejectsMusicVideos
+          -only-testing:BlusicTests/BlusicTests/testRadioRequestBodyReaderSupportsDataAndURLSessionBodyStreams
           -only-testing:BlusicTests/BlusicTests/testRadioRefillsWithoutRepeatingAndStopsWithoutChangingPlayback
           -only-testing:BlusicTests/BlusicTests/testRadioOfflineModeNeverCallsCatalogAndDislikesPersistLocally
           -only-testing:BlusicTests/BlusicTests/testStoppingRadioCancelsLateRecommendationsAndKeepsManualQueue

@@ -85,7 +85,7 @@ physique pour cette version : aucun facteur d’amélioration chiffré n’est a
 - Dix tests XCTest dédiés : réponses périmées, annulation pendant la frappe,
   isolation hors ligne, expiration du cache, pagination/erreurs/nouveaux essais,
   historique effaçable, filtrage, identité musicale et sécurité de la file native.
-- Cinq tests Python pour l’outil de capture, trois pour la sélection des suites.
+- Sept tests Python pour l’outil de capture, trois pour la sélection des suites.
 - Contrôle syntaxique des 32 fichiers Swift et des références Xcode sous Windows.
   Ce n’est **pas** une compilation/type-check Swift Apple.
 - La CI compile l’IPA arm64, exécute les suites natives, puis les régressions Opus,
@@ -101,3 +101,26 @@ physique pour cette version : aucun facteur d’amélioration chiffré n’est a
 **À compléter après la CI :** résultat exact des suites, inspection des captures,
 vérification de l’IPA récupérée. Aucune livraison finale n’est déduite des seuls
 contrôles Windows. Signature Apple encore nécessaire pour installer l’IPA non signée.
+
+### Résultat intermédiaire du 20 novembre 2026
+
+[Exécution 44719852936](https://github.com/certiitude/blusic-ios/actions/runs/44719852936),
+commit `178a61e`, **avant le correctif du fond progressif** : compilation arm64 et
+IPA non signée générée ; sur simulateur, fond natif 4/4, expérience 10/10,
+normalisation 10/10, Opus/hors ligne 13/13 et comptes/appairage 6/6 réussis.
+
+La CI n’est pas verte : radio/AutoMix 8/9 (le test POST supposait `httpBody`,
+alors que URLSession fournit un `httpBodyStream`) ; suite déterministe 128/130
+(même test et mesure instantanée du fond juste après la commande `node.play()`,
+avant un premier callback de rendu dans une exécution). Les corrections gardent
+les assertions sur le JSON réellement envoyé et sur du PCM réellement mesuré
+pendant le chevauchement, avec une attente bornée pour le thread audio.
+
+Les captures échouent à la terminaison d’une application absente sur le simulateur
+fraîchement redémarré. L’outil vérifie désormais un PID vivant avant de demander
+la terminaison ; il ne transforme toujours aucun délai expiré en capture réussie.
+Les diagnostics réseau séparés gardent des échecs sur deux titres (refus de
+source/anti-robot), sans les masquer comme une réussite du catalogue.
+
+Ces résultats intermédiaires ne valident ni les changements suivants ni une IPA
+finale. La nouvelle suite doit être exécutée de nouveau, puis les captures revues.

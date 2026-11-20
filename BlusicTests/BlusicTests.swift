@@ -298,7 +298,7 @@ final class BlusicTests: XCTestCase {
         defer { session.invalidateAndCancel(); InvidiousStubProtocol.handler = nil }
         InvidiousStubProtocol.handler = { request in
             XCTAssertEqual(request.url?.path, "/youtubei/v1/next")
-            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.httpBody)) as? [String: Any])
+            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: testRequestBody(request)) as? [String: Any])
             XCTAssertEqual(body["playlistId"] as? String, "RDAMVMseedxxxxxxx")
             XCTAssertEqual(body["isAudioOnly"] as? Bool, true)
             return (200, Data(#"{"contents":[{"playlistPanelVideoRenderer":{"videoId":"audioxxxxxx","title":{"runs":[{"text":"Audio song"}]},"shortBylineText":{"runs":[{"text":"Singer"}]},"lengthText":{"simpleText":"3:10"},"navigationEndpoint":{"watchEndpoint":{"musicVideoType":"MUSIC_VIDEO_TYPE_ATV"}}}},{"playlistPanelVideoRenderer":{"videoId":"videoxxxxxx","title":{"simpleText":"Music video"},"navigationEndpoint":{"watchEndpoint":{"musicVideoType":"MUSIC_VIDEO_TYPE_OMV"}}}}]}"#.utf8))
@@ -307,6 +307,13 @@ final class BlusicTests: XCTestCase {
         let result = try await MusicCatalogService(session: session).recommendations(for: seed)
         XCTAssertEqual(result.count, 1); XCTAssertEqual(result.first?.location, "audioxxxxxx")
         XCTAssertEqual(result.first?.duration, 190); XCTAssertEqual(result.first?.source, .invidious)
+    }
+    func testRadioRequestBodyReaderSupportsDataAndURLSessionBodyStreams() throws {
+        let data = Data(#"{"playlistId":"RDAMVMseedxxxxxxx","isAudioOnly":true}"#.utf8)
+        var request = URLRequest(url: URL(string: "https://fixture.invalid")!)
+        request.httpBody = data; XCTAssertEqual(try testRequestBody(request), data)
+        request.httpBody = nil; request.httpBodyStream = InputStream(data: data)
+        XCTAssertEqual(try testRequestBody(request), data)
     }
     @MainActor func testRadioRefillsWithoutRepeatingAndStopsWithoutChangingPlayback() async throws {
         let library = LibraryStore(inMemory: true); library.tracks = []; library.playlists = []
@@ -434,6 +441,14 @@ final class BlusicTests: XCTestCase {
         for _ in 0..<100 { if player.current?.id == second.id && player.isPlaying { break }; try await Task.sleep(for: .milliseconds(50)) }
         XCTAssertEqual(player.current?.id, second.id); XCTAssertTrue(player.isTransitioning)
         XCTAssertEqual(player.overlappingPlaybackCount, 2)
+        // node.play() is a command, not proof a render callback has arrived.
+        // Require measured PCM during the overlap, allowing the real audio
+        // thread to deliver its first buffer (and the fixture's next kick).
+        for _ in 0..<75 {
+            if player.backgroundEnergy.level > 0 || !player.isTransitioning { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        XCTAssertTrue(player.isTransitioning); XCTAssertEqual(player.overlappingPlaybackCount, 2)
         XCTAssertGreaterThan(player.backgroundEnergy.level, 0, "The outgoing/native mix must keep driving the visual during a transition")
         XCTAssertGreaterThanOrEqual(player.position, profile.activeStart - 0.05)
         XCTAssertTrue(player.autoMixMessage?.contains("BPM") == true)
@@ -2433,6 +2448,21 @@ final class BlusicTests: XCTestCase {
         XCTAssertEqual(player.current?.location, next.location)
         let count = await calls.count
         XCTAssertEqual(count, 2, "The high-quality preparation must be reused, not resolved a third time")
+    }
+}
+
+private func testRequestBody(_ request: URLRequest) throws -> Data {
+    if let data = request.httpBody { return data }
+    let stream = try XCTUnwrap(request.httpBodyStream, "The request must contain a body, either Data or a URLSession body stream")
+    stream.open(); defer { stream.close() }
+    let capacity = 4096
+    var result = Data(), bytes = [UInt8](repeating: 0, count: capacity)
+    while true {
+        let count = stream.read(&bytes, maxLength: capacity)
+        guard count >= 0 else { throw stream.streamError ?? URLError(.cannotDecodeRawData) }
+        if count == 0 { return result }
+        result.append(contentsOf: bytes.prefix(count))
+        guard result.count <= 1024 * 1024 else { throw URLError(.dataLengthExceedsMaximum) }
     }
 }
 

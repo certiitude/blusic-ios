@@ -21,17 +21,29 @@ class CaptureTests(unittest.TestCase):
             capture.compact_device(devices, (17, 0))
 
     def test_requires_real_launch_pid(self):
-        with patch.object(capture, "run", side_effect=[subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 0, "app.blusic.ios: 123\n")]) as run:
+        with patch.object(capture, "run", side_effect=[subprocess.CompletedProcess([], 0, ""), subprocess.CompletedProcess([], 0, "app.blusic.ios: 123\n")]) as run:
             self.assertEqual(capture.launch_verified("device", ["--blusic-fixture"]), 123)
             self.assertEqual(run.call_args.args[:2], ("launch", "device"))
-        with patch.object(capture, "run", side_effect=[subprocess.CompletedProcess([], 0), subprocess.CompletedProcess([], 0, "not launched")]):
+        with patch.object(capture, "run", side_effect=[subprocess.CompletedProcess([], 0, ""), subprocess.CompletedProcess([], 0, "not launched")]):
             with self.assertRaises(RuntimeError):
                 capture.launch_verified("device", [])
 
     def test_launch_timeout_never_becomes_success(self):
-        with patch.object(capture, "run", side_effect=[subprocess.CompletedProcess([], 0), subprocess.TimeoutExpired("simctl launch", 90)]):
+        with patch.object(capture, "run", side_effect=[subprocess.CompletedProcess([], 0, ""), subprocess.TimeoutExpired("simctl launch", 90)]):
             with self.assertRaises(subprocess.TimeoutExpired):
                 capture.launch_verified("device", [])
+
+    def test_terminates_only_a_confirmed_app_process(self):
+        with patch.object(capture, "run", side_effect=[subprocess.CompletedProcess([], 0, "123\t0\tUIKitApplication:app.blusic.ios[abc]\n"), subprocess.CompletedProcess([], 0, ""), subprocess.CompletedProcess([], 0, "app.blusic.ios: 456\n")]) as run:
+            self.assertEqual(capture.launch_verified("device", []), 456)
+            self.assertEqual(run.call_args_list[1].args[0], "terminate")
+        self.assertIsNone(capture.running_app_pid("999\t0\tapp.blusic.ios.tests\n"))
+
+    def test_termination_timeout_remains_a_failure(self):
+        with patch.object(capture, "run", side_effect=[subprocess.CompletedProcess([], 0, "123\t0\tUIKitApplication:app.blusic.ios[abc]\n"), subprocess.TimeoutExpired("simctl terminate", 20)]) as run:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                capture.launch_verified("device", [])
+            self.assertEqual(run.call_count, 2, "A failed termination must not be disguised by a later screenshot")
 
     def test_requires_app_still_running_before_screenshot(self):
         self.assertTrue(capture.app_running("123\t0\tUIKitApplication:app.blusic.ios[0x123]\n", 123))

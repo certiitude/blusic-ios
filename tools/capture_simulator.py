@@ -36,9 +36,12 @@ def compact_device(devices, sdk_version):
 
 
 def launch_verified(device, launch_args):
-    # Separate termination from launch: simctl's combined operation can stall
-    # after a long XCTest session. A launch timeout is NOT a successful capture.
-    run("terminate", device, "app.blusic.ios", check=False, capture=True, timeout=20)
+    # On a freshly booted simulator, terminating an absent application can hang
+    # in some runtimes. Only terminate a PID confirmed by the process list.
+    # A termination/launch timeout still fails; it is never capture evidence.
+    processes = run("spawn", device, "launchctl", "list", capture=True, timeout=30).stdout
+    if running_app_pid(processes) is not None:
+        run("terminate", device, "app.blusic.ios", capture=True, timeout=20)
     launched = run("launch", device, "app.blusic.ios", *launch_args, capture=True, timeout=90)
     match = re.search(r"app\.blusic\.ios:\s*(\d+)", launched.stdout)
     if not match:
@@ -57,8 +60,16 @@ def png_dimensions(path):
     return width, height
 
 
+def running_app_pid(output):
+    for line in output.splitlines():
+        columns = line.split(None, 2)
+        if len(columns) == 3 and columns[0].isdigit() and re.search(r"app\.blusic\.ios(?:\[|\s|$)", columns[2]):
+            return int(columns[0])
+    return None
+
+
 def app_running(output, pid):
-    return any(re.match(rf"\s*{pid}\s+", line) and "app.blusic.ios" in line for line in output.splitlines())
+    return running_app_pid(output) == pid
 
 
 def main():
@@ -132,7 +143,9 @@ def main():
             report.append({"device": device, "size": label, "screen": screen, "file": path.name, "pixels": [width, height],
                            "pid": pid, "evidence": "offline demo layout only" if args.local_fixture else "live metadata layout; player uses local demo"})
             (args.output / "capture-report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-        run("terminate", device, "app.blusic.ios", check=False)
+        processes = run("spawn", device, "launchctl", "list", capture=True).stdout
+        if running_app_pid(processes) is not None:
+            run("terminate", device, "app.blusic.ios", capture=True, timeout=20)
     (args.output / "capture-report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
 
